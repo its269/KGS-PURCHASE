@@ -46,30 +46,31 @@ export async function GET(request) {
                 cookie
             });
 
-            // Transform Acumatica BFF format to StockItems Masterlist format
-            const transformedItems = acuResult.data.map(item => ({
-                inventoryId: item.InventoryID?.value,
-                description: item.Description?.value,
-                itemClass: item.ItemClass?.value,
-                itemStatus: "Active", // Default if not in BFF
-                baseUnit: "PCS",      // Default if not in BFF
-                price: item.DefaultPrice?.value || 0,
-                totalQtySold: 0,      // Not available in direct Acumatica fetch
-                totalSales: 0         // Not available in direct Acumatica fetch
-            }));
+            // Transform and aggregate Acumatica BFF format
+            const itemMap = new Map();
+            for (const item of acuResult.data) {
+                const invId = item.InventoryID?.value;
+                if (!invId) continue;
 
-            // Deduplicate by inventoryId (BFF might return multiple rows per item if there are multiple warehouses)
-            const uniqueItems = [];
-            const seen = new Set();
-            for (const item of transformedItems) {
-                if (!seen.has(item.inventoryId)) {
-                    seen.add(item.inventoryId);
-                    uniqueItems.push(item);
+                if (!itemMap.has(invId)) {
+                    itemMap.set(invId, {
+                        inventoryId: invId,
+                        description: item.Description?.value,
+                        itemClass: item.ItemClass?.value,
+                        itemStatus: item.ItemStatus?.value || "Active",
+                        baseUnit: item.BaseUnit?.value || "PCS",
+                        price: item.DefaultPrice?.value || 0,
+                        totalOnHand: 0,
+                        totalQtySold: 0,
+                        totalSales: 0
+                    });
                 }
+                const entry = itemMap.get(invId);
+                entry.totalOnHand += (item.OnHand?.value || 0);
             }
 
             return NextResponse.json({
-                items: uniqueItems,
+                items: Array.from(itemMap.values()),
                 totalCount: acuResult.totalCount,
                 source: "acumatica-fallback"
             });

@@ -4,7 +4,7 @@ import { getSession } from "@/lib/session-store";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ACU_BASE = "https://accounting.holocrontrackertrading.com/ERP/entity/Default/20.200.001";
+const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
 export async function GET(request) {
     const sessionId = request.cookies.get("acu_session")?.value;

@@ -320,6 +320,13 @@ export default function DashboardPage() {
                         <span className="db-stat-value">{globalStats.outOfStock.toLocaleString()}</span>
                         <span className="db-stat-sub">Zero units on hand</span>
                     </div>
+                    <div className="db-stat-card" style={{ borderLeft: '4px solid #3b82f6' }}>
+                        <span className="db-stat-label">Data Freshness</span>
+                        <span className="db-stat-value" style={{ fontSize: '1.1rem', color: '#1e293b', marginTop: '0.5rem' }}>
+                            {globalStats.lastSync ? new Date(globalStats.lastSync).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Never"}
+                        </span>
+                        <span className="db-stat-sub">Last successful sync</span>
+                    </div>
                 </div>
 
                 <div className="db-toolbar">

@@ -18,7 +18,19 @@ export async function GET(request) {
             try {
                 const result = await MySqlService.getVendors({ page, pageSize, search });
                 if (result.data.length > 0) {
-                    return NextResponse.json({ ...result, source: "mysql", page, pageSize });
+                    return NextResponse.json({ 
+                        vendors: result.data.map(v => ({
+                            vendorId: v.VendorID.value,
+                            vendorName: v.VendorName.value,
+                            status: v.Status?.value || "Active",
+                            reliabilityScore: 100
+                        })),
+                        totalCount: result.totalCount,
+                        hasMore: result.totalCount > (page * pageSize),
+                        source: "mysql", 
+                        page, 
+                        pageSize 
+                    });
                 }
             } catch (mError) {
                 console.error("[MySQL Vendors Error]", mError);

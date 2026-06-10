@@ -3,7 +3,7 @@ import { AcumaticaService } from "@/services/acumatica";
 import { getSessionFromRequest } from "@/lib/session-store";
 import { NextResponse } from "next/server";
 
-const ACU_BASE = "https://accounting.holocrontrackertrading.com/ERP/entity/Default/20.200.001";
+const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
 function getF(obj, key) {
     if (!obj) return "";

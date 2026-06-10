@@ -5,11 +5,11 @@ const pool = mysql.createPool({
     port: parseInt(process.env.MYSQL_PORT || "3306", 10),
     user: process.env.MYSQL_USER,
     password: process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQL_INVENTORY_DATABASE || process.env.MYSQL_PURCHASE_DATABASE || "db_kelin_inventory",
+    database: process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory",
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    connectTimeout: 30000, // 30 seconds
+    connectTimeout: 30000,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
 });
@@ -19,11 +19,11 @@ const purchasePool = mysql.createPool({
     port: parseInt(process.env.MYSQL_PORT || "3306", 10),
     user: process.env.MYSQL_USER,
     password: process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQL_PURCHASE_DATABASE || process.env.MYSQL_INVENTORY_DATABASE || "db_purchase",
+    database: process.env.MYSQL_PURCHASE_DATABASE || "db_purchase",
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    connectTimeout: 30000, // 30 seconds
+    connectTimeout: 30000,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
 });
@@ -97,8 +97,8 @@ export const MySqlService = {
             }
 
             if (search) {
-                whereClauses.push("(order_nbr LIKE ? OR vendor_id LIKE ?)");
-                params.push(`%${search}%`, `%${search}%`);
+                whereClauses.push("(order_nbr LIKE ? OR vendor_id LIKE ? OR vendor_name LIKE ?)");
+                params.push(`%${search}%`, `%${search}%`, `%${search}%`);
             }
 
             const wherePart = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
@@ -107,6 +107,7 @@ export const MySqlService = {
                 `SELECT 
                     order_nbr as orderNbr,
                     vendor_id as vendorId,
+                    vendor_name as vendorName,
                     status,
                     order_date as date,
                     total_amount as totalAmount
@@ -117,17 +118,27 @@ export const MySqlService = {
                 params
             );
 
+            // Fetch lines for each order
+            const ordersWithLines = await Promise.all(rows.map(async (order) => {
+                const [lines] = await purchasePool.query(
+                    `SELECT inventory_id as inventoryId, description, qty, uom, ext_cost as extCost 
+                     FROM purchase_order_details WHERE order_nbr = ?`,
+                    [order.orderNbr]
+                );
+                return {
+                    ...order,
+                    orderType: "Normal",
+                    lines: lines
+                };
+            }));
+
             const [[{ total }]] = await purchasePool.query(
                 `SELECT COUNT(*) as total FROM purchase_history ${wherePart}`,
                 params
             );
 
             return {
-                orders: rows.map(r => ({
-                    ...r,
-                    orderType: "Normal", // Default for purchase history
-                    lines: [] // Lines are not stored in purchase_history currently
-                })),
+                orders: ordersWithLines,
                 totalCount: total,
                 hasMore: total > offset + rows.length
             };
@@ -147,9 +158,10 @@ export const MySqlService = {
             await connection.beginTransaction();
             const sql = `
                 INSERT INTO purchase_history 
-                (order_nbr, vendor_id, status, order_date, promised_date, receipt_date, total_amount, last_sync)
+                (order_nbr, vendor_id, vendor_name, status, order_date, promised_date, receipt_date, total_amount, last_sync)
                 VALUES ?
                 ON DUPLICATE KEY UPDATE
+                vendor_name = VALUES(vendor_name),
                 status = VALUES(status),
                 promised_date = VALUES(promised_date),
                 receipt_date = VALUES(receipt_date),
@@ -157,7 +169,7 @@ export const MySqlService = {
                 last_sync = VALUES(last_sync)
             `;
             const values = rows.map(r => [
-                r.order_nbr, r.vendor_id, r.status, r.order_date, r.promised_date, r.receipt_date, r.total_amount, new Date()
+                r.order_nbr, r.vendor_id, r.vendor_name, r.status, r.order_date, r.promised_date, r.receipt_date, r.total_amount, new Date()
             ]);
             await connection.query(sql, [values]);
             await connection.commit();
@@ -169,8 +181,52 @@ export const MySqlService = {
         }
     },
 
+    async upsertPurchaseOrderDetails(rows) {
+        if (!rows.length) return;
+        const connection = await purchasePool.getConnection();
+        try {
+            const sql = `
+                INSERT INTO purchase_order_details
+                (order_nbr, line_nbr, inventory_id, description, qty, uom, ext_cost, last_sync)
+                VALUES ?
+                ON DUPLICATE KEY UPDATE
+                inventory_id = VALUES(inventory_id),
+                description = VALUES(description),
+                qty = VALUES(qty),
+                uom = VALUES(uom),
+                ext_cost = VALUES(ext_cost),
+                last_sync = VALUES(last_sync)
+            `;
+            const values = rows.map(r => [
+                r.order_nbr, r.line_nbr, r.inventory_id, r.description, r.qty, r.uom, r.ext_cost, r.last_sync
+            ]);
+            await connection.query(sql, [values]);
+        } finally {
+            connection.release();
+        }
+    },
+
+    async upsertVendors(rows) {
+        if (!rows.length) return;
+        const connection = await purchasePool.getConnection();
+        try {
+            const sql = `
+                INSERT INTO vendors (vendor_id, vendor_name, status, last_sync)
+                VALUES ?
+                ON DUPLICATE KEY UPDATE
+                vendor_name = VALUES(vendor_name),
+                status = VALUES(status),
+                last_sync = VALUES(last_sync)
+            `;
+            const values = rows.map(r => [r.vendor_id, r.vendor_name, r.status, r.last_sync]);
+            await connection.query(sql, [values]);
+        } finally {
+            connection.release();
+        }
+    },
+
     /**
-     * Fetch unique vendors from purchase history
+     * Fetch unique vendors from vendors table
      */
     async getVendors({ page = 1, pageSize = 50, search = "" }) {
         const offset = (page - 1) * pageSize;
@@ -182,31 +238,32 @@ export const MySqlService = {
             let params = [];
 
             if (search) {
-                whereClause = "WHERE vendor_id LIKE ?";
-                params = [`%${search}%`];
+                whereClause = "WHERE vendor_id LIKE ? OR vendor_name LIKE ?";
+                params = [`%${search}%`, `%${search}%`];
             }
 
             const [rows] = await purchasePool.query(
                 `SELECT 
                     vendor_id as VendorID,
-                    vendor_id as VendorName
-                 FROM purchase_history
+                    vendor_name as VendorName,
+                    status as Status
+                 FROM vendors
                  ${whereClause}
-                 GROUP BY vendor_id
-                 ORDER BY vendor_id ASC
+                 ORDER BY VendorName ASC
                  LIMIT ${limitInt} OFFSET ${offsetInt}`,
                 params
             );
 
             const [[{ total }]] = await purchasePool.query(
-                `SELECT COUNT(DISTINCT vendor_id) as total FROM purchase_history ${whereClause}`,
+                `SELECT COUNT(*) as total FROM vendors ${whereClause}`,
                 params
             );
 
             return {
                 data: rows.map(r => ({
                     VendorID: { value: r.VendorID },
-                    VendorName: { value: r.VendorName }
+                    VendorName: { value: r.VendorName },
+                    Status: { value: r.Status }
                 })),
                 totalCount: total
             };
@@ -345,7 +402,8 @@ export const MySqlService = {
                     COUNT(*) as total,
                     SUM(COALESCE(on_hand, 0) * COALESCE(default_price, 0)) as totalValue,
                     SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN 1 ELSE 0 END) as lowStock,
-                    SUM(CASE WHEN on_hand <= 0 THEN 1 ELSE 0 END) as outOfStock
+                    SUM(CASE WHEN on_hand <= 0 THEN 1 ELSE 0 END) as outOfStock,
+                    MAX(last_sync) as lastSync
                  FROM inventory_items ${wherePart}`,
                 params
             );
@@ -354,7 +412,8 @@ export const MySqlService = {
                 totalValue: Number(stats.totalValue) || 0,
                 lowStock: Number(stats.lowStock) || 0,
                 outOfStock: Number(stats.outOfStock) || 0,
-                count: Number(stats.total) || 0
+                count: Number(stats.total) || 0,
+                lastSync: stats.lastSync
             };
         } catch (err) {
             console.error("[MySQL getGlobalStats Error]", err);
@@ -376,11 +435,11 @@ export const MySqlService = {
             let params = [];
 
             if (search) {
-                whereClause = "WHERE (TRIM(UPPER(i.inventory_id)) LIKE TRIM(UPPER(?)) OR TRIM(UPPER(i.inventory_name)) LIKE TRIM(UPPER(?)))";
+                whereClause = "WHERE (i.inventory_id LIKE ? OR i.inventory_name LIKE ?)";
                 params = [`%${search}%`, `%${search}%`];
             }
 
-            // 1. Fetch items from Inventory database
+            // 1. Fetch items from Inventory database with summed stock
             const query = `
                 SELECT 
                     TRIM(i.inventory_id) as inventoryId, 
@@ -388,7 +447,8 @@ export const MySqlService = {
                     MAX(i.item_class) as itemClass, 
                     MAX(i.item_status) as itemStatus,
                     MAX(i.base_unit) as baseUnit,
-                    MAX(i.default_price) as price
+                    MAX(i.default_price) as price,
+                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand
                  FROM inventory_items i
                  ${whereClause} 
                  GROUP BY TRIM(i.inventory_id)
@@ -411,6 +471,7 @@ export const MySqlService = {
                 const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
                 return {
                     ...r,
+                    totalOnHand: Number(r.totalOnHand) || 0,
                     totalQtySold: sales.qty_sold,
                     totalSales: sales.total_sales
                 };

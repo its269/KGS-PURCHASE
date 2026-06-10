@@ -1,8 +1,8 @@
-const ACU_HOST = "https://accounting.holocrontrackertrading.com";
-const AUTH_BASE = `${ACU_HOST}/ERP/entity/auth`;
+const ACU_BASE = process.env.ACUMATICA_BASE_URL;
+const AUTH_BASE = `${ACU_BASE}/entity/auth`;
 const AUTH_URL = `${AUTH_BASE}/login`;
 const LOGOUT_URL = `${AUTH_BASE}/logout`;
-const TOKEN_URL = `${ACU_HOST}/ERP/identity/connect/token`;
+const TOKEN_URL = `${ACU_BASE}/identity/connect/token`;
 
 // Bypasses 'CERT_HAS_EXPIRED' error for Acumatica connections
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -103,7 +103,7 @@ export const AuthService = {
 
     async getUserInfo(username, cookie) {
         const safeUsername = username.replace(/'/g, "''");
-        const url = `https://accounting.holocrontrackertrading.com/ERP/entity/Default/20.200.001/Users?$filter=Username eq '${safeUsername}'&$select=Username,FirstName,LastName&$top=1`;
+        const url = `${ACU_BASE}/entity/Default/20.200.001/Users?$filter=Username eq '${safeUsername}'&$select=Username,FirstName,LastName&$top=1`;
 
         const res = await fetch(url, {
             headers: { ...COMMON_HEADERS, Cookie: cookie },

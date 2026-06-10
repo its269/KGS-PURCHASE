@@ -4,22 +4,24 @@
  */
 import fs from "fs";
 
-const env = fs.readFileSync(new URL("../.env", import.meta.url), "utf8")
+const envPath = new URL("../.env", import.meta.url);
+const envLocalPath = new URL("../.env.local", import.meta.url);
+const envFile = fs.existsSync(envLocalPath) ? envLocalPath : envPath;
+const env = fs.readFileSync(envFile, "utf8")
     .split("\n").reduce((acc, line) => {
         const [k, ...v] = line.split("=");
         if (k && !k.trim().startsWith("#")) acc[k.trim()] = v.join("=").trim().replace(/^['"]|['"]$/g, "");
         return acc;
     }, {});
 
-const ACU_HOST = "https://accounting.holocrontrackertrading.com";
-const ACU_BASE = `${ACU_HOST}/ERP/entity/Default/20.200.001`;
+const ACU_BASE = `${env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
 async function main() {
     // Logout any lingering session
-    try { await fetch(`${ACU_HOST}/ERP/entity/auth/logout`, { method: "POST" }); } catch { }
+    try { await fetch(`${env.ACUMATICA_BASE_URL}/entity/auth/logout`, { method: "POST" }); } catch { }
 
     // Login
-    const loginRes = await fetch(`${ACU_HOST}/ERP/entity/auth/login`, {
+    const loginRes = await fetch(`${env.ACUMATICA_BASE_URL}/entity/auth/login`, {
         method: "POST",
         headers: { "Accept": "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ name: env.ACU_USERNAME, password: env.ACU_PASSWORD }),

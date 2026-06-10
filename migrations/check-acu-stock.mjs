@@ -8,7 +8,10 @@ import fs from "fs";
 import https from "https";
 
 // Parse .env manually (no dotenv required)
-const env = fs.readFileSync(new URL("../.env", import.meta.url), "utf8")
+const envPath = new URL("../.env", import.meta.url);
+const envLocalPath = new URL("../.env.local", import.meta.url);
+const envFile = fs.existsSync(envLocalPath) ? envLocalPath : envPath;
+const env = fs.readFileSync(envFile, "utf8")
     .split("\n")
     .reduce((acc, line) => {
         const [key, ...rest] = line.split("=");
@@ -18,8 +21,8 @@ const env = fs.readFileSync(new URL("../.env", import.meta.url), "utf8")
         return acc;
     }, {});
 
-const ACU_HOST = "https://accounting.holocrontrackertrading.com";
-const ACU_BASE = `${ACU_HOST}/ERP/entity/Default/20.200.001`;
+const ACU_BASE = `${env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
+const ACU_HOST = env.ACUMATICA_BASE_URL.replace("/ERP", "");
 
 async function apiFetch(url, options = {}) {
     const res = await fetch(url, {
@@ -67,8 +70,8 @@ async function main() {
 
     // Fall back to cookie auth if OAuth2 failed
     if (!bearerToken) {
-        try { await apiFetch(`${ACU_HOST}/ERP/entity/auth/logout`, { method: "POST" }); } catch { }
-        const loginRes = await apiFetch(`${ACU_HOST}/ERP/entity/auth/login`, {
+        try { await apiFetch(`${env.ACUMATICA_BASE_URL}/entity/auth/logout`, { method: "POST" }); } catch { }
+        const loginRes = await apiFetch(`${env.ACUMATICA_BASE_URL}/entity/auth/login`, {
             method: "POST",
             body: JSON.stringify({ name: env.ACU_USERNAME, password: env.ACU_PASSWORD }),
         });
@@ -167,7 +170,7 @@ async function main() {
     console.log(`\n   Result: ${nonZeroCount} non-zero rows found in ${totalScanned} items.`);
 
     // Cleanup: log out
-    try { await apiFetch(`${ACU_HOST}/ERP/entity/auth/logout`, { method: "POST", headers: authHeaders }); } catch { }
+    try { await apiFetch(`${env.ACUMATICA_BASE_URL}/entity/auth/logout`, { method: "POST", headers: authHeaders }); } catch { }
 
     process.exit(0);
 }

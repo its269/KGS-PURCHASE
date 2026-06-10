@@ -70,7 +70,7 @@ export default function SyncingClient() {
         addLog(`Starting ${mode === 'full' ? 'Full' : 'Quick'} Sync...`);
 
         try {
-            const apiMode = mode === 'full' ? 'full' : 'incremental';
+            const apiMode = mode === 'full' ? 'full' : mode === 'delta' ? 'delta' : 'incremental';
             const queryParams = new URLSearchParams({
                 inventory: "true",
                 sales: "true",
@@ -157,7 +157,7 @@ export default function SyncingClient() {
         <div className="sync-root">
             <header className="sync-header">
                 <div className="sync-branding">
-                    <img src="/KELIN-LOGO-01.png" alt="Logo" style={{ width: '32px' }} />
+                    <img src="/kelin-logo.png" alt="Logo" style={{ width: '32px' }} />
                     <span className="sync-branding-text">
                         ACU <span className="sync-branding-accent">SYNC CENTER</span>
                     </span>
@@ -172,20 +172,28 @@ export default function SyncingClient() {
                 </div>
 
                 {!isSyncing && !complete && !error ? (
-                    <div className="qs-strategy-list" style={{ maxWidth: '600px', margin: '0 auto' }}>
-                        <button className="qs-card" onClick={() => startSync('quick')} style={{ padding: '1.5rem' }}>
-                            <div className="qs-card-icon" style={{ color: '#3b82f6' }}><IconRocket /></div>
+                    <div className="qs-strategy-list" style={{ maxWidth: '700px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr', gap: '1rem' }}>
+                        <button className="qs-card" onClick={() => startSync('delta')} style={{ padding: '1.5rem', border: '1px solid #e2e8f0' }}>
+                            <div className="qs-card-icon" style={{ color: '#f59e0b' }}><IconRocket /></div>
                             <div className="qs-card-info">
-                                <span className="qs-card-title" style={{ fontSize: '1.1rem' }}>Quick Syncing Data</span>
-                                <span className="qs-card-desc">Sync only new and updated data from Acumatica. Best for daily updates.</span>
+                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: '#b45309' }}>Sync Today&apos;s Changes (Fast)</span>
+                                <span className="qs-card-desc">Only sync items that were sold or modified today. Recommended for mid-day updates.</span>
                             </div>
                         </button>
 
-                        <button className="qs-card" onClick={() => startSync('full')} style={{ padding: '1.5rem', marginTop: '1rem' }}>
+                        <button className="qs-card" onClick={() => startSync('quick')} style={{ padding: '1.5rem', border: '1px solid #e2e8f0' }}>
+                            <div className="qs-card-icon" style={{ color: '#3b82f6' }}><IconSync /></div>
+                            <div className="qs-card-info">
+                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: '#1d4ed8' }}>Standard Incremental Sync</span>
+                                <span className="qs-card-desc">Sync all changes since the last synchronization. Efficient and reliable.</span>
+                            </div>
+                        </button>
+
+                        <button className="qs-card" onClick={() => startSync('full')} style={{ padding: '1.5rem', border: '1px solid #e2e8f0' }}>
                             <div className="qs-card-icon" style={{ color: '#8b5cf6' }}><IconSync /></div>
                             <div className="qs-card-info">
-                                <span className="qs-card-title" style={{ fontSize: '1.1rem' }}>Full Sync Data</span>
-                                <span className="qs-card-desc">Sync all needed data from Acumatica to MySQL. Use for initial setup or full refresh.</span>
+                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: '#6d28d9' }}>Full Daily Refresh</span>
+                                <span className="qs-card-desc">Sync all 3,000+ items and full sales history. Use for initial setup or end-of-day reporting.</span>
                             </div>
                         </button>
                     </div>

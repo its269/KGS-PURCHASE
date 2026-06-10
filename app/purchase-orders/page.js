@@ -2,6 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { DataCache } from "@/lib/data-cache";
+import { fetchWithAuth } from "@/lib/api-client";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
@@ -45,6 +46,11 @@ const IconActivity = () => (
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
     </svg>
 );
+const IconDownload = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+);
 
 function poStatusClass(status) {
     const s = (status || "").toLowerCase();
@@ -76,6 +82,18 @@ export default function PurchaseOrdersPage() {
     const [expanded, setExpanded] = useState({}); // orderNbr -> bool
     const [selectedId, setSelectedId] = useState(null);
     const [userInputs, setUserInputs] = useState({}); // key -> { eta, userStatus }
+    const [exporting, setExporting] = useState(false);
+
+    const handleExport = async () => {
+        setExporting(true);
+        try {
+            window.location.href = "/api/export?type=po";
+        } catch (e) {
+            console.error("Export failed", e);
+        } finally {
+            setTimeout(() => setExporting(false), 2000);
+        }
+    };
 
     const isInitialMount = useRef(true);
 
@@ -169,7 +187,7 @@ export default function PurchaseOrdersPage() {
             if (debSearch) params.set("search", debSearch);
             const cacheKey = `po_orders_${params.toString()}`;
 
-            const res = await fetch(`/api/po?${params}`); 
+            const res = await fetchWithAuth(`/api/po?${params}`); 
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 if (!isBackground) throw new Error(body.message || `HTTP ${res.status}`);
@@ -290,6 +308,14 @@ export default function PurchaseOrdersPage() {
                                 </button>
                             )}
                         </div>
+                        <button 
+                            className="si-view-btn" 
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#0f172a', color: '#fff', border: 'none', padding: '0.6rem 1.25rem', height: '42px', marginLeft: '1rem' }}
+                            onClick={handleExport}
+                            disabled={exporting}
+                        >
+                            <IconDownload /> {exporting ? "..." : "Export"}
+                        </button>
                     </div>
                 </div>
 

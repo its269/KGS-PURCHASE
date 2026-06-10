@@ -17,10 +17,37 @@ export async function POST(request) {
     const signal = request.signal;
 
     const cookie = getSessionFromRequest(request);
+    const syncSecret = request.headers.get("x-sync-secret");
+    const isSecretValid = process.env.SYNC_SECRET && syncSecret === process.env.SYNC_SECRET;
 
-    if (!cookie) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+    if (!cookie && !isSecretValid) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     
-    if (cookie === "__bypass__") {
+    let effectiveCookie = cookie;
+    if (isSecretValid && !cookie) {
+        console.log(">>> [Sync API] Secret valid. Performing system login to Acumatica...");
+        try {
+            const loginRes = await fetch(`${process.env.ACUMATICA_BASE_URL}/entity/auth/login`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: process.env.ACUMATICA_USERNAME,
+                    password: process.env.ACUMATICA_PASSWORD,
+                    company: process.env.ACUMATICA_COMPANY
+                })
+            });
+            if (!loginRes.ok) throw new Error(`Acumatica login failed: ${loginRes.status}`);
+            
+            // Capture all cookies (especially .ASPXAUTH and ASP.NET_SessionId)
+            const setCookies = loginRes.headers.getSetCookie();
+            effectiveCookie = setCookies.map(c => c.split(";")[0]).join("; ");
+            console.log(">>> [Sync API] System login successful. Captured cookies.");
+        } catch (loginErr) {
+            console.error(">>> [Sync API] System login failed:", loginErr.message);
+            return NextResponse.json({ message: "System login failed" }, { status: 500 });
+        }
+    }
+
+    if (effectiveCookie === "__bypass__" && !isSecretValid) {
         return NextResponse.json({ 
             message: "Synchronization is unavailable in Bypass Mode because the Acumatica API Limit is currently reached. Please try again later when Acumatica sessions have expired." 
         }, { status: 403 });
@@ -43,7 +70,70 @@ export async function POST(request) {
         await conn.query(`CREATE DATABASE IF NOT EXISTS \`${inventoryDb}\``);
         await conn.query(`CREATE DATABASE IF NOT EXISTS \`${purchaseDb}\``);
 
-        // Ensure inventory_items columns
+        // Ensure inventory_items table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${inventoryDb}\`.\`inventory_items\` (
+                \`inventory_id\` VARCHAR(100) NOT NULL,
+                \`default_warehouse\` VARCHAR(100) NOT NULL DEFAULT '__catalog__',
+                PRIMARY KEY (\`inventory_id\`, \`default_warehouse\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure product_periodic_sales table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`product_periodic_sales\` (
+                \`id\` VARCHAR(255) PRIMARY KEY,
+                \`inventory_id\` VARCHAR(100),
+                \`last_sync\` DATETIME
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure vendors table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`vendors\` (
+                \`vendor_id\` VARCHAR(100) PRIMARY KEY,
+                \`vendor_name\` VARCHAR(255),
+                \`status\` VARCHAR(50),
+                \`last_sync\` DATETIME
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure purchase_history has vendor_name column
+        const [[phVendorNameCol]] = await conn.query(
+            `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS 
+             WHERE TABLE_SCHEMA=? AND TABLE_NAME='purchase_history' AND COLUMN_NAME='vendor_name'`,
+            [purchaseDb]
+        );
+        if (phVendorNameCol.cnt === 0) {
+            await conn.query(`ALTER TABLE \`${purchaseDb}\`.\`purchase_history\` ADD COLUMN \`vendor_name\` VARCHAR(255) NULL AFTER \`vendor_id\``);
+        }
+
+        // Ensure purchase_order_details table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`purchase_order_details\` (
+                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+                \`order_nbr\` VARCHAR(50),
+                \`line_nbr\` INT,
+                \`inventory_id\` VARCHAR(100),
+                \`description\` VARCHAR(255),
+                \`qty\` DECIMAL(18,4),
+                \`uom\` VARCHAR(50),
+                \`ext_cost\` DECIMAL(18,4),
+                \`last_sync\` DATETIME,
+                UNIQUE KEY \`uq_po_line\` (\`order_nbr\`, \`line_nbr\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure branches table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${inventoryDb}\`.\`branches\` (
+                \`branch_id\` VARCHAR(100) PRIMARY KEY,
+                \`branch_name\` VARCHAR(255),
+                \`active\` TINYINT(1) DEFAULT 1
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure inventory_items columns exist
         const cols = [
             { name: "on_hand", def: "DECIMAL(18, 4) DEFAULT 0" },
             { name: "available", def: "DECIMAL(18, 4) DEFAULT 0" },
@@ -56,8 +146,7 @@ export async function POST(request) {
             { name: "base_unit", def: "VARCHAR(50) NULL" },
             { name: "item_class", def: "VARCHAR(100) NULL" },
             { name: "default_price", def: "DECIMAL(18, 4) DEFAULT 0" },
-            { name: "inventory_name", def: "VARCHAR(255) NULL" },
-            { name: "default_warehouse", def: "VARCHAR(100) NOT NULL DEFAULT '__catalog__'" }
+            { name: "inventory_name", def: "VARCHAR(255) NULL" }
         ];
 
         for (const c of cols) {
@@ -69,16 +158,6 @@ export async function POST(request) {
             if (row.cnt === 0) {
                 await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD COLUMN \`${c.name}\` ${c.def}`);
             }
-        }
-
-        // Ensure Unique Key
-        const [[idx]] = await conn.query(
-            `SELECT COUNT(*) as cnt FROM information_schema.STATISTICS 
-             WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME='uq_inv_warehouse'`,
-            [inventoryDb]
-        );
-        if (idx.cnt === 0) {
-            await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD UNIQUE KEY \`uq_inv_warehouse\` (\`inventory_id\`, \`default_warehouse\`)`);
         }
 
         await conn.end();
@@ -129,7 +208,7 @@ export async function POST(request) {
             };
 
             try {
-                const ACU_BASE = "https://accounting.holocrontrackertrading.com/ERP/entity/Default/20.200.001";
+                const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
                 const isDelta = options.mode === "delta" || options.mode === "incremental";
                 const todayStr = new Date().toISOString().split('T')[0];
 
@@ -157,7 +236,7 @@ export async function POST(request) {
                 // 1. BRANCHES (Always fast, sync every time)
                 send({ section: "Inventory", details: "Updating branches...", progress: 5 });
                 try {
-                    const branches = await AcumaticaService.getRealBranches(cookie);
+                    const branches = await AcumaticaService.getRealBranches(effectiveCookie);
                     if (branches.length > 0) {
                         await MySqlService.upsertBranches(branches.map(b => ({
                             branch_id: String(b.BranchID).trim(),
@@ -166,11 +245,33 @@ export async function POST(request) {
                     }
                 } catch (e) { }
 
+                // 1.5 VENDORS (Sync every time or if inventory/sales is selected)
+                if (options.inventory || options.sales) {
+                    send({ section: "Suppliers", details: "Updating vendor directory...", progress: 7 });
+                    try {
+                        const url = `${ACU_BASE}/Vendor?$top=1000`;
+                        const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
+                        const data = await res.json();
+                        const vendors = data.value || [];
+                        if (vendors.length > 0) {
+                            const vendorRows = vendors.map(v => ({
+                                vendor_id: String(getF(v, "VendorID")).trim(),
+                                vendor_name: String(getF(v, "VendorName")).trim(),
+                                status: String(getF(v, "Status")).trim(),
+                                last_sync: new Date()
+                            }));
+                            await MySqlService.upsertVendors(vendorRows);
+                        }
+                    } catch (e) {
+                        console.error(">>> [Sync API] Vendor sync error:", e.message);
+                    }
+                }
+
                 // 2. INVENTORY
                 if (options.inventory) {
                     const filterArr = [];
                     if (isDelta && lastInvSync) {
-                        filterArr.push(`LastModifiedDateTime gt datetimeoffset'${lastInvSync}'`);
+                        filterArr.push(`LastModified gt datetimeoffset'${lastInvSync}'`);
                         send({ section: "Inventory", details: `Incremental Sync: Fetching changes since ${lastInvSync}...`, progress: 10 });
                     } else {
                         send({ section: "Inventory", details: "Full Daily Refresh: Scanning all items...", progress: 10 });
@@ -184,7 +285,7 @@ export async function POST(request) {
                         try {
                             const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$top=${top}&$skip=${skip}${filterStr}`;
                             console.log(`>>> [Sync API] Fetching StockItems: skip=${skip}`);
-                            const res = await AcumaticaService.fetchWithRetry(url, cookie);
+                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
                             const data = await res.json();
                             items = data.value || (Array.isArray(data) ? data : []);
                         } catch (fetchErr) {
@@ -284,7 +385,7 @@ export async function POST(request) {
                         try {
                             const url = `${ACU_BASE}/Invoice?$expand=Details&$top=100&$skip=${sSkip}&${filterStr}`;
                             console.log(`>>> [Sync API] Fetching Invoices: skip=${sSkip}`);
-                            const res = await AcumaticaService.fetchWithRetry(url, cookie);
+                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
                             const data = await res.json();
                             invoices = data.value || [];
                         } catch (salesFetchErr) {
@@ -340,6 +441,59 @@ export async function POST(request) {
                         if (invoices.length < 100) break;
                     }
                     send({ section: "Sales history", status: "done", details: "Sales sync complete.", progress: 100 });
+
+                    // 3.5 PURCHASE ORDERS (Incoming PO Details)
+                    send({ section: "Incoming PO", details: "Updating purchase order details...", progress: 50 });
+                    try {
+                        let poStart = options.startDate || "2024-01-01";
+                        const poFilter = `OrderDate ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
+                        let poSkip = 0;
+                        while (!signal.aborted) {
+                            const url = `${ACU_BASE}/PurchaseOrder?$expand=Details&$top=50&$skip=${poSkip}&$filter=${encodeURIComponent(poFilter)}`;
+                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
+                            const data = await res.json();
+                            const orders = data.value || [];
+                            if (orders.length === 0) break;
+
+                            const historyRows = [];
+                            const lineRows = [];
+                            for (const o of orders) {
+                                historyRows.push({
+                                    order_nbr: getF(o, "OrderNbr"),
+                                    vendor_id: getF(o, "VendorID"),
+                                    vendor_name: getF(o, "VendorName"),
+                                    status: getF(o, "Status"),
+                                    order_date: getF(o, "OrderDate"),
+                                    promised_date: getF(o, "PromisedDate"),
+                                    receipt_date: null, // Would come from receipt sync if implemented
+                                    total_amount: parseFloat(getF(o, "OrderTotal") || 0)
+                                });
+
+                                let details = o.Details || [];
+                                if (details.value) details = details.value;
+                                for (const d of details) {
+                                    lineRows.push({
+                                        order_nbr: getF(o, "OrderNbr"),
+                                        line_nbr: parseInt(getF(d, "LineNbr") || 0),
+                                        inventory_id: getF(d, "InventoryID"),
+                                        description: getF(d, "Description"),
+                                        qty: parseFloat(getF(d, "OrderQty") || 0),
+                                        uom: getF(d, "UOM"),
+                                        ext_cost: parseFloat(getF(d, "ExtendedCost") || 0),
+                                        last_sync: new Date()
+                                    });
+                                }
+                            }
+                            if (historyRows.length > 0) await MySqlService.upsertPurchaseHistory(historyRows);
+                            if (lineRows.length > 0) await MySqlService.upsertPurchaseOrderDetails(lineRows);
+
+                            poSkip += orders.length;
+                            if (orders.length < 50) break;
+                        }
+                        send({ section: "Incoming PO", status: "done", details: "Purchase order sync complete.", progress: 100 });
+                    } catch (poErr) {
+                        console.error(">>> [Sync API] PO sync error:", poErr.message);
+                    }
                 }
 
                 // 4. SMART DELTA REFRESH (Only for items sold today)
@@ -352,7 +506,7 @@ export async function POST(request) {
                     for (const batch of idChunks) {
                         const filter = batch.map(id => `InventoryID eq '${id}'`).join(" or ");
                         const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$filter=${filter}`;
-                        const res = await AcumaticaService.fetchWithRetry(url, cookie);
+                        const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
                         const data = await res.json();
                         const items = data.value || [];
                         const levels = [];

@@ -24,6 +24,11 @@ const IconChevronRight = () => (
         <polyline points="9 18 15 12 9 6" />
     </svg>
 );
+const IconDownload = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+);
 
 /* ── Main Page ──────────────────────────────────────────── */
 export default function StockItemsPage() {
@@ -36,6 +41,18 @@ export default function StockItemsPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [selectedId, setSelectedId] = useState(null);
+    const [exporting, setExporting] = useState(false);
+
+    const handleExport = async () => {
+        setExporting(true);
+        try {
+            window.location.href = "/api/export?type=inventory";
+        } catch (e) {
+            console.error("Export failed", e);
+        } finally {
+            setTimeout(() => setExporting(false), 2000);
+        }
+    };
 
     // Initial restoration & Hydration fix
     useEffect(() => {
@@ -131,18 +148,27 @@ export default function StockItemsPage() {
 
                 <div className="db-toolbar">
                     <div className="db-toolbar-left">
-                        <div className="db-search-wrapper" style={{ maxWidth: '600px' }}>
+                        <div className="db-search-wrapper" style={{ width: '100%', maxWidth: '500px' }}>
                             <IconSearch />
                             <input
                                 className="db-search"
                                 type="text"
-                                placeholder="Search by Inventory ID or description…"
+                                placeholder="Search by ID or Description..."
                                 value={search}
                                 onChange={e => setSearch(e.target.value)}
                             />
                         </div>
                     </div>
                     <div className="db-toolbar-right">
+                        <button 
+                            className="si-view-btn" 
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#0f172a', color: '#fff', border: 'none', padding: '0.6rem 1.25rem', height: '42px' }}
+                            onClick={handleExport}
+                            disabled={exporting}
+                        >
+                            <IconDownload /> {exporting ? "Exporting..." : "Export CSV"}
+                        </button>
+                        
                         <button className="db-refresh-btn" onClick={() => fetchItems()} disabled={loading}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 {loading && <div className="db-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }}></div>}
@@ -191,9 +217,16 @@ export default function StockItemsPage() {
                                     <td style={{ textAlign: 'center', fontWeight: '600' }}>₱{(Number(item.price) || 0).toLocaleString()}</td>
                                     <td style={{ textAlign: 'center' }}>{item.baseUnit}</td>
                                     <td style={{ textAlign: 'center' }}>
-                                        <span className={`idm-status-pill idm-status-pill-sm ${item.itemStatus?.toLowerCase() === 'active' ? 'status-in' : 'status-out'}`} style={{ fontSize: '0.7rem' }}>
-                                            {item.itemStatus}
-                                        </span>
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                            <span className={`idm-status-pill idm-status-pill-sm ${item.itemStatus?.toLowerCase() === 'active' ? 'status-in' : 'status-out'}`} style={{ fontSize: '0.7rem' }}>
+                                                {item.itemStatus}
+                                            </span>
+                                            {item.totalOnHand <= 0 ? (
+                                                <span style={{ fontSize: '0.6rem', background: '#fef2f2', color: '#991b1b', padding: '1px 6px', borderRadius: '4px', border: '1px solid #fee2e2', fontWeight: '800' }}>OUT OF STOCK</span>
+                                            ) : item.totalOnHand < 10 ? (
+                                                <span style={{ fontSize: '0.6rem', background: '#fff7ed', color: '#c2410c', padding: '1px 6px', borderRadius: '4px', border: '1px solid #ffedd5', fontWeight: '800' }}>LOW STOCK</span>
+                                            ) : null}
+                                        </div>
                                     </td>
                                     <td style={{ textAlign: 'right', fontWeight: '500' }}>{Number(item.totalQtySold) > 0 ? Number(item.totalQtySold).toLocaleString() : "—"}</td>
                                     <td style={{ textAlign: 'right', fontWeight: '600', color: '#1d4ed8' }}>{Number(item.totalSales) > 0 ? `₱${Number(item.totalSales).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}</td>

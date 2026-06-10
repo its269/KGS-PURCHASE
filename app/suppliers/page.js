@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { DataCache } from "@/lib/data-cache";
+import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/inventory-detail.css";
@@ -118,7 +119,7 @@ export default function SuppliersPage() {
     };
 
     useEffect(() => {
-        const t = setTimeout(() => setDebouncedSearch(search), 350);
+        const t = setTimeout(() => setDebouncedSearch(search), 150);
         return () => clearTimeout(t);
     }, [search]);
 
@@ -134,7 +135,7 @@ export default function SuppliersPage() {
             if (debouncedSearch) params.set("search", debouncedSearch);
             const cacheKey = `vendors_${params.toString()}`;
 
-            const res = await fetch(`/api/vendors?${params}`);
+            const res = await fetchWithAuth(`/api/vendors?${params}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             setVendors(data.vendors ?? []);

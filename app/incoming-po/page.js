@@ -104,7 +104,7 @@ export default function IncomingPOPage() {
     }, [page, search, startDate, status]);
 
     useEffect(() => {
-        const t = setTimeout(() => setDebSearch(search), 350);
+        const t = setTimeout(() => setDebSearch(search), 150);
         return () => clearTimeout(t);
     }, [search]);
 

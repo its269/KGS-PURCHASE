@@ -1,4 +1,4 @@
-const ACU_BASE = "https://accounting.holocrontrackertrading.com/ERP/entity/Default/20.200.001";
+const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 import { MySqlService } from "@/services/mysql";
 
 // Bypasses 'CERT_HAS_EXPIRED' error for Acumatica connections
@@ -108,11 +108,11 @@ export const AcumaticaService = {
         let filterArr = [];
         if (search) {
             const s = search.replace(/'/g, "''");
-            // Using startswith for ID fields is more reliable in Acumatica OData than contains
-            filterArr.push(`(startswith(InventoryID, '${s}') or contains(Description, '${s}'))`);
+            // ERP only supports AND. Using substringof on InventoryID as it's the primary identifier.
+            filterArr.push(`substringof('${s}', InventoryID)`);
         }
 
-        let queryParams = [`$expand=WarehouseDetails`, `$top=${top}`, `$skip=${skip}`];
+        let queryParams = [`$expand=WarehouseDetails`, `$top=${top}`, `$skip=${skip}`, `$count=true`];
         if (filterArr.length > 0) {
             queryParams.push(`$filter=${encodeURIComponent(filterArr.join(" and "))}`);
         }
@@ -123,6 +123,7 @@ export const AcumaticaService = {
         const res = await this.fetchWithRetry(url, cookie);
         const data = await res.json();
         const items = data.value || [];
+        const totalCount = data["@odata.count"] || items.length;
 
         let flattened = [];
         for (const item of items) {
@@ -158,13 +159,15 @@ export const AcumaticaService = {
                     Available: { value: parseFloat(getF(wh, "QtyAvailable") || 0) },
                     DefaultPrice: { value: parseFloat(getF(item, "DefaultPrice") || 0) },
                     ItemClass: { value: getF(item, "ItemClass") },
+                    ItemStatus: { value: getF(item, "ItemStatus") },
+                    BaseUnit: { value: getF(item, "BaseUnit") },
                 });
             }
         }
 
         return {
             data: flattened,
-            totalCount: flattened.length,
+            totalCount: totalCount,
             hasMore: items.length === pageSize
         };
     },
@@ -183,6 +186,36 @@ export const AcumaticaService = {
         return data.value || [];
     },
 
+    /** ── VENDORS ── */
+    async getVendors({ page = 1, pageSize = 50, search = "", cookie }) {
+        const top = parseInt(pageSize, 10);
+        const skip = (parseInt(page, 10) - 1) * top;
+        let url = `${ACU_BASE}/Vendor?$top=${top}&$skip=${skip}`;
+        
+        if (search) {
+            const s = search.replace(/'/g, "''");
+            // Only search by VendorID if ERP doesn't support OR
+            // Or try substringof if supported. Based on probe, substringof is supported but NOT OR.
+            // We'll prioritize VendorID startswith for reliability or just skip OData filter and fetch more.
+            url += `&$filter=substringof('${s}', VendorID)`;
+        }
+
+        const res = await this.fetchWithRetry(url, cookie);
+        const data = await res.json();
+        const vendors = data.value || [];
+
+        return {
+            vendors: vendors.map(v => ({
+                vendorId: getF(v, "VendorID"),
+                vendorName: getF(v, "VendorName"),
+                status: getF(v, "Status"),
+                reliabilityScore: 100 // Placeholder
+            })),
+            totalCount: vendors.length,
+            hasMore: vendors.length === top
+        };
+    },
+
     /** ── PURCHASE ORDERS ── */
     async getPurchaseOrders({ page = 1, pageSize = 50, search = "", cookie, startDate = "", status = "" }) {
         const skip = (page - 1) * pageSize;
@@ -191,8 +224,9 @@ export const AcumaticaService = {
         let filterArr = [];
         if (search) {
             const s = search.replace(/'/g, "''");
-            // Using startswith for ID fields is more reliable in Acumatica OData than contains
-            filterArr.push(`(startswith(OrderNbr, '${s}') or startswith(VendorID, '${s}') or contains(VendorName, '${s}'))`);
+            // ERP only supports AND. Cannot use OR. 
+            // We will filter by OrderNbr primarily as it's the most common search target.
+            filterArr.push(`substringof('${s}', OrderNbr)`);
         }
         if (status) {
             filterArr.push(`Status eq '${status}'`);
@@ -237,50 +271,6 @@ export const AcumaticaService = {
         }));
 
         return { orders, hasMore };
-    },
-
-    /** ── VENDORS (SUPPLIERS) ── */
-    async getVendors({ page = 1, pageSize = 50, search = "", cookie }) {
-        const skip = (page - 1) * pageSize;
-        const top = pageSize + 1;
-
-        // Re-integrating MySQL performance scores for accuracy
-        const performanceMap = await MySqlService.getSupplierPerformance();
-
-        let filterArr = [];
-        if (search) {
-            const s = search.replace(/'/g, "''");
-            // Using startswith for ID fields is more reliable in Acumatica OData than contains
-            filterArr.push(`(startswith(VendorID, '${s}') or contains(VendorName, '${s}'))`);
-        }
-
-        let queryParams = [`$top=${top}`, `$skip=${skip}`];
-        if (filterArr.length > 0) {
-            queryParams.push(`$filter=${encodeURIComponent(filterArr.join(" and "))}`);
-        }
-
-        const url = `${ACU_BASE}/Vendor?${queryParams.join("&")}`;
-
-        console.log(`>>> [Acumatica] Fetching Vendors: ${url}`);
-        const res = await this.fetchWithRetry(url, cookie);
-        const data = await res.json();
-        const rawVendors = data.value || (Array.isArray(data) ? data : []);
-
-        const hasMore = rawVendors.length > pageSize;
-        const vendors = rawVendors.slice(0, pageSize).map(v => {
-            const vId = getF(v, "VendorID");
-            // Use real score from MySQL, or a neutral 100% if no history exists yet
-            const realScore = performanceMap[vId] ?? 100.0;
-            
-            return {
-                vendorId: vId,
-                vendorName: getF(v, "VendorName"),
-                status: getF(v, "Status"),
-                reliabilityScore: realScore
-            };
-        });
-
-        return { vendors, hasMore };
     },
 
     /** ── REPLENISHMENT RECOMMENDATIONS ── */
