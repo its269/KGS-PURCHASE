@@ -1,0 +1,894 @@
+import mysql from "mysql2/promise";
+
+const pool = mysql.createPool({
+    host: process.env.MYSQL_HOST,
+    port: parseInt(process.env.MYSQL_PORT || "3306", 10),
+    user: process.env.MYSQL_USER,
+    password: process.env.MYSQL_PASSWORD,
+    database: process.env.MYSQL_INVENTORY_DATABASE || process.env.MYSQL_PURCHASE_DATABASE || "db_kelin_inventory",
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    connectTimeout: 30000, // 30 seconds
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
+});
+
+const purchasePool = mysql.createPool({
+    host: process.env.MYSQL_HOST,
+    port: parseInt(process.env.MYSQL_PORT || "3306", 10),
+    user: process.env.MYSQL_USER,
+    password: process.env.MYSQL_PASSWORD,
+    database: process.env.MYSQL_PURCHASE_DATABASE || process.env.MYSQL_INVENTORY_DATABASE || "db_purchase",
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    connectTimeout: 30000, // 30 seconds
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
+});
+
+export const MySqlService = {
+    /**
+     * Get the latest last_sync timestamp for inventory items
+     */
+    async getLastInventorySyncTime() {
+        try {
+            const [[res]] = await pool.query(
+                `SELECT MAX(last_sync) as lastSync FROM inventory_items`
+            );
+            return res.lastSync || null;
+        } catch (err) {
+            console.error("[MySQL getLastInventorySyncTime Error]", err);
+            return null;
+        }
+    },
+
+    /**
+     * Get the latest last_sync timestamp for sales
+     */
+    async getLastSalesSyncTime() {
+        try {
+            const [[res]] = await purchasePool.query(
+                `SELECT MAX(last_sync) as lastSync FROM product_periodic_sales`
+            );
+            return res.lastSync || null;
+        } catch (err) {
+            console.error("[MySQL getLastSalesSyncTime Error]", err);
+            return null;
+        }
+    },
+
+    /**
+     * Get the latest last_sync timestamp for Purchase Orders
+     */
+    async getLastPOSyncTime() {
+        try {
+            const [[res]] = await purchasePool.query(
+                `SELECT MAX(last_sync) as lastSync FROM purchase_history`
+            );
+            return res.lastSync || null;
+        } catch (err) {
+            console.error("[MySQL getLastPOSyncTime Error]", err);
+            return null;
+        }
+    },
+
+    /**
+     * Fetch purchase orders from MySQL (for Purchase Orders module)
+     */
+    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "" }) {
+        const offset = (page - 1) * pageSize;
+        const limitInt = parseInt(pageSize, 10);
+        const offsetInt = parseInt(offset, 10);
+
+        try {
+            let whereClauses = [];
+            let params = [];
+
+            if (status) {
+                whereClauses.push("status = ?");
+                params.push(status);
+            }
+
+            if (startDate) {
+                whereClauses.push("order_date >= ?");
+                params.push(startDate);
+            }
+
+            if (search) {
+                whereClauses.push("(order_nbr LIKE ? OR vendor_id LIKE ?)");
+                params.push(`%${search}%`, `%${search}%`);
+            }
+
+            const wherePart = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+            const [rows] = await purchasePool.query(
+                `SELECT 
+                    order_nbr as orderNbr,
+                    vendor_id as vendorId,
+                    status,
+                    order_date as date,
+                    total_amount as totalAmount
+                 FROM purchase_history
+                 ${wherePart}
+                 ORDER BY order_date DESC, order_nbr DESC
+                 LIMIT ${limitInt} OFFSET ${offsetInt}`,
+                params
+            );
+
+            const [[{ total }]] = await purchasePool.query(
+                `SELECT COUNT(*) as total FROM purchase_history ${wherePart}`,
+                params
+            );
+
+            return {
+                orders: rows.map(r => ({
+                    ...r,
+                    orderType: "Normal", // Default for purchase history
+                    lines: [] // Lines are not stored in purchase_history currently
+                })),
+                totalCount: total,
+                hasMore: total > offset + rows.length
+            };
+        } catch (err) {
+            console.error("[MySQL getPurchaseOrders Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Bulk upsert purchase history for reliability calculation
+     */
+    async upsertPurchaseHistory(rows) {
+        if (!rows.length) return;
+        const connection = await purchasePool.getConnection();
+        try {
+            await connection.beginTransaction();
+            const sql = `
+                INSERT INTO purchase_history 
+                (order_nbr, vendor_id, status, order_date, promised_date, receipt_date, total_amount, last_sync)
+                VALUES ?
+                ON DUPLICATE KEY UPDATE
+                status = VALUES(status),
+                promised_date = VALUES(promised_date),
+                receipt_date = VALUES(receipt_date),
+                total_amount = VALUES(total_amount),
+                last_sync = VALUES(last_sync)
+            `;
+            const values = rows.map(r => [
+                r.order_nbr, r.vendor_id, r.status, r.order_date, r.promised_date, r.receipt_date, r.total_amount, new Date()
+            ]);
+            await connection.query(sql, [values]);
+            await connection.commit();
+        } catch (err) {
+            await connection.rollback();
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Fetch unique vendors from purchase history
+     */
+    async getVendors({ page = 1, pageSize = 50, search = "" }) {
+        const offset = (page - 1) * pageSize;
+        const limitInt = parseInt(pageSize, 10);
+        const offsetInt = parseInt(offset, 10);
+
+        try {
+            let whereClause = "";
+            let params = [];
+
+            if (search) {
+                whereClause = "WHERE vendor_id LIKE ?";
+                params = [`%${search}%`];
+            }
+
+            const [rows] = await purchasePool.query(
+                `SELECT 
+                    vendor_id as VendorID,
+                    vendor_id as VendorName
+                 FROM purchase_history
+                 ${whereClause}
+                 GROUP BY vendor_id
+                 ORDER BY vendor_id ASC
+                 LIMIT ${limitInt} OFFSET ${offsetInt}`,
+                params
+            );
+
+            const [[{ total }]] = await purchasePool.query(
+                `SELECT COUNT(DISTINCT vendor_id) as total FROM purchase_history ${whereClause}`,
+                params
+            );
+
+            return {
+                data: rows.map(r => ({
+                    VendorID: { value: r.VendorID },
+                    VendorName: { value: r.VendorName }
+                })),
+                totalCount: total
+            };
+        } catch (err) {
+            console.error("[MySQL getVendors Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Get calculated reliability scores for all vendors
+     */
+    async getSupplierPerformance() {
+        try {
+            const [rows] = await purchasePool.query(`
+                SELECT 
+                    vendor_id,
+                    COUNT(*) as total_orders,
+                    SUM(CASE WHEN receipt_date > promised_date THEN 1 ELSE 0 END) as late_orders,
+                    ROUND(
+                        (SUM(CASE WHEN receipt_date <= promised_date THEN 1 ELSE 0 END) / COUNT(*)) * 100, 
+                        1
+                    ) as reliability_score
+                FROM purchase_history
+                WHERE status IN ('Closed', 'Completed') AND promised_date IS NOT NULL AND receipt_date IS NOT NULL
+                GROUP BY vendor_id
+            `);
+            return rows.reduce((acc, row) => {
+                acc[row.vendor_id] = row.reliability_score;
+                return acc;
+            }, {});
+        } catch (err) {
+            console.error("[MySQL getSupplierPerformance Error]", err);
+            return {};
+        }
+    },
+
+    /**
+     * Fetch inventory with pagination, search, and branch filtering (for Dashboard)
+     */
+    async getInventory({ page = 1, pageSize = 50, search = "", branch = "" }) {
+        const offset = (page - 1) * pageSize;
+
+        try {
+            let whereClauses = ["default_warehouse IS NOT NULL"];
+            let params = [];
+
+            if (branch) {
+                whereClauses.push("branch_id = ?");
+                params.push(branch);
+            } else {
+                // If no branch filter, prefer showing site-specific rows, 
+                // but we'll include everything and let the UI handle it.
+                // To avoid double-counting in stats, we'll keep the catalog filter for now
+                // but make it optional if the user wants to see everything.
+                whereClauses.push("default_warehouse != '__catalog__'");
+            }
+
+            if (search) {
+                whereClauses.push("(inventory_id LIKE ? OR inventory_name LIKE ?)");
+                params.push(`%${search}%`, `%${search}%`);
+            }
+
+            const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
+
+            const limitInt = parseInt(pageSize, 10);
+            const offsetInt = parseInt(offset, 10);
+
+            const [rows] = await pool.query(
+                `SELECT 
+                    inventory_id as InventoryID, 
+                    inventory_name as Description, 
+                    item_class as ItemClass, 
+                    branch_id as Branch, 
+                    site_id as SiteID, 
+                    COALESCE(on_hand, 0) as OnHand, 
+                    COALESCE(available, 0) as Available, 
+                    default_price as DefaultPrice 
+                 FROM inventory_items 
+                 ${wherePart} 
+                 ORDER BY inventory_id ASC 
+                 LIMIT ${limitInt} OFFSET ${offsetInt}`,
+                params
+            );
+
+            const [[{ total }]] = await pool.query(
+                `SELECT COUNT(*) as total FROM inventory_items ${wherePart}`,
+                params
+            );
+
+            // Transform rows to match the BFF structure (objects with .value)
+            const transformed = rows.map(item => ({
+                InventoryID: { value: item.InventoryID },
+                Description: { value: item.Description || "—" },
+                SiteID: { value: item.SiteID },
+                Branch: { value: item.Branch },
+                OnHand: { value: item.OnHand },
+                Available: { value: item.Available },
+                DefaultPrice: { value: item.DefaultPrice || 0 },
+                ItemClass: { value: item.ItemClass || "" },
+            }));
+
+            return {
+                data: transformed,
+                totalCount: total,
+                hasMore: total > offset + pageSize
+            };
+        } catch (err) {
+            console.error("[MySQL getInventory Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Calculate global stats (Total Value, Low Stock, etc.)
+     */
+    async getGlobalStats(branch = "", search = "") {
+        try {
+            let whereClauses = ["default_warehouse IS NOT NULL", "default_warehouse != '__catalog__'"];
+            let params = [];
+
+            if (branch) {
+                whereClauses.push("branch_id = ?");
+                params.push(branch);
+            }
+
+            if (search) {
+                whereClauses.push("(inventory_id LIKE ? OR inventory_name LIKE ?)");
+                params.push(`%${search}%`, `%${search}%`);
+            }
+
+            const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
+
+            const [[stats]] = await pool.query(
+                `SELECT
+                    COUNT(*) as total,
+                    SUM(COALESCE(on_hand, 0) * COALESCE(default_price, 0)) as totalValue,
+                    SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN 1 ELSE 0 END) as lowStock,
+                    SUM(CASE WHEN on_hand <= 0 THEN 1 ELSE 0 END) as outOfStock
+                 FROM inventory_items ${wherePart}`,
+                params
+            );
+
+            return {
+                totalValue: Number(stats.totalValue) || 0,
+                lowStock: Number(stats.lowStock) || 0,
+                outOfStock: Number(stats.outOfStock) || 0,
+                count: Number(stats.total) || 0
+            };
+        } catch (err) {
+            console.error("[MySQL getGlobalStats Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Fetch stock items from MySQL database (one row per unique inventory_id)
+     * Enriched with total sales and quantity sold.
+     */
+    async getStockItems({ page = 1, pageSize = 50, search = "" } = {}) {
+        const offset = (page - 1) * pageSize;
+        const limitInt = parseInt(pageSize, 10);
+        const offsetInt = parseInt(offset, 10);
+
+        try {
+            let whereClause = "";
+            let params = [];
+
+            if (search) {
+                whereClause = "WHERE (TRIM(UPPER(i.inventory_id)) LIKE TRIM(UPPER(?)) OR TRIM(UPPER(i.inventory_name)) LIKE TRIM(UPPER(?)))";
+                params = [`%${search}%`, `%${search}%`];
+            }
+
+            // 1. Fetch items from Inventory database
+            const query = `
+                SELECT 
+                    TRIM(i.inventory_id) as inventoryId, 
+                    MAX(i.inventory_name) as description, 
+                    MAX(i.item_class) as itemClass, 
+                    MAX(i.item_status) as itemStatus,
+                    MAX(i.base_unit) as baseUnit,
+                    MAX(i.default_price) as price
+                 FROM inventory_items i
+                 ${whereClause} 
+                 GROUP BY TRIM(i.inventory_id)
+                 ORDER BY i.inventory_id ASC 
+                 LIMIT ${limitInt} OFFSET ${offsetInt}`;
+
+            const [rows] = await pool.query(query, params);
+
+            const [[{ total }]] = await pool.query(
+                `SELECT COUNT(DISTINCT TRIM(inventory_id)) as total FROM inventory_items i ${whereClause}`,
+                params
+            );
+
+            // 2. Fetch sales summary from Purchase database
+            const salesMap = await this.getPeriodicSalesSummary({ search });
+
+            // 3. Merge
+            const enriched = rows.map(r => {
+                const key = (r.inventoryId || "").toUpperCase().trim();
+                const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
+                return {
+                    ...r,
+                    totalQtySold: sales.qty_sold,
+                    totalSales: sales.total_sales
+                };
+            });
+
+            return {
+                items: enriched,
+                totalCount: total
+            };
+        } catch (err) {
+            console.error("[MySQL getStockItems Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Fetch stock item detail from MySQL including all warehouse locations
+     */
+    async getStockItemDetail(inventoryId) {
+        try {
+            const [rows] = await pool.execute(
+                `SELECT 
+                    TRIM(inventory_id) as inventoryId, 
+                    inventory_name as description, 
+                    item_class as itemClass, 
+                    default_warehouse as branch, 
+                    default_price as price,
+                    item_status as itemStatus,
+                    base_unit as baseUnit,
+                    type,
+                    posting_class as postingClass,
+                    branch_id as branchId,
+                    site_id as siteId,
+                    on_hand as onHand,
+                    available as available,
+                    last_sync as lastSync
+                 FROM inventory_items 
+                 WHERE TRIM(UPPER(inventory_id)) = TRIM(UPPER(?))
+                 AND default_warehouse != '__catalog__'`,
+                [inventoryId]
+            );
+
+            if (rows.length === 0) return null;
+
+            // Use the first row for shared metadata
+            const first = rows[0];
+            
+            // Map all rows to branch details
+            const branches = rows.map(r => ({
+                branchId: r.branchId || r.siteId,
+                siteId: r.siteId,
+                onHand: Number(r.onHand) || 0,
+                available: Number(r.available) || 0,
+                updatedAt: r.lastSync
+            })).filter(b => b.branchId);
+
+            const totalOnHand = branches.reduce((sum, b) => sum + b.onHand, 0);
+            const totalAvailable = branches.reduce((sum, b) => sum + b.available, 0);
+
+            return {
+                inventoryId: first.inventoryId,
+                description: first.description || "—",
+                itemClass: first.itemClass || "—",
+                unitPrice: first.price || 0,
+                itemStatus: first.itemStatus || "—",
+                baseUnit: first.baseUnit || "—",
+                type: first.type || "—",
+                postingClass: first.postingClass || "—",
+                defaultWarehouse: first.branch || "—",
+                totalOnHand,
+                totalAvailable,
+                lastSync: first.lastSync,
+                branches
+            };
+        } catch (err) {
+            console.error("[MySQL getStockItemDetail Error]", err);
+            return null;
+        }
+    },
+
+    /**
+     * Fetch unique branches from MySQL
+     */
+    async getBranches() {
+        try {
+            const [rows] = await pool.execute(
+                `SELECT DISTINCT branch_id FROM inventory_items WHERE branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__' ORDER BY branch_id ASC`
+            );
+
+            return rows.map(r => ({
+                SiteID: r.branch_id,
+                Description: { value: r.branch_id }
+            }));
+        } catch (err) {
+            console.error("[MySQL getBranches Error]", err);
+            return [];
+        }
+    },
+
+    /**
+     * Fetch product catalog (id, class, description) for mapping
+     */
+    async getProductCatalog() {
+        try {
+            const [rows] = await pool.execute(
+                `SELECT DISTINCT inventory_id, item_class, inventory_name as description FROM inventory_items`
+            );
+            return rows;
+        } catch (err) {
+            console.error("[MySQL getProductCatalog Error]", err);
+            return [];
+        }
+    },
+
+    /**
+     * Get overall stock sum, optionally filtered by branch
+     */
+    async getOverallStocks(branch = "") {
+        // on_hand data not available in catalog table — return 0
+        return 0;
+    },
+
+    /**
+     * Bulk upsert branches
+     */
+    async upsertBranches(branches) {
+        if (!branches.length) return;
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            for (const b of branches) {
+                await connection.execute(
+                    `INSERT INTO branches (branch_id, branch_name, active) 
+                     VALUES (?, ?, ?) 
+                     ON DUPLICATE KEY UPDATE branch_name = VALUES(branch_name), active = VALUES(active)`,
+                    [b.branch_id, b.branch_name, b.active ? 1 : 0]
+                );
+            }
+            await connection.commit();
+        } catch (err) {
+            await connection.rollback();
+            console.error("[MySQL upsertBranches Error]", err);
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Bulk-update catalog fields on existing inventory_items rows.
+     */
+    async upsertInventoryItems(items) {
+        if (!items.length) return;
+        const CHUNK = 200;
+        const now = new Date();
+        const safeNum = (v) => { const n = Number(v); return (isNaN(n) ? null : n); };
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            for (let i = 0; i < items.length; i += CHUNK) {
+                const chunk = items.slice(i, i + CHUNK);
+                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?)').join(',');
+                const values = chunk.flatMap(item => [
+                    item.inventory_id,
+                    '__catalog__',
+                    item.description,
+                    item.item_class,
+                    safeNum(item.default_price),
+                    item.item_status || 'active',
+                    item.base_unit || '',
+                    item.item_type || '',
+                    item.posting_class || '',
+                    now,
+                ]);
+                await connection.query(
+                    `INSERT INTO inventory_items
+                        (inventory_id, default_warehouse, inventory_name, item_class,
+                        default_price, item_status, base_unit, type, posting_class, last_sync)
+                    VALUES ${placeholders}
+                    ON DUPLICATE KEY UPDATE
+                        inventory_name = VALUES(inventory_name),
+                        item_class     = VALUES(item_class),
+                        default_price  = VALUES(default_price),
+                        item_status    = VALUES(item_status),
+                        base_unit      = VALUES(base_unit),
+                        type           = COALESCE(NULLIF(VALUES(type),''), type),
+                        posting_class  = COALESCE(NULLIF(VALUES(posting_class),''), posting_class),
+                        last_sync      = VALUES(last_sync)`,
+                    values
+                );
+            }
+            await connection.commit();
+        } catch (err) {
+            await connection.rollback();
+            console.error('[MySQL upsertInventoryItems Error]', err);
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Bulk upsert inventory levels.
+     */
+    async upsertInventoryLevels(levels) {
+        if (!levels.length) return;
+        const CHUNK = 200;
+        const now = new Date();
+        const safeNum = (v) => { const n = Number(v); return (isNaN(n) ? null : n); };
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            for (let i = 0; i < levels.length; i += CHUNK) {
+                const chunk = levels.slice(i, i + CHUNK);
+                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+                const values = chunk.flatMap(l => [
+                    l.inventory_id,
+                    l.branch_id,
+                    l.description || null,
+                    l.item_class || null,
+                    safeNum(l.default_price),
+                    l.item_status || 'active',
+                    l.base_unit || '',
+                    l.item_type || '',
+                    l.posting_class || '',
+                    l.branch_id,
+                    l.site_id,
+                    safeNum(l.on_hand) ?? 0,
+                    safeNum(l.available) ?? 0,
+                    now,
+                ]);
+                await connection.query(
+                    `INSERT INTO inventory_items
+                        (inventory_id, default_warehouse, inventory_name, item_class,
+                        default_price, item_status, base_unit, type, posting_class,
+                        branch_id, site_id, on_hand, available, last_sync)
+                    VALUES ${placeholders}
+                    ON DUPLICATE KEY UPDATE
+                        on_hand        = VALUES(on_hand),
+                        available      = VALUES(available),
+                        branch_id      = VALUES(branch_id),
+                        site_id        = VALUES(site_id),
+                        inventory_name = COALESCE(VALUES(inventory_name), inventory_name),
+                        item_class     = COALESCE(VALUES(item_class),     item_class),
+                        default_price  = COALESCE(VALUES(default_price),  default_price),
+                        item_status    = COALESCE(VALUES(item_status),    item_status),
+                        base_unit      = COALESCE(VALUES(base_unit),      base_unit),
+                        type           = COALESCE(NULLIF(VALUES(type),''), type),
+                        posting_class  = COALESCE(NULLIF(VALUES(posting_class),''), posting_class),
+                        last_sync      = VALUES(last_sync)`,
+                    values
+                );
+            }
+            await connection.commit();
+        } catch (err) {
+            await connection.rollback();
+            console.error('[MySQL upsertInventoryLevels Error]', err);
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Bulk upsert rows from Supabase product_periodic_sales into db_purchase
+     */
+    async upsertPeriodicSales(rows) {
+        if (!rows.length) return;
+        const connection = await purchasePool.getConnection();
+        try {
+            await connection.beginTransaction();
+            for (const r of rows) {
+                await connection.execute(
+                    `INSERT INTO product_periodic_sales
+                        (id, branch_name, order_type, financial_period, document_date,
+                         description, qty, total_amount, item_class, inventory_id,
+                         posting_class, last_sync)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        branch_name      = VALUES(branch_name),
+                        order_type       = VALUES(order_type),
+                        financial_period = VALUES(financial_period),
+                        document_date    = VALUES(document_date),
+                        description      = VALUES(description),
+                        qty              = VALUES(qty),
+                        total_amount     = VALUES(total_amount),
+                        item_class       = VALUES(item_class),
+                        inventory_id     = VALUES(inventory_id),
+                        posting_class    = VALUES(posting_class),
+                        last_sync        = VALUES(last_sync)`,
+                    [
+                        r.id,
+                        r.branch_name ?? null,
+                        r.order_type ?? null,
+                        r.financial_period ?? null,
+                        r.document_date ?? null,
+                        r.description ?? null,
+                        r.qty ?? null,
+                        r.total_amount ?? null,
+                        r.item_class ?? null,
+                        r.inventory_id ?? null,
+                        r.posting_class ?? null,
+                        r.last_sync ? new Date(r.last_sync) : new Date(),
+                    ]
+                );
+            }
+            await connection.commit();
+        } catch (err) {
+            await connection.rollback();
+            console.error("[MySQL upsertPeriodicSales Error]", err);
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Post-sync enrichment: Fill missing item_class and posting_class in sales table
+     * by joining with the inventory catalog.
+     */
+    async enrichSalesData() {
+        const connection = await purchasePool.getConnection();
+        try {
+            console.log(">>> [MySQL] Starting Sales Data Enrichment...");
+            // Update item_class and posting_class from inventory_items catalog where missing
+            const sql = `
+                UPDATE product_periodic_sales s
+                JOIN inventory_items i ON s.inventory_id = i.inventory_id
+                SET 
+                    s.item_class = COALESCE(s.item_class, i.item_class),
+                    s.posting_class = COALESCE(s.posting_class, i.posting_class)
+                WHERE (s.item_class IS NULL OR s.posting_class IS NULL)
+                AND i.default_warehouse = '__catalog__'
+            `;
+            const [res] = await connection.query(sql);
+            console.log(`>>> [MySQL] Enrichment complete. Rows updated: ${res.affectedRows}`);
+            return res.affectedRows;
+        } catch (err) {
+            console.error("[MySQL enrichSalesData Error]", err);
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Get 90-day comparative sales analysis from MySQL (3 x 30-day periods)
+     */
+    async getSalesAnalysis({ branch = "", periods = [] }) {
+        try {
+            console.log(`[MySQL getSalesAnalysis] Params: branch="${branch}", periodsCount=${periods.length}`);
+            if (periods.length === 0) return { data: [], metrics: {} };
+
+            // periods = [{ start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', key: 'P1' }, ...]
+            const allDates = periods.flatMap(p => [p.start, p.end]);
+            const overallStart = allDates.reduce((a, b) => a < b ? a : b);
+            const overallEnd = allDates.reduce((a, b) => a > b ? a : b);
+
+            const whereClauses = ["s.document_date >= ?", "s.document_date <= ?"];
+            const params = [overallStart, overallEnd];
+
+            if (branch && branch !== "All Branches") {
+                whereClauses.push("TRIM(UPPER(s.branch_name)) = TRIM(UPPER(?))");
+                params.push(branch);
+            }
+
+            const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
+
+            const periodCases = periods.map(p => 
+                `SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN s.qty ELSE 0 END) as qty_${p.key},
+                 SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN s.total_amount ELSE 0 END) as sales_${p.key}`
+            ).join(",\n                    ");
+
+            const query = `SELECT 
+                    s.inventory_id,
+                    s.branch_name,
+                    MAX(s.description) as last_description,
+                    ${periodCases}
+                 FROM product_periodic_sales s
+                 ${wherePart}
+                 GROUP BY s.inventory_id, s.branch_name`;
+
+            const [rows] = await purchasePool.query(query, params);
+            console.log(`[MySQL getSalesAnalysis] Success: ${rows.length} rows found.`);
+
+            // Fetch catalog for missing descriptions (optional but better)
+            const catalog = await this.getProductCatalog();
+            const catalogMap = new Map(catalog.map(i => [i.inventory_id.toUpperCase().trim(), i.description]));
+
+            let totalRevenue = 0;
+            let totalQtySold = 0;
+
+            const finalData = rows.map(r => {
+                const invId = (r.inventory_id || "").toUpperCase().trim();
+                const description = r.last_description || catalogMap.get(invId) || "—";
+
+                const item = {
+                    inventoryId: r.inventory_id,
+                    branchName: r.branch_name,
+                    description: description,
+                    monthlyData: {},
+                    totalQty: 0,
+                    totalSales: 0
+                };
+
+                periods.forEach(p => {
+                    const q = Number(r[`qty_${p.key}`]) || 0;
+                    const s = Number(r[`sales_${p.key}`]) || 0;
+                    item.monthlyData[p.key] = { qty: q, sales: s };
+                    item.totalQty += q;
+                    item.totalSales += s;
+                });
+
+                totalRevenue += item.totalSales;
+                totalQtySold += item.totalQty;
+                return item;
+            }).sort((a, b) => b.totalSales - a.totalSales);
+
+            return {
+                data: finalData,
+                metrics: {
+                    totalRevenue,
+                    totalQtySold,
+                    uniqueProducts: finalData.length
+                }
+            };
+        } catch (err) {
+            console.error("[MySQL getSalesAnalysis Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Aggregate periodic sales by inventory_id for a given branch/search filter.
+     * Returns Map<inventory_id_upper, { qty_sold, total_sales }>
+     * Required by Dashboard Inventory API.
+     */
+    async getPeriodicSalesSummary({ branch = "", search = "" } = {}) {
+        try {
+            const whereClauses = [];
+            const params = [];
+
+            if (branch && branch !== "All Branches") {
+                // Dashboard passes Branch ID (e.g. MAIN)
+                whereClauses.push("UPPER(branch_name) = UPPER(?)");
+                params.push(branch);
+            }
+            if (search) {
+                whereClauses.push("(inventory_id LIKE ? OR description LIKE ?)");
+                params.push(`%${search}%`, `%${search}%`);
+            }
+
+            const wherePart = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+            const [rows] = await purchasePool.query(
+                `SELECT
+                    UPPER(TRIM(inventory_id)) AS inventory_id,
+                    SUM(qty)          AS qty_sold,
+                    SUM(total_amount) AS total_sales
+                 FROM product_periodic_sales
+                 ${wherePart}
+                 GROUP BY UPPER(TRIM(inventory_id))`,
+                params
+            );
+
+            const map = new Map();
+            for (const r of rows) {
+                if (r.inventory_id) {
+                    map.set(r.inventory_id, {
+                        qty_sold: Number(r.qty_sold) || 0,
+                        total_sales: Number(r.total_sales) || 0,
+                    });
+                }
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getPeriodicSalesSummary Error]", err);
+            return new Map();
+        }
+    },
+};

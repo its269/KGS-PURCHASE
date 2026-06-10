@@ -1,0 +1,435 @@
+/* Minimalist Syncing Module Styles */
+
+:root {
+    --primary: #2563eb;
+    --primary-light: #eff6ff;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --bg-app: #ffffff;
+    --bg-subtle: #f8fafc;
+    --border-color: #e2e8f0;
+    --radius: 12px;
+}
+
+.sync-root {
+    background: var(--bg-app);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    color: var(--text-main);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.sync-header {
+    padding: 1.5rem 2rem;
+    background: #fff;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.sync-branding {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.sync-branding-text {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text-main);
+    font-size: 1.1rem;
+}
+
+.sync-branding-accent {
+    color: var(--primary);
+}
+
+.sync-badge {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+.sync-main {
+    flex: 1;
+    padding: 3rem 2rem;
+    max-width: 900px; /* Narrower for better focus */
+    margin: 0 auto;
+    width: 100%;
+}
+
+.sync-intro {
+    text-align: center;
+    margin-bottom: 3rem;
+}
+
+.sync-title {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.sync-description {
+    font-size: 1rem;
+    color: var(--text-muted);
+}
+
+/* Minimalist Steps */
+.sync-steps-horizontal {
+    display: flex;
+    justify-content: center;
+    gap: 3rem;
+    margin-bottom: 3rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 2rem;
+}
+
+.step-item-min {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    text-align: center;
+    width: 160px;
+}
+
+.step-number-min {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid var(--border-color);
+}
+
+.step-item-min.active .step-number-min {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+
+.step-item-min h4 {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.step-item-min p {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+
+/* Minimalist Drop Zone */
+.sync-drop-zone {
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius);
+    padding: 4rem 2rem;
+    text-align: center;
+    background: var(--bg-subtle);
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.sync-drop-zone:hover, .sync-drop-zone.dragging {
+    border-color: var(--primary);
+    background: var(--primary-light);
+}
+
+.sync-icon-container {
+    color: var(--primary);
+    margin-bottom: 1rem;
+}
+
+.sync-drop-zone h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.sync-drop-zone p {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* File Queue */
+.sync-queue-container {
+    margin-top: 2.5rem;
+}
+
+.sync-queue-header {
+    margin-bottom: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+}
+
+.sync-queue-header h4 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.sync-file-list {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.sync-file-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: #fff;
+}
+
+.sync-file-item:not(:last-child) {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sync-file-info {
+    flex: 1;
+}
+
+.sync-file-name {
+    font-weight: 500;
+    font-size: 0.95rem;
+}
+
+.sync-file-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.sync-status-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #16a34a;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: #f0fdf4;
+}
+
+.sync-remove-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    border-radius: 4px;
+}
+
+.sync-remove-btn:hover {
+    background: #fee2e2;
+    color: #ef4444;
+}
+
+.sync-start-btn {
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: var(--radius);
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.sync-start-btn:hover {
+    opacity: 0.9;
+}
+
+.sync-footer-actions {
+    margin-top: 2rem;
+    text-align: center;
+}
+
+.sync-back-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+/* Modal Minimalist */
+.sync-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10002;
+}
+
+.sync-modal-card {
+    background: #fff;
+    width: 100%;
+    max-width: 440px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+.sync-modal-header {
+    padding: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.sync-modal-header h2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.sync-modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    border-radius: 4px;
+}
+
+.sync-modal-close:hover {
+    background: var(--bg-subtle);
+    color: var(--text-main);
+}
+
+.sync-modal-body {
+    padding: 1.5rem;
+}
+
+.sync-modal-footer {
+    padding: 1.5rem;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    gap: 0.75rem;
+}
+
+/* Quick Sync Specifics */
+.qs-strategy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.qs-card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: left;
+    background: #fff;
+}
+
+.qs-card.active {
+    border-color: var(--primary);
+    background: var(--primary-light);
+}
+
+.qs-card-icon {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.qs-card.active .qs-card-icon {
+    color: var(--primary);
+}
+
+.qs-card-info {
+    flex: 1;
+}
+
+.qs-card-title {
+    display: block;
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 0.15rem;
+}
+
+.qs-card-desc {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.qs-module-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.qs-pill {
+    padding: 0.4rem 0.8rem;
+    border-radius: 20px;
+    border: 1px solid var(--border-color);
+    background: #fff;
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.qs-pill.active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+
+.qs-log-container {
+    margin-top: 1rem;
+    background: #0f172a;
+    color: #94a3b8;
+    padding: 0.75rem;
+    border-radius: 8px;
+    font-family: monospace;
+    font-size: 0.75rem;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.qs-log-line {
+    line-height: 1.5;
+}
+
+.qs-status-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.qs-status-banner.syncing { background: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8; }
+.qs-status-banner.complete { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
+.qs-status-banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; }

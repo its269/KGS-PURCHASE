@@ -1,0 +1,295 @@
+/* ============================================================
+   Sign-In Page — Modern Redesign
+   External CSS — no Tailwind
+   ============================================================ */
+
+/* ---------- Reset ---------- */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+/* ---------- Wrapper ---------- */
+.signin-wrapper {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f8fafc;
+    background-image: 
+        radial-gradient(at 0% 0%, rgba(37, 99, 235, 0.05) 0px, transparent 50%),
+        radial-gradient(at 100% 0%, rgba(14, 165, 233, 0.05) 0px, transparent 50%);
+    padding: 1.5rem;
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/* ---------- Card ---------- */
+.signin-card {
+    background: #ffffff;
+    border-radius: 20px;
+    padding: 3rem 2.5rem;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 
+        0 10px 25px -5px rgba(0, 0, 0, 0.1),
+        0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    animation: siFadeIn 0.5s ease-out;
+}
+
+@keyframes siFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ---------- Header ---------- */
+.signin-header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+}
+
+.signin-logo-container {
+    margin-bottom: 1.5rem;
+    display: flex;
+    justify-content: center;
+}
+
+.signin-logo-img {
+    height: 64px;
+    width: auto;
+    object-fit: contain;
+}
+
+.signin-title {
+    font-size: 1.75rem;
+    font-weight: 800;
+    color: #1e293b;
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.025em;
+}
+
+.signin-subtitle {
+    font-size: 0.9375rem;
+    color: #64748b;
+    font-weight: 400;
+}
+
+/* ---------- Error ---------- */
+.signin-error {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem;
+    background: #fef2f2;
+    border: 1px solid #fee2e2;
+    border-radius: 12px;
+    color: #b91c1c;
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 1.5rem;
+}
+
+/* ---------- Form ---------- */
+.signin-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+/* ---------- Field ---------- */
+.signin-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.signin-label {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #334155;
+}
+
+/* ---------- Input ---------- */
+.signin-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.signin-input-icon {
+    position: absolute;
+    left: 1rem;
+    color: #94a3b8;
+    display: flex;
+    align-items: center;
+    pointer-events: none;
+}
+
+.signin-input {
+    width: 100%;
+    padding: 0.75rem 1rem 0.75rem 2.75rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    font-size: 1rem;
+    color: #1e293b;
+    background: #ffffff;
+    outline: none;
+    transition: all 0.2s ease;
+}
+
+.signin-input:focus {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.signin-input::placeholder {
+    color: #cbd5e1;
+}
+
+/* ---------- Password toggle ---------- */
+.signin-toggle-password {
+    position: absolute;
+    right: 0.875rem;
+    background: none;
+    border: none;
+    padding: 0.25rem;
+    cursor: pointer;
+    color: #94a3b8;
+    display: flex;
+    align-items: center;
+    transition: color 0.15s;
+}
+
+.signin-toggle-password:hover {
+    color: #64748b;
+}
+
+/* ---------- Options ---------- */
+.signin-options {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: -0.25rem;
+}
+
+.signin-remember {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.signin-checkbox {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    accent-color: #2563eb;
+    cursor: pointer;
+}
+
+.signin-remember-label {
+    font-size: 0.875rem;
+    color: #64748b;
+    cursor: pointer;
+}
+
+.signin-forgot-btn {
+    font-size: 0.875rem;
+    color: #2563eb;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-weight: 500;
+    font-family: inherit;
+}
+
+.signin-forgot-btn:hover {
+    text-decoration: underline;
+}
+
+/* ---------- Submit Button ---------- */
+.signin-btn {
+    width: 100%;
+    padding: 0.75rem;
+    background: #2563eb;
+    color: #ffffff;
+    font-size: 1rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+}
+
+.signin-btn:hover:not(:disabled) {
+    background: #1d4ed8;
+}
+
+.signin-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+/* ---------- Footer ---------- */
+.signin-footer {
+    margin-top: 2.5rem;
+    text-align: center;
+    padding-top: 1.5rem;
+    border-top: 1px solid #f1f5f9;
+}
+
+.signin-footer p {
+    font-size: 0.75rem;
+    color: #94a3b8;
+    font-weight: 500;
+}
+
+/* ---------- Spinner ---------- */
+.signin-spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ---------- Responsiveness ---------- */
+@media (max-width: 480px) {
+    .signin-wrapper {
+        padding: 0;
+        background: #ffffff;
+    }
+    
+    .signin-card {
+        padding: 2.5rem 1.5rem;
+        box-shadow: none;
+        border-radius: 0;
+        max-width: 100%;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+
+    .signin-footer {
+        margin-top: auto;
+    }
+}

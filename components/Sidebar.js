@@ -1,0 +1,291 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { DataCache } from "@/lib/data-cache";
+import "@/styles/sidebar.css";
+import SyncModal from "./SyncModal";
+import QuickSyncModal from "./QuickSyncModal";
+
+/* ── SVG Icons ─────────────────────────────────────────── */
+const IconInventory = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m7.5 4.27 9 5.15" /><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" />
+  </svg>
+);
+
+const IconStock = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect width="18" height="18" x="3" y="3" rx="2" /><path d="M7 7h10" /><path d="M7 12h10" /><path d="M7 17h10" />
+  </svg>
+);
+
+const IconPO = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="18" x2="12" y2="12" /><line x1="9" y1="15" x2="15" y2="15" />
+  </svg>
+);
+
+const IconSales = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="12" y1="20" x2="12" y2="10" /><line x1="18" y1="20" x2="18" y2="4" /><line x1="6" y1="20" x2="6" y2="16" />
+  </svg>
+);
+
+const IconTruck = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M10 17h4V5H2v12h3" /><path d="M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L17 7h-3v10" /><circle cx="7.5" cy="17.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" />
+  </svg>
+);
+
+const IconSparkles = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" /><path d="M5 3v4" /><path d="M19 17v4" /><path d="M3 5h4" /><path d="M17 19h4" />
+  </svg>
+);
+
+const IconSync = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+    <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" /><path d="M16 16h5v5" />
+  </svg>
+);
+
+export default function Sidebar() {
+  const pathname = usePathname();
+  const [mounted, setMounted] = useState(false);
+  const [userName, setUserName] = useState("Admin User");
+  const [isOpen, setIsOpen] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [showQuickSync, setShowQuickSync] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | complete | error
+
+  useEffect(() => {
+    Promise.resolve().then(() => {
+      setMounted(true);
+
+      const storedUser = localStorage.getItem("userName");
+      if (storedUser) setUserName(storedUser);
+
+      const savedCollapse = localStorage.getItem("sidebar_collapsed") === "true";
+      if (savedCollapse) setIsCollapsed(true);
+    });
+  }, []);
+
+  // Sync collapsed state with body class
+  useEffect(() => {
+    if (isCollapsed) {
+      document.body.classList.add("sidebar-collapsed");
+    } else {
+      document.body.classList.remove("sidebar-collapsed");
+    }
+  }, [isCollapsed]);
+
+  const toggleCollapse = () => {
+    setIsCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem("sidebar_collapsed", String(next));
+      return next;
+    });
+  };
+
+  // Close sidebar on navigation (mobile)
+  useEffect(() => {
+    setIsOpen(false);
+  }, [pathname]);
+
+  const navItems = [
+    { name: "Inventory", href: "/dashboard", icon: <IconInventory /> },
+    { name: "Stock Items", href: "/stock-items", icon: <IconStock /> },
+    { name: "Purchase Orders", href: "/purchase-orders", icon: <IconPO /> },
+    { name: "Incoming PO", href: "/incoming-po", icon: <IconPO /> },
+    { name: "Suppliers", href: "/suppliers", icon: <IconTruck /> },
+    { name: "Replenishment", href: "/replenishment", icon: <IconSparkles /> },
+    { name: "Last 3 Months Sales", href: "/sales", icon: <IconSales /> },
+    { name: "Syncing Center", href: "/syncing", icon: <IconSync /> },
+  ];
+
+  return (
+    <>
+      <button
+        className="sidebar-mobile-toggle"
+        onClick={() => setIsOpen(prev => !prev)}
+        aria-label="Toggle Menu"
+        aria-expanded={isOpen}
+        aria-controls="main-sidebar"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          {isOpen ? (
+            <>
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </>
+          ) : (
+            <>
+              <line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" />
+            </>
+          )}
+        </svg>
+      </button>
+
+      {isOpen && (
+        <button
+          className="sidebar-overlay"
+          onClick={() => setIsOpen(false)}
+          aria-label="Close Sidebar"
+          type="button"
+        />
+      )}
+
+      <aside id="main-sidebar" className={`sidebar ${isOpen ? "open" : ""} ${isCollapsed ? "collapsed" : ""}`}>
+        <div className="sidebar-header">
+          <div className="sidebar-brand">
+            <span className="sidebar-logo">
+              <img src="https://kelin-website.vercel.app/KELIN-LOGO-01.png" alt="KGS Logo" style={{ width: '38px', marginLeft: '4px' }} />
+            </span>
+            {!isCollapsed && <span>KGS PURCHASE</span>}
+          </div>
+          {!isCollapsed && (
+            <div className="sidebar-user-header">
+              <span className="sidebar-user-name">{userName}</span>
+            </div>
+          )}
+        </div>
+
+        <nav className="sidebar-nav">
+          {navItems.map((item) => (
+            <Link
+              key={item.name}
+              href={item.href}
+              className={`sidebar-item ${mounted && pathname === item.href ? "active" : ""}`}
+              title={isCollapsed ? item.name : ""}
+            >
+              <span className="sidebar-item-icon">{item.icon}</span>
+              {!isCollapsed && <span>{item.name}</span>}
+            </Link>
+          ))}
+        </nav>
+
+        <button
+          className="sidebar-collapse-btn"
+          onClick={toggleCollapse}
+          aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            {isCollapsed ? (
+              <>
+                <polyline points="13 17 18 12 13 7" />
+                <line x1="6" y1="17" x2="11" y2="12" />
+                <line x1="6" y1="7" x2="11" y2="12" />
+              </>
+            ) : (
+              <>
+                <polyline points="11 17 6 12 11 7" />
+                <line x1="18" y1="17" x2="13" y2="12" />
+                <line x1="18" y1="7" x2="13" y2="12" />
+              </>
+            )}
+          </svg>
+        </button>
+
+        <div className="sidebar-footer">
+          <button
+            className="sidebar-logout"
+            onClick={() => setShowQuickSync(true)}
+            title={isCollapsed ? "Quick Sync" : ""}
+            style={{
+              padding: isCollapsed ? '0.7rem 0' : '0.7rem 1rem',
+              justifyContent: isCollapsed ? 'center' : 'flex-start',
+              marginBottom: '0.5rem',
+              background: 'rgba(59, 130, 246, 0.1)',
+              color: '#60a5fa',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              position: 'relative',
+            }}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              style={{ animation: syncStatus === 'syncing' ? 'spin 1.2s linear infinite' : 'none' }}>
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+              <path d="M16 16h5v5" />
+            </svg>
+            {!isCollapsed && <span style={{ marginLeft: '0.75rem' }}>Quick Sync</span>}
+            {/* Status dot — always visible even when collapsed */}
+            <span style={{
+              position: 'absolute',
+              top: '6px',
+              right: isCollapsed ? '6px' : '8px',
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: syncStatus === 'complete' ? '#22c55e'
+                : syncStatus === 'error' ? '#ef4444'
+                  : syncStatus === 'syncing' ? '#f59e0b'
+                    : '#475569',
+              boxShadow: syncStatus === 'syncing' ? '0 0 0 3px rgba(245,158,11,0.3)' : 'none',
+              animation: syncStatus === 'syncing' ? 'pulse-dot 1.5s ease-in-out infinite' : 'none',
+              display: 'block',
+            }} />
+          </button>
+
+          <button
+            className="sidebar-logout"
+            onClick={() => {
+              // Clear user info
+              localStorage.removeItem("acu_session");
+              localStorage.removeItem("userName");
+              localStorage.removeItem("userFirstName");
+              localStorage.removeItem("userLastName");
+
+              // Clear filter persistence
+              Object.keys(localStorage)
+                .filter(k => k.includes("_filter_"))
+                .forEach(k => localStorage.removeItem(k));
+
+              DataCache.clear();
+              // Navigate directly — the logout route clears the cookie and
+              // redirects to /signin in a single server response.
+              window.location.href = "/api/auth/logout";
+            }}
+            title={isCollapsed ? "Logout" : ""}
+            style={{ padding: isCollapsed ? '0.7rem 0' : '0.7rem', justifyContent: 'center' }}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            {!isCollapsed && <span>Logout</span>}
+          </button>
+        </div>
+      </aside>
+
+      <QuickSyncModal
+        isOpen={showQuickSync}
+        onClose={() => setShowQuickSync(false)}
+        onStatusChange={setSyncStatus}
+      />
+
+      <style jsx>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
+        }
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50%       { opacity: 0.5; transform: scale(1.4); }
+        }
+      `}</style>
+    </>
+  );
+}
