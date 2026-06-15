@@ -35,6 +35,7 @@ export default function StockItemsPage() {
     const [items, setItems] = useState([]);
     const [dataSource, setDataSource] = useState("mysql");
     const [totalCount, setTotalCount] = useState(0);
+    const [totalStock, setTotalStock] = useState(0);
     const [page, setPage] = useState(1);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -62,6 +63,7 @@ export default function StockItemsPage() {
             if (cached) {
                 setItems(cached.items ?? []);
                 setTotalCount(cached.totalCount ?? 0);
+                setTotalStock(cached.totalStock ?? 0);
             }
         });
     }, []);
@@ -84,14 +86,19 @@ export default function StockItemsPage() {
             const cacheKey = `stock_items_${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/stock-items?${params}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.message || `HTTP ${res.status}`);
+            }
             const data = await res.json();
             setItems(data.items ?? []);
             setDataSource(data.source || "mysql");
             setTotalCount(data.totalCount ?? 0);
+            setTotalStock(data.totalStock ?? 0);
             DataCache.set(cacheKey, data);
         } catch (err) {
-            if (!isBackground) setError("Failed to load stock items. Please try again.");
+            if (err.message === "Unauthorized") return;
+            if (!isBackground) setError(err.message || "Failed to load stock items. Please try again.");
         } finally {
             setLoading(false);
         }
@@ -135,14 +142,14 @@ export default function StockItemsPage() {
 
                 <div className="db-stats">
                     <div className="db-stat-card db-stat-blue">
-                        <span className="db-stat-label">Total List Item</span>
-                        <span className="db-stat-value">{loading && totalCount === 0 ? "..." : totalCount.toLocaleString()}</span>
-                        <span className="db-stat-sub">Active Stock Items</span>
+                        <span className="db-stat-label">Total Product Types</span>
+                        <span className="db-stat-value">{loading && totalCount === 0 ? "..." : (totalCount || 0).toLocaleString()}</span>
+                        <span className="db-stat-sub">Distinct Inventory IDs</span>
                     </div>
                     <div className="db-stat-card">
-                        <span className="db-stat-label">Current View</span>
-                        <span className="db-stat-value">{items.length}</span>
-                        <span className="db-stat-sub">Items on this page</span>
+                        <span className="db-stat-label">Total Stocks</span>
+                        <span className="db-stat-value">{loading && totalStock === 0 ? "..." : (totalStock || 0).toLocaleString()}</span>
+                        <span className="db-stat-sub">Sum of all On-Hand units</span>
                     </div>
                 </div>
 
@@ -212,24 +219,24 @@ export default function StockItemsPage() {
                                     onClick={() => setSelectedId(item.inventoryId)}
                                 >
                                     <td><span className="db-inv-id">{item.inventoryId}</span></td>
-                                    <td className="db-desc" style={{ fontWeight: '500', color: '#0f172a' }}>{item.description}</td>
+                                    <td className="db-desc" style={{ fontWeight: '500' }}>{item.description}</td>
                                     <td><span className="db-class-tag">{item.itemClass}</span></td>
-                                    <td style={{ textAlign: 'center', fontWeight: '600' }}>₱{(Number(item.price) || 0).toLocaleString()}</td>
+                                    <td className="db-num">₱{(Number(item.price) || 0).toLocaleString()}</td>
                                     <td style={{ textAlign: 'center' }}>{item.baseUnit}</td>
                                     <td style={{ textAlign: 'center' }}>
                                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                                            <span className={`idm-status-pill idm-status-pill-sm ${item.itemStatus?.toLowerCase() === 'active' ? 'status-in' : 'status-out'}`} style={{ fontSize: '0.7rem' }}>
+                                            <span className={`idm-status-pill idm-status-pill-sm ${item.itemStatus?.toLowerCase() === 'active' ? 'status-in' : 'status-out'}`}>
                                                 {item.itemStatus}
                                             </span>
                                             {item.totalOnHand <= 0 ? (
-                                                <span style={{ fontSize: '0.6rem', background: '#fef2f2', color: '#991b1b', padding: '1px 6px', borderRadius: '4px', border: '1px solid #fee2e2', fontWeight: '800' }}>OUT OF STOCK</span>
+                                                <span className="db-status-badge db-status-out" style={{ fontSize: '0.6rem' }}>OUT OF STOCK</span>
                                             ) : item.totalOnHand < 10 ? (
-                                                <span style={{ fontSize: '0.6rem', background: '#fff7ed', color: '#c2410c', padding: '1px 6px', borderRadius: '4px', border: '1px solid #ffedd5', fontWeight: '800' }}>LOW STOCK</span>
+                                                <span className="db-status-badge db-status-low" style={{ fontSize: '0.6rem' }}>LOW STOCK</span>
                                             ) : null}
                                         </div>
                                     </td>
-                                    <td style={{ textAlign: 'right', fontWeight: '500' }}>{Number(item.totalQtySold) > 0 ? Number(item.totalQtySold).toLocaleString() : "—"}</td>
-                                    <td style={{ textAlign: 'right', fontWeight: '600', color: '#1d4ed8' }}>{Number(item.totalSales) > 0 ? `₱${Number(item.totalSales).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}</td>
+                                    <td className="db-num" style={{ fontWeight: '500' }}>{Number(item.totalQtySold) > 0 ? Number(item.totalQtySold).toLocaleString() : "—"}</td>
+                                    <td className="db-num" style={{ color: 'var(--accent-primary)' }}>{Number(item.totalSales) > 0 ? `₱${Number(item.totalSales).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}</td>
                                     <td style={{ textAlign: 'center' }}>
                                         <button className="si-view-btn">View Details</button>
                                     </td>

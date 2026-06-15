@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, memo, Fragment, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { DataCache } from "@/lib/data-cache";
+import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 
 /* ── SVG Icons ───────────────────────────────────── */
@@ -148,10 +149,10 @@ export default function SalesPeriodicPage() {
             });
             const cacheKey = `sales_90d_${params.toString()}`;
 
-            const res = await fetch(`/api/sales-periodic?${params.toString()}`);
-            if (res.status === 401) { router.push("/signin"); return; }
+            const res = await fetchWithAuth(`/api/sales-periodic?${params.toString()}`);
             if (!res.ok) {
-                if (!isBackground) setError("Failed to load sales history.");
+                const body = await res.json().catch(() => ({}));
+                if (!isBackground) setError(body.message || "Failed to load sales history.");
                 return;
             }
             const result = await res.json();
@@ -160,12 +161,13 @@ export default function SalesPeriodicPage() {
             setPagination(result.pagination || { totalItems: 0, totalPages: 0 });
             setMetrics(result.metrics || { overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
             DataCache.set(cacheKey, result);
-        } catch {
+        } catch (err) {
+            if (err.message === "Unauthorized") return;
             if (!isBackground) setError("Unable to connect to the server.");
         } finally {
             setLoading(false);
         }
-    }, [selectedBranch, targetDate, router]);
+    }, [selectedBranch, targetDate]);
 
     useEffect(() => {
         if (!mounted) return;

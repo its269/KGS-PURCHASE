@@ -400,18 +400,22 @@ export const MySqlService = {
             const [[stats]] = await pool.query(
                 `SELECT
                     COUNT(*) as total,
+                    SUM(COALESCE(on_hand, 0)) as totalStock,
                     SUM(COALESCE(on_hand, 0) * COALESCE(default_price, 0)) as totalValue,
-                    SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN 1 ELSE 0 END) as lowStock,
-                    SUM(CASE WHEN on_hand <= 0 THEN 1 ELSE 0 END) as outOfStock,
+                    SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN 1 ELSE 0 END) as lowStockCount,
+                    SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN on_hand ELSE 0 END) as totalLowStock,
+                    SUM(CASE WHEN on_hand <= 0 THEN 1 ELSE 0 END) as outOfStockCount,
                     MAX(last_sync) as lastSync
                  FROM inventory_items ${wherePart}`,
                 params
             );
 
             return {
+                totalStock: Number(stats.totalStock) || 0,
                 totalValue: Number(stats.totalValue) || 0,
-                lowStock: Number(stats.lowStock) || 0,
-                outOfStock: Number(stats.outOfStock) || 0,
+                lowStock: Number(stats.lowStockCount) || 0,
+                totalLowStock: Number(stats.totalLowStock) || 0,
+                outOfStock: Number(stats.outOfStockCount) || 0,
                 count: Number(stats.total) || 0,
                 lastSync: stats.lastSync
             };
@@ -457,8 +461,11 @@ export const MySqlService = {
 
             const [rows] = await pool.query(query, params);
 
-            const [[{ total }]] = await pool.query(
-                `SELECT COUNT(DISTINCT TRIM(inventory_id)) as total FROM inventory_items i ${whereClause}`,
+            const [[{ total, overallStock }]] = await pool.query(
+                `SELECT 
+                    COUNT(DISTINCT TRIM(i.inventory_id)) as total,
+                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as overallStock
+                 FROM inventory_items i ${whereClause}`,
                 params
             );
 
@@ -479,7 +486,8 @@ export const MySqlService = {
 
             return {
                 items: enriched,
-                totalCount: total
+                totalCount: total,
+                totalStock: Number(overallStock) || 0
             };
         } catch (err) {
             console.error("[MySQL getStockItems Error]", err);
@@ -590,8 +598,22 @@ export const MySqlService = {
      * Get overall stock sum, optionally filtered by branch
      */
     async getOverallStocks(branch = "") {
-        // on_hand data not available in catalog table — return 0
-        return 0;
+        try {
+            let whereClause = "default_warehouse != '__catalog__'";
+            let params = [];
+            if (branch) {
+                whereClause += " AND branch_id = ?";
+                params.push(branch);
+            }
+            const [[{ total }]] = await pool.query(
+                `SELECT SUM(COALESCE(on_hand, 0)) as total FROM inventory_items WHERE ${whereClause}`,
+                params
+            );
+            return Number(total) || 0;
+        } catch (err) {
+            console.error("[MySQL getOverallStocks Error]", err);
+            return 0;
+        }
     },
 
     /**
@@ -796,10 +818,13 @@ export const MySqlService = {
         const connection = await purchasePool.getConnection();
         try {
             console.log(">>> [MySQL] Starting Sales Data Enrichment...");
+            
+            const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+            
             // Update item_class and posting_class from inventory_items catalog where missing
             const sql = `
                 UPDATE product_periodic_sales s
-                JOIN inventory_items i ON s.inventory_id = i.inventory_id
+                JOIN \`${inventoryDb}\`.inventory_items i ON s.inventory_id = i.inventory_id
                 SET 
                     s.item_class = COALESCE(s.item_class, i.item_class),
                     s.posting_class = COALESCE(s.posting_class, i.posting_class)

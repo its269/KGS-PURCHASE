@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { DataCache } from "@/lib/data-cache";
+import { useTheme } from "./ThemeProvider";
 import "@/styles/sidebar.css";
 
 /* ── SVG Icons ─────────────────────────────────────────── */
@@ -50,12 +51,25 @@ const IconSync = () => (
   </svg>
 );
 
+const IconSun = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />
+  </svg>
+);
+
+const IconMoon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+  </svg>
+);
+
 export default function Sidebar() {
   const pathname = usePathname();
   const [mounted, setMounted] = useState(false);
   const [userName, setUserName] = useState("Admin User");
   const [isOpen, setIsOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -66,8 +80,26 @@ export default function Sidebar() {
 
       const savedCollapse = localStorage.getItem("sidebar_collapsed") === "true";
       if (savedCollapse) setIsCollapsed(true);
+
+      const savedTheme = localStorage.getItem("theme");
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const shouldBeDark = savedTheme === "dark" || (!savedTheme && prefersDark);
+      setIsDarkMode(shouldBeDark);
     });
   }, []);
+
+  // Sync theme with document attribute
+  useEffect(() => {
+    if (mounted) {
+      if (isDarkMode) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        localStorage.setItem("theme", "dark");
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+        localStorage.setItem("theme", "light");
+      }
+    }
+  }, [isDarkMode, mounted]);
 
   // Sync collapsed state with body class
   useEffect(() => {
@@ -84,6 +116,10 @@ export default function Sidebar() {
       localStorage.setItem("sidebar_collapsed", String(next));
       return next;
     });
+  };
+
+  const toggleTheme = () => {
+    setIsDarkMode(prev => !prev);
   };
 
   // Close sidebar on navigation (mobile)
@@ -142,6 +178,25 @@ export default function Sidebar() {
             </span>
             {!isCollapsed && <span>KGS PURCHASE</span>}
           </div>
+          
+          {/* Theme Toggle — Header Utility */}
+          <div className="sidebar-utility">
+            {themeMounted && (
+              <button
+                className={`theme-switch ${isDarkMode ? "dark" : "light"}`}
+                onClick={toggleTheme}
+                title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+              >
+                <div className="theme-switch-track">
+                  <div className="theme-switch-thumb">
+                    {isDarkMode ? <IconMoon /> : <IconSun />}
+                  </div>
+                </div>
+                {!isCollapsed && <span className="theme-switch-label">{isDarkMode ? "Dark Mode" : "Light Mode"}</span>}
+              </button>
+            )}
+          </div>
+
           {!isCollapsed && (
             <div className="sidebar-user-header">
               <span className="sidebar-user-name">{userName}</span>
@@ -216,11 +271,12 @@ export default function Sidebar() {
               window.location.href = "/api/auth/logout";
             }}
             title={isCollapsed ? "Logout" : ""}
-            style={{ padding: isCollapsed ? '0.7rem 0' : '0.7rem', justifyContent: 'center' }}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
-            </svg>
+            <span className="sidebar-item-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </span>
             {!isCollapsed && <span>Logout</span>}
           </button>
         </div>

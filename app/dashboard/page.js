@@ -101,18 +101,18 @@ const InventoryRow = memo(({ row, index }) => {
         <tr
             className={`${status === "LOW_STOCK" ? "db-row-warn" : status === "OUT_OF_STOCK" ? "db-row-danger" : ""}`}
         >
-            <td className="db-row-num">{index}</td>
+            <td className="db-row-num col-mobile-hide">{index}</td>
             <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
             <td className="db-desc">{cellVal(row, "Description")}</td>
-            <td><span className="db-branch-tag">{cellVal(row, "Branch")}</span></td>
-            <td>{cellVal(row, "SiteID")}</td>
+            <td className="col-tablet-hide"><span className="db-branch-tag">{cellVal(row, "Branch")}</span></td>
+            <td className="col-tablet-hide">{cellVal(row, "SiteID")}</td>
             <td className="db-num"><span className={onHand > 0 ? "db-badge db-badge-green" : "db-badge"}>{onHand.toLocaleString()}</span></td>
-            <td className="db-num"><span className={available > 0 ? "db-badge db-badge-blue" : "db-badge"}>{available.toLocaleString()}</span></td>
-            <td className="db-num">₱{price.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
-            <td><span className="db-class-tag">{cellVal(row, "ItemClass")}</span></td>
+            <td className="db-num col-mobile-hide"><span className={available > 0 ? "db-badge db-badge-blue" : "db-badge"}>{available.toLocaleString()}</span></td>
+            <td className="db-num col-mobile-hide">₱{price.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+            <td className="col-tablet-hide"><span className="db-class-tag">{cellVal(row, "ItemClass")}</span></td>
             <td><span className={`db-status-badge ${STATUS_CLASS[status]}`}>{STATUS_LABEL[status]}</span></td>
-            <td className="db-num">{qtySold > 0 ? qtySold.toLocaleString("en-PH", { minimumFractionDigits: 2 }) : "—"}</td>
-            <td className="db-num">{totalSales > 0 ? `₱${totalSales.toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}</td>
+            <td className="db-num col-tablet-hide">{qtySold > 0 ? qtySold.toLocaleString("en-PH", { minimumFractionDigits: 2 }) : "—"}</td>
+            <td className="db-num col-tablet-hide">{totalSales > 0 ? `₱${totalSales.toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}</td>
         </tr>
     );
 });
@@ -130,7 +130,7 @@ export default function DashboardPage() {
     const [allInventory, setAllInventory] = useState([]);
     const [dataSource, setDataSource] = useState("mysql");
     const [totalCount, setTotalCount] = useState(0);
-    const [globalStats, setGlobalStats] = useState({ totalValue: 0, lowStock: 0, outOfStock: 0 });
+    const [globalStats, setGlobalStats] = useState({ totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 });
     const [hasMore, setHasMore] = useState(false);
 
     const [branchOptions, setBranchOptions] = useState([]);
@@ -230,7 +230,6 @@ export default function DashboardPage() {
             const cacheKey = `inventory_${dataParams.toString()}`;
 
             const res = await fetchWithAuth(`/api/inventory?${dataParams.toString()}`);
-            if (res.status === 401) { router.push("/signin"); return; }
             if (res.ok) {
                 const result = await res.json();
                 setAllInventory(result.data || []);
@@ -240,9 +239,11 @@ export default function DashboardPage() {
                 if (result.globalStats) setGlobalStats(result.globalStats);
                 DataCache.set(cacheKey, result);
             }
-        } catch (e) { console.error("Fetch error", e); }
+        } catch (e) { 
+            if (e.message !== "Unauthorized") console.error("Fetch error", e); 
+        }
         setLoading(false);
-    }, [page, debouncedSearch, selectedBranch, router]);
+    }, [page, debouncedSearch, selectedBranch]);
 
     useEffect(() => {
         clearTimeout(searchTimer.current);
@@ -282,51 +283,43 @@ export default function DashboardPage() {
         <div className="db-root">
             <main className="db-main">
                 <div className="db-page-title">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <h1>Inventory Dashboard</h1>
-                        <span style={{ 
-                            fontSize: '0.65rem', 
-                            fontWeight: '800', 
-                            textTransform: 'uppercase', 
-                            padding: '0.2rem 0.6rem', 
-                            background: dataSource.includes("acumatica") ? '#fff7ed' : '#ecfdf5', 
-                            color: dataSource.includes("acumatica") ? '#c2410c' : '#059669', 
-                            border: `1px solid ${dataSource.includes("acumatica") ? '#fb923c' : '#10b981'}`, 
-                            borderRadius: '999px',
-                            letterSpacing: '0.05em'
-                        }}>{dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}</span>
+                        <span className={`db-data-source ${dataSource === "mysql" ? "db-data-source-live" : "db-data-source-fallback"}`} suppressHydrationWarning>
+                            {dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}
+                        </span>
                     </div>
                     <p>Manage and monitor stock levels across all locations.</p>
                 </div>
 
                 <div className="db-stats">
-                    <div className="db-stat-card">
-                        <span className="db-stat-label">Total Products</span>
-                        <span className="db-stat-value">{totalCount.toLocaleString()}</span>
-                        <span className="db-stat-sub">{selectedBranch || "All Branches"}</span>
-                    </div>
-                    <div className="db-stat-card">
-                        <span className="db-stat-label">Total Value</span>
-                        <span className="db-stat-value">₱{globalStats.totalValue.toLocaleString("en-PH", { minimumFractionDigits: 0 })}</span>
-                        <span className="db-stat-sub">Estimated inventory value</span>
-                    </div>
-                    <div className="db-stat-card db-stat-warn">
-                        <span className="db-stat-label">Low Stock</span>
-                        <span className="db-stat-value">{globalStats.lowStock.toLocaleString()}</span>
-                        <span className="db-stat-sub">Under {LOW_STOCK_THRESHOLD} units</span>
-                    </div>
-                    <div className="db-stat-card db-stat-danger">
-                        <span className="db-stat-label">Out of Stock</span>
-                        <span className="db-stat-value">{globalStats.outOfStock.toLocaleString()}</span>
-                        <span className="db-stat-sub">Zero units on hand</span>
-                    </div>
-                    <div className="db-stat-card" style={{ borderLeft: '4px solid #3b82f6' }}>
-                        <span className="db-stat-label">Data Freshness</span>
-                        <span className="db-stat-value" style={{ fontSize: '1.1rem', color: '#1e293b', marginTop: '0.5rem' }}>
-                            {globalStats.lastSync ? new Date(globalStats.lastSync).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Never"}
-                        </span>
-                        <span className="db-stat-sub">Last successful sync</span>
-                    </div>
+                <div className="db-stat-card">
+                    <span className="db-stat-label">Total Stocks</span>
+                    <span className="db-stat-value">{(globalStats.totalStock || 0).toLocaleString()}</span>
+                    <span className="db-stat-sub">{totalCount.toLocaleString()} products in {selectedBranch || "all branches"}</span>
+                </div>
+                <div className="db-stat-card">
+                    <span className="db-stat-label">Total Value</span>
+                    <span className="db-stat-value">₱{(globalStats.totalValue || 0).toLocaleString("en-PH", { minimumFractionDigits: 0 })}</span>
+                    <span className="db-stat-sub">Estimated inventory value</span>
+                </div>
+                <div className="db-stat-card db-stat-warn">
+                    <span className="db-stat-label">Low Stock (Units)</span>
+                    <span className="db-stat-value">{(globalStats.totalLowStock || 0).toLocaleString()}</span>
+                    <span className="db-stat-sub">{(globalStats.lowStock || 0)} products under {LOW_STOCK_THRESHOLD} units</span>
+                </div>
+                <div className="db-stat-card db-stat-danger">
+                    <span className="db-stat-label">Out of Stock</span>
+                    <span className="db-stat-value">{(globalStats.outOfStock || 0).toLocaleString()}</span>
+                    <span className="db-stat-sub">Zero units on hand</span>
+                </div>
+                <div className="db-stat-card db-stat-info">
+                    <span className="db-stat-label">Data Freshness</span>
+                    <span className="db-stat-value db-stat-value-sm">
+                        {globalStats.lastSync ? new Date(globalStats.lastSync).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Never"}
+                    </span>
+                    <span className="db-stat-sub">Last successful sync</span>
+                </div>
                 </div>
 
                 <div className="db-toolbar">
@@ -356,18 +349,18 @@ export default function DashboardPage() {
                         <table className="db-table">
                             <thead>
                                 <tr>
-                                    <th>#</th>
+                                    <th className="col-mobile-hide">#</th>
                                     <th>Inventory ID</th>
                                     <th>Description</th>
-                                    <th>Branch</th>
-                                    <th>Site</th>
+                                    <th className="col-tablet-hide">Branch</th>
+                                    <th className="col-tablet-hide">Site</th>
                                     <th className="db-num">On Hand</th>
-                                    <th className="db-num">Available</th>
-                                    <th className="db-num">Price</th>
-                                    <th>Class</th>
+                                    <th className="db-num col-mobile-hide">Available</th>
+                                    <th className="db-num col-mobile-hide">Price</th>
+                                    <th className="col-tablet-hide">Class</th>
                                     <th>Status</th>
-                                    <th className="db-num">Qty Sold</th>
-                                    <th className="db-num">Total Sales</th>
+                                    <th className="db-num col-tablet-hide">Qty Sold</th>
+                                    <th className="db-num col-tablet-hide">Total Sales</th>
                                 </tr>
                             </thead>
                             <tbody>

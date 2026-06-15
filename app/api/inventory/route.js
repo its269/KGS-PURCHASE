@@ -33,7 +33,7 @@ export async function GET(request) {
                     throw new Error("EMPTY_MYSQL");
                 }
 
-                let globalStats = { totalValue: 0, lowStock: 0, outOfStock: 0 };
+                let globalStats = { totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 };
                 if (stats) {
                     globalStats = await MySqlService.getGlobalStats(branch, search);
                 }
@@ -68,7 +68,7 @@ export async function GET(request) {
                         data: [],
                         totalCount: 0,
                         hasMore: false,
-                        globalStats: { totalValue: 0, lowStock: 0, outOfStock: 0 },
+                        globalStats: { totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 },
                         source: "mysql-bypass-empty",
                         message: "MySQL is empty and Acumatica is unreachable (Bypass Mode)."
                     });

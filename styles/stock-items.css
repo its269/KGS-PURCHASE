@@ -1,16 +1,17 @@
 /* ============================================================
    Stock Items Page — supplemental styles
-   Reuses db-* classes from dashboard.css for table/toolbar
+   Reuses db-* classes from dashboard.css
    ============================================================ */
 
 .si-root {
     width: 100%;
+    color: var(--text-primary);
 }
 
 .si-main {
     max-width: 1600px;
     margin: 0 auto;
-    padding: 2rem 2rem 4rem;
+    padding: 2rem;
     display: flex;
     flex-direction: column;
     gap: 2rem;
@@ -19,193 +20,122 @@
 /* ── Summary row ────────────────────────────────────────── */
 .si-source-badge {
     display: inline-block;
-    font-size: 0.72rem;
-    font-weight: 600;
-    border-radius: 6px;
-    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    font-weight: 800;
+    border-radius: var(--radius-sm);
+    padding: 0.25rem 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 .si-source-live {
-    background: #dcfce7;
-    color: #15803d;
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--status-success);
 }
 
 .si-source-cache {
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: rgba(59, 130, 246, 0.15);
+    color: var(--accent-primary);
 }
 
 .si-source-warn {
-    background: #fef9c3;
-    color: #92400e;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--status-warning);
 }
 
 .si-summary-row {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 1.25rem;
 }
 
 .si-total-chip {
     display: inline-flex;
     align-items: center;
-    background: #f1f5f9;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-medium);
     border-radius: 9999px;
-    padding: 0.3rem 0.9rem;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #475569;
-}
-
-/* ── Inventory ID chip ──────────────────────────────────── */
-.si-id-chip {
-    font-family: ui-monospace, "Cascadia Code", monospace;
-    font-size: 0.8rem;
-    background: #f1f5f9;
-    border-radius: 6px;
-    padding: 0.2rem 0.5rem;
-    color: #334155;
-    white-space: nowrap;
+    padding: 0.4rem 1rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-sm);
 }
 
 /* ── Loading / empty cells ──────────────────────────────── */
 .si-loading-cell,
 .si-empty-cell {
     text-align: center;
-    padding: 3rem 1rem;
-    color: #94a3b8;
-    font-size: 0.9rem;
+    padding: 4rem 2rem;
+    color: var(--text-muted);
+    font-size: 1rem;
+    background: var(--bg-surface);
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--border-light);
 }
 
 /* ── Error ──────────────────────────────────────────────── */
 .si-error {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-    border-radius: 10px;
-    padding: 1rem 1.25rem;
-    color: #dc2626;
-    font-size: 0.875rem;
-    font-weight: 500;
-}
-
-/* ── Pagination ─────────────────────────────────────────── */
-.si-pagination {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.5rem 0;
-}
-
-.si-page-info {
-    font-size: 0.875rem;
-    color: #64748b;
-    font-weight: 500;
-}
-
-.si-page-buttons {
-    display: flex;
-    gap: 0.5rem;
-}
-
-.si-page-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.5rem 1rem;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    background: #ffffff;
-    font-size: 0.875rem;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid var(--status-danger);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem;
+    color: var(--status-danger);
+    font-size: 0.9rem;
     font-weight: 600;
-    color: #334155;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-}
-
-.si-page-btn:hover:not(:disabled) {
-    background: #f8fafc;
-    border-color: #cbd5e1;
-}
-
-.si-page-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
 }
 
 /* ── Clickable rows ─────────────────────────────────────── */
 .si-clickable-row {
     cursor: pointer;
-    transition: background 0.12s;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .si-clickable-row:hover {
-    background: #f0f7ff;
+    background: var(--bg-main) !important;
 }
 
 .si-row-selected td {
-    background: #eff6ff !important;
+    background: rgba(59, 130, 246, 0.08) !important;
 }
 
 .si-row-selected .db-inv-id {
-    background: #3b82f6;
-    color: #fff;
-    border-color: #2563eb;
+    background: var(--accent-primary);
+    color: #ffffff;
+    border-color: var(--accent-primary);
 }
 
 /* ── View Button ────────────────────────────────────────── */
 .si-view-btn {
-    padding: 0.45rem 0.85rem;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #3b82f6;
+    padding: 0.5rem 1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    font-size: 0.8rem;
+    font-weight: 800;
+    color: var(--accent-primary);
     cursor: pointer;
     transition: all 0.2s;
-    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 .si-clickable-row:hover .si-view-btn,
 .db-clickable-row:hover .si-view-btn {
-    background: #3b82f6;
-    color: #fff;
-    border-color: #3b82f6;
+    background: var(--accent-primary);
+    color: #ffffff;
+    border-color: var(--accent-primary);
+    box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
 }
 
 .si-row-selected .si-view-btn {
-    background: #3b82f6;
-    color: #fff;
-    border-color: #3b82f6;
+    background: var(--accent-primary);
+    color: #ffffff;
+    border-color: var(--accent-primary);
 }
-
-/* ── Loading refined ── */
-.si-loading-cell {
-    padding: 6rem 2rem;
-    background: #fff;
-}
-
-.si-empty-cell {
-    padding: 6rem 2rem;
-    background: #fff;
-    color: #64748b;
-    font-weight: 500;
-}
-
-/* ============================================================
-   RESPONSIVENESS - MEDIA QUERIES
-   ============================================================ */
 
 @media (max-width: 768px) {
-    .db-modal-fullwide {
-        width: 100vw;
-        height: 100vh;
-        max-height: 100vh;
-        border-radius: 0;
-    }
-    
-    .db-modal-header {
+    .si-main {
         padding: 1rem;
     }
 }

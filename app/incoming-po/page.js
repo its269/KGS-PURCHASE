@@ -2,6 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback, useRef } from "react";  
 import { DataCache } from "@/lib/data-cache";
+import { fetchWithAuth } from "@/lib/api-client";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
@@ -126,17 +127,17 @@ export default function IncomingPOPage() {
             if (debSearch) params.set("search", debSearch);
             const cacheKey = `inc_po_orders_${params.toString()}`;
 
-            const res = await fetch(`/api/po?${params}`);
+            const res = await fetchWithAuth(`/api/po?${params}`);
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
-                if (!isBackground) throw new Error(body.message || `HTTP ${res.status}`);
-                return;
+                throw new Error(body.message || `HTTP ${res.status}`);
             }
             const data = await res.json();
             setOrders(data.orders ?? []);
             setHasMore(data.hasMore ?? false);
             DataCache.set(cacheKey, data);
         } catch (err) {
+            if (err.message === "Unauthorized") return;
             if (!isBackground) setError(err.message || "Failed to load incoming purchase orders.");
         } finally {
             setLoading(false);

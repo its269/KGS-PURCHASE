@@ -44,24 +44,29 @@ export default function ReplenishmentPage() {
             const cached = DataCache.get("replenishment_recs");
             if (cached) setRecs(cached || []);
         });
-    }, []);
-
-    const fetchRecommendations = useCallback(async (isBackground = false) => {
-        if (!isBackground) setLoading(true);
-        setError(null);
-        try {
-            const cacheKey = "replenishment_recs";
-            const res = await fetch("/api/replenishment");
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            setRecs(data);
-            DataCache.set(cacheKey, data);
-        } catch (err) {
-            if (!isBackground) setError("Failed to generate recommendations. Please try again.");
-        } finally {
-            setLoading(false);
-        }
-    }, []);
+    import { fetchWithAuth } from "@/lib/api-client";
+    import "@/styles/dashboard.css";
+    ...
+        const fetchRecommendations = useCallback(async (isBackground = false) => {
+            if (!isBackground) setLoading(true);
+            setError(null);
+            try {
+                const cacheKey = "replenishment_recs";
+                const res = await fetchWithAuth("/api/replenishment");
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    throw new Error(body.message || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                setRecs(data || []);
+                DataCache.set(cacheKey, data || []);
+            } catch (err) {
+                if (err.message === "Unauthorized") return;
+                if (!isBackground) setError(err.message || "Failed to generate recommendations. Please try again.");
+            } finally {
+                setLoading(false);
+            }
+        }, []);
 
     useEffect(() => {
         const cacheKey = "replenishment_recs";

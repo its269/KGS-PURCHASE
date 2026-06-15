@@ -98,7 +98,22 @@ export async function POST(request) {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
 
-        // Ensure purchase_history has vendor_name column
+        // Ensure purchase_history table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`purchase_history\` (
+                \`order_nbr\` VARCHAR(50) PRIMARY KEY,
+                \`vendor_id\` VARCHAR(100),
+                \`vendor_name\` VARCHAR(255),
+                \`status\` VARCHAR(50),
+                \`order_date\` DATETIME,
+                \`promised_date\` DATETIME,
+                \`receipt_date\` DATETIME,
+                \`total_amount\` DECIMAL(18,4),
+                \`last_sync\` DATETIME
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure purchase_history has vendor_name column (for older schemas)
         const [[phVendorNameCol]] = await conn.query(
             `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS 
              WHERE TABLE_SCHEMA=? AND TABLE_NAME='purchase_history' AND COLUMN_NAME='vendor_name'`,
@@ -278,7 +293,7 @@ export async function POST(request) {
                     }
 
                     const filterStr = filterArr.length > 0 ? `&$filter=${filterArr.join(" and ")}` : "";
-                    let skip = 0, totalSynced = 0, top = 100;
+                    let skip = 0, totalSynced = 0, top = 50;
                     
                     while (!signal.aborted) {
                         let items = [];
@@ -383,7 +398,7 @@ export async function POST(request) {
                     while (!signal.aborted) {
                         let invoices = [];
                         try {
-                            const url = `${ACU_BASE}/Invoice?$expand=Details&$top=100&$skip=${sSkip}&${filterStr}`;
+                            const url = `${ACU_BASE}/Invoice?$expand=Details&$top=50&$skip=${sSkip}&${filterStr}`;
                             console.log(`>>> [Sync API] Fetching Invoices: skip=${sSkip}`);
                             const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
                             const data = await res.json();
@@ -403,8 +418,9 @@ export async function POST(request) {
                                 const branchName = getF(inv, "Branch");
                                 const docDate = getF(inv, "Date");
                                 
-                                let details = inv.Details || [];
+                                let details = inv.Details || inv.Transactions || [];
                                 if (details.value) details = details.value;
+                                if (!Array.isArray(details)) details = [];
                                 
                                 for (const line of details) {
                                     const invId = getF(line, "InventoryID");
@@ -469,8 +485,10 @@ export async function POST(request) {
                                     total_amount: parseFloat(getF(o, "OrderTotal") || 0)
                                 });
 
-                                let details = o.Details || [];
+                                let details = o.Details || o.Transactions || [];
                                 if (details.value) details = details.value;
+                                if (!Array.isArray(details)) details = [];
+
                                 for (const d of details) {
                                     lineRows.push({
                                         order_nbr: getF(o, "OrderNbr"),

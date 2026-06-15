@@ -156,7 +156,7 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                         </div>
 
                         {/* Metadata row */}
-                        <div className="idm-meta-bar" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', padding: '1rem', background: '#f8fafc', borderRadius: '12px', margin: '1rem 0' }}>
+                        <div className="idm-meta-bar">
                             <div className="idm-meta-item">
                                 <span className="idm-meta-label">Status:</span>
                                 <span className="idm-meta-value" style={{ fontWeight: '700' }}>{detail.itemStatus}</span>

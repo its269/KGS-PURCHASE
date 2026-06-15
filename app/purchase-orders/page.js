@@ -190,14 +190,14 @@ export default function PurchaseOrdersPage() {
             const res = await fetchWithAuth(`/api/po?${params}`); 
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
-                if (!isBackground) throw new Error(body.message || `HTTP ${res.status}`);
-                return;
+                throw new Error(body.message || `HTTP ${res.status}`);
             }
             const data = await res.json();
             setOrders(data.orders ?? []);
             setHasMore(data.hasMore ?? false);
             DataCache.set(cacheKey, data);
         } catch (err) {
+            if (err.message === "Unauthorized") return;
             if (!isBackground) setError(err.message || "Failed to load purchase orders.");
         } finally {
             setLoading(false);

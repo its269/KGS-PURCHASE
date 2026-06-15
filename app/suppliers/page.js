@@ -136,13 +136,17 @@ export default function SuppliersPage() {
             const cacheKey = `vendors_${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/vendors?${params}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.message || `HTTP ${res.status}`);
+            }
             const data = await res.json();
             setVendors(data.vendors ?? []);
             setHasMore(data.hasMore ?? false);
             DataCache.set(cacheKey, data);
         } catch (err) {
-            if (!isBackground) setError("Failed to load suppliers. Please try again.");
+            if (err.message === "Unauthorized") return;
+            if (!isBackground) setError(err.message || "Failed to load suppliers. Please try again.");
         } finally {
             setLoading(false);
         }
