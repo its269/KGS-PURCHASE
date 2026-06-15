@@ -1,7 +1,6 @@
 import "./globals.css";
 import AuthBootstrap from "@/components/AuthBootstrap";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import Script from "next/script";
 
 export const metadata = {
   title: "KGS PURCHASING",
@@ -13,11 +12,7 @@ export default function RootLayout({ children }) {
     <html lang="en" suppressHydrationWarning>
       <head>
         <link rel="icon" href="/kelin-logo.png" type="image/png" />
-      </head>
-      <body>
-        <Script
-          id="theme-init"
-          strategy="beforeInteractive"
+        <script
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
@@ -28,6 +23,7 @@ export default function RootLayout({ children }) {
                     document.documentElement.setAttribute('data-theme', 'dark');
                     document.documentElement.style.backgroundColor = '#020617';
                   } else {
+                    document.documentElement.setAttribute('data-theme', 'light');
                     document.documentElement.style.backgroundColor = '#f8fafc';
                   }
                 } catch (e) {}
@@ -35,6 +31,8 @@ export default function RootLayout({ children }) {
             `,
           }}
         />
+      </head>
+      <body>
         <ThemeProvider>
           <AuthBootstrap />
           {children}

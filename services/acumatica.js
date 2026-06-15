@@ -1,5 +1,5 @@
-const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 import { MySqlService } from "@/services/mysql";
+const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
 // Bypasses 'CERT_HAS_EXPIRED' error for Acumatica connections
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';

@@ -1,4 +1,4 @@
-﻿import { AuthService } from "@/services/auth";
+import { AuthService } from "@/services/auth";
 import { NextResponse } from "next/server";
 import { setSession, setTokenSession } from "@/lib/session-store";
 
