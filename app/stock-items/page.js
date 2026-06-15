@@ -125,17 +125,9 @@ export default function StockItemsPage() {
                 <div className="db-page-title">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                         <h1>Stock Items Masterlist</h1>
-                        <span style={{ 
-                            fontSize: '0.65rem', 
-                            fontWeight: '800', 
-                            textTransform: 'uppercase', 
-                            padding: '0.2rem 0.6rem', 
-                            background: dataSource.includes("acumatica") ? '#fff7ed' : '#ecfdf5', 
-                            color: dataSource.includes("acumatica") ? '#c2410c' : '#059669', 
-                            border: `1px solid ${dataSource.includes("acumatica") ? '#fb923c' : '#10b981'}`, 
-                            borderRadius: '999px',
-                            letterSpacing: '0.05em'
-                        }}>{dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}</span>
+                        <span className={`db-data-source ${dataSource.includes("acumatica") ? 'db-data-source-fallback' : 'db-data-source-live'}`} style={{ fontSize: '0.65rem', padding: '0.2rem 0.6rem' }}>
+                            {dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}
+                        </span>
                     </div>
                     <p>View all products and their configurations. Click a row to see detailed branch availability.</p>
                 </div>
@@ -169,7 +161,7 @@ export default function StockItemsPage() {
                     <div className="db-toolbar-right">
                         <button 
                             className="si-view-btn" 
-                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#0f172a', color: '#fff', border: 'none', padding: '0.6rem 1.25rem', height: '42px' }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--text-primary)', color: 'var(--text-inverse)', border: 'none', padding: '0.6rem 1.25rem', height: '42px' }}
                             onClick={handleExport}
                             disabled={exporting}
                         >
@@ -178,7 +170,7 @@ export default function StockItemsPage() {
                         
                         <button className="db-refresh-btn" onClick={() => fetchItems()} disabled={loading}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                {loading && <div className="db-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }}></div>}
+                                {loading && <div className="db-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px', borderTopColor: 'var(--text-secondary)' }}></div>}
                                 <span>{loading ? "Loading..." : "Refresh List"}</span>
                             </div>
                         </button>

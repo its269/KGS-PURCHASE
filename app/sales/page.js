@@ -290,7 +290,7 @@ export default function SalesPeriodicPage() {
                             disabled={loading}
                             style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', minWidth: '160px' }}
                         >
-                            {loading && <div className="db-spinner" style={{ width: '16px', height: '16px', borderWidth: '2.5px', borderTopColor: '#fff' }}></div>}
+                            {loading && <div className="db-spinner" style={{ width: '16px', height: '16px', borderWidth: '2.5px', borderTopColor: 'var(--text-inverse)' }}></div>}
                             <span>{loading ? "Analyzing..." : "Run Analysis"}</span>
                         </button>
                     </div>
@@ -315,7 +315,7 @@ export default function SalesPeriodicPage() {
                                         {periods.map(p => (
                                             <th key={p.key} colSpan={2} className="db-centered-header" style={{ textAlign: 'center' }}>
                                                 <div style={{ fontSize: '0.85rem' }}>{p.label}</div>
-                                                <div style={{ fontSize: '0.65rem', fontWeight: '500', color: '#64748b', marginTop: '2px' }}>{p.range}</div>
+                                                <div style={{ fontSize: '0.65rem', fontWeight: '500', color: 'var(--text-secondary)', marginTop: '2px' }}>{p.range}</div>
                                             </th>
                                         ))}
                                         <th rowSpan={2} className="db-num" style={{ verticalAlign: 'middle', fontWeight: '800' }}>90-DAY QTY</th>
@@ -324,8 +324,8 @@ export default function SalesPeriodicPage() {
                                     <tr>
                                         {periods.map(p => (
                                             <Fragment key={`${p.key}-sub`}>
-                                                <th className="db-num" style={{ background: '#f8fafc', fontSize: '0.65rem' }}>QTY</th>
-                                                <th className="db-num" style={{ background: '#f0f9ff', fontSize: '0.65rem' }}>SALES</th>
+                                                <th className="db-num" style={{ background: 'var(--bg-main)', fontSize: '0.65rem' }}>QTY</th>
+                                                <th className="db-num" style={{ background: 'var(--bg-surface)', fontSize: '0.65rem', borderLeft: '1px solid var(--border-light)' }}>SALES</th>
                                             </Fragment>
                                         ))}
                                     </tr>

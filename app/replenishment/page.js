@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { DataCache } from "@/lib/data-cache";
+import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 
@@ -38,40 +39,32 @@ export default function ReplenishmentPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    // Initial restoration & Hydration fix
-    useEffect(() => {
-        Promise.resolve().then(() => {
-            const cached = DataCache.get("replenishment_recs");
-            if (cached) setRecs(cached || []);
-        });
-    import { fetchWithAuth } from "@/lib/api-client";
-    import "@/styles/dashboard.css";
-    ...
-        const fetchRecommendations = useCallback(async (isBackground = false) => {
-            if (!isBackground) setLoading(true);
-            setError(null);
-            try {
-                const cacheKey = "replenishment_recs";
-                const res = await fetchWithAuth("/api/replenishment");
-                if (!res.ok) {
-                    const body = await res.json().catch(() => ({}));
-                    throw new Error(body.message || `HTTP ${res.status}`);
-                }
-                const data = await res.json();
-                setRecs(data || []);
-                DataCache.set(cacheKey, data || []);
-            } catch (err) {
-                if (err.message === "Unauthorized") return;
-                if (!isBackground) setError(err.message || "Failed to generate recommendations. Please try again.");
-            } finally {
-                setLoading(false);
+    const fetchRecommendations = useCallback(async (isBackground = false) => {
+        if (!isBackground) setLoading(true);
+        setError(null);
+        try {
+            const cacheKey = "replenishment_recs";
+            const res = await fetchWithAuth("/api/replenishment");
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.message || `HTTP ${res.status}`);
             }
-        }, []);
+            const data = await res.json();
+            setRecs(data || []);
+            DataCache.set(cacheKey, data || []);
+        } catch (err) {
+            if (err.message === "Unauthorized") return;
+            if (!isBackground) setError(err.message || "Failed to generate recommendations. Please try again.");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
     useEffect(() => {
         const cacheKey = "replenishment_recs";
         const cached = DataCache.get(cacheKey);
         if (cached) {
+            setRecs(cached || []);
             Promise.resolve().then(() => fetchRecommendations(true));
         } else {
             Promise.resolve().then(() => fetchRecommendations(false));
@@ -89,7 +82,7 @@ export default function ReplenishmentPage() {
             <main className="db-main">
                 <div className="db-page-title">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.5rem' }}>
-                        <div style={{ background: '#fef3c7', color: '#d97706', padding: '0.75rem', borderRadius: '12px' }}>
+                        <div style={{ background: 'var(--bg-surface)', color: 'var(--accent-primary)', padding: '0.75rem', borderRadius: '12px', border: '1px solid var(--border-light)' }}>
                             <IconSparkles />
                         </div>
                         <h1 style={{ margin: 0 }}>Replenishment Recommendations</h1>
@@ -98,9 +91,9 @@ export default function ReplenishmentPage() {
                 </div>
 
                 <div className="db-stats" style={{ marginBottom: '2rem' }}>
-                    <div className="db-stat-card db-stat-blue">
+                    <div className="db-stat-card db-stat-danger">
                         <span className="db-stat-label">Critical Alerts</span>
-                        <span className="db-stat-value" style={{ color: '#ef4444' }}>{stats.highPriority}</span>
+                        <span className="db-stat-value" style={{ color: 'var(--status-danger)' }}>{stats.highPriority}</span>
                         <span className="db-stat-sub">High Priority Items</span>
                     </div>
                     <div className="db-stat-card">
@@ -117,7 +110,7 @@ export default function ReplenishmentPage() {
 
                 <div className="db-toolbar" style={{ borderRadius: '16px', padding: '1.25rem' }}>
                     <div className="db-toolbar-left">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#64748b', fontSize: '0.85rem', fontWeight: '500' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem', fontWeight: '500' }}>
                             <IconCalendar />
                             <span>Last Analysis: {recs.length > 0 ? fmtDate(recs[0].generatedDate) : "Never"}</span>
                         </div>
@@ -141,9 +134,9 @@ export default function ReplenishmentPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap" style={{ borderRadius: '16px', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
+                <div className="db-table-wrap" style={{ borderRadius: '16px', overflow: 'hidden' }}>
                     <table className="db-table">
-                        <thead style={{ background: '#f8fafc' }}>
+                        <thead style={{ background: 'var(--bg-main)' }}>
                             <tr>
                                 <th style={{ padding: '1.25rem' }}>Rec. ID</th>
                                 <th style={{ padding: '1.25rem' }}>Item ID</th>
@@ -159,17 +152,18 @@ export default function ReplenishmentPage() {
                                 <tr><td colSpan={7} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
-                                        <span style={{ color: '#64748b' }}>Running replenishment algorithms...</span>
+                                        <span style={{ color: 'var(--text-secondary)' }}>Running replenishment algorithms...</span>
                                     </div>
                                 </td></tr>
                             ) : recs.length === 0 ? (
                                 <tr><td colSpan={7} className="si-empty-cell" style={{ padding: '4rem' }}>
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
-                                        <IconAlertCircle />
-                                        <span>No replenishment needed at this time. All scanned items have healthy stock levels (&gt;50 units).</span>
+                                        <div style={{ color: 'var(--status-warning)' }}><IconAlertCircle /></div>
+                                        <span>No replenishment needed at this time. All scanned items have healthy stock levels.</span>
                                         <button 
                                             onClick={() => fetchRecommendations()} 
-                                            style={{ background: 'none', border: '1px solid #2563eb', color: '#2563eb', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem' }}
+                                            className="db-action-btn db-action-sync"
+                                            style={{ height: '36px', padding: '0 1.5rem', fontSize: '0.85rem' }}
                                         >
                                             Scan Again
                                         </button>
@@ -178,7 +172,7 @@ export default function ReplenishmentPage() {
                             ) : recs.map(r => (
                                 <tr key={r.recommendationId} className="db-clickable-row">
                                     <td style={{ padding: '1.25rem' }}>
-                                        <span style={{ fontWeight: '700', color: '#2563eb' }}>{r.recommendationId}</span>
+                                        <span style={{ fontWeight: '700', color: 'var(--accent-primary)' }}>{r.recommendationId}</span>
                                     </td>
                                     <td>
                                         <span className="db-inv-id">{r.itemId}</span>
@@ -186,13 +180,13 @@ export default function ReplenishmentPage() {
                                     <td className="db-desc">{r.description}</td>
                                     <td style={{ textAlign: 'right', fontWeight: '500' }}>{r.currentStock}</td>
                                     <td style={{ textAlign: 'right' }}>
-                                        <div style={{ fontWeight: '700', color: '#0f172a' }}>+{r.suggestedQty}</div>
-                                        <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>units</div>
+                                        <div style={{ fontWeight: '700', color: 'var(--text-primary)' }}>+{r.suggestedQty}</div>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>units</div>
                                     </td>
                                     <td style={{ textAlign: 'center' }}>
                                         <span className={priorityClass(r.priorityLevel)}>{r.priorityLevel}</span>
                                     </td>
-                                    <td style={{ padding: '1.25rem', textAlign: 'right', color: '#64748b', fontSize: '0.8rem' }}>
+                                    <td style={{ padding: '1.25rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                                         {fmtDate(r.generatedDate)}
                                     </td>
                                 </tr>
@@ -201,14 +195,14 @@ export default function ReplenishmentPage() {
                     </table>
                 </div>
 
-                <div style={{ marginTop: '2rem', padding: '1.5rem', background: '#f8fafc', borderRadius: '16px', border: '1px dashed #cbd5e1' }}>
+                <div style={{ marginTop: '2rem', padding: '1.5rem', background: 'var(--bg-main)', borderRadius: '16px', border: '1px dashed var(--border-medium)' }}>
                     <div style={{ display: 'flex', gap: '1rem' }}>
-                        <div style={{ color: '#3b82f6' }}><IconAlertCircle /></div>
+                        <div style={{ color: 'var(--accent-primary)' }}><IconAlertCircle /></div>
                         <div>
-                            <h4 style={{ margin: '0 0 0.5rem 0', color: '#0f172a' }}>How suggestions are calculated</h4>
-                            <p style={{ margin: 0, fontSize: '0.85rem', color: '#64748b', lineHeight: '1.5' }}>
-                                Recommendations are generated by analyzing live warehouse availability against a baseline threshold of 50 units.
-                                <strong>High Priority</strong> is assigned to items with fewer than 10 units remaining.
+                            <h4 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-primary)' }}>How suggestions are calculated</h4>
+                            <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                                Recommendations are generated by analyzing live warehouse availability against a baseline threshold.
+                                <strong>High Priority</strong> is assigned to items with critical stock levels remaining.
                             </p>
                         </div>
                     </div>

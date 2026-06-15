@@ -247,7 +247,7 @@ export default function PurchaseOrdersPage() {
                 <div className="db-toolbar" style={{ padding: '1.25rem' }}>
                     <div className="db-toolbar-left" style={{ flexWrap: 'wrap', gap: '1rem' }}>
                         <div className="db-select-wrapper" style={{ paddingLeft: '0.75rem', paddingRight: '0.5rem', minWidth: 'fit-content', height: '42px' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: '#64748b', marginRight: '0.5rem', textTransform: 'uppercase' }}>From:</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-secondary)', marginRight: '0.5rem', textTransform: 'uppercase' }}>From:</span>
                             <input
                                 type="date"
                                 className="db-select"
@@ -258,7 +258,7 @@ export default function PurchaseOrdersPage() {
                         </div>
 
                         <div className="db-select-wrapper" style={{ paddingLeft: '0.75rem', paddingRight: '0.5rem', minWidth: 'fit-content', height: '42px' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: '#64748b', marginRight: '0.5rem', textTransform: 'uppercase' }}>Status:</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-secondary)', marginRight: '0.5rem', textTransform: 'uppercase' }}>Status:</span>
                             <select
                                 className="db-select"
                                 style={{ width: '140px', padding: '0 0.25rem', height: '36px', fontSize: '0.8rem' }}
@@ -295,7 +295,7 @@ export default function PurchaseOrdersPage() {
                                         right: '1rem', 
                                         background: 'none', 
                                         border: 'none', 
-                                        color: '#94a3b8', 
+                                        color: 'var(--text-muted)', 
                                         cursor: 'pointer',
                                         fontSize: '1.2rem',
                                         display: 'flex',
@@ -309,8 +309,8 @@ export default function PurchaseOrdersPage() {
                             )}
                         </div>
                         <button 
-                            className="si-view-btn" 
-                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#0f172a', color: '#fff', border: 'none', padding: '0.6rem 1.25rem', height: '42px', marginLeft: '1rem' }}
+                            className="db-action-sync" 
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem', height: '42px', marginLeft: '1rem', borderRadius: 'var(--radius-lg)', border: 'none', color: '#fff', fontWeight: '700', cursor: 'pointer' }}
                             onClick={handleExport}
                             disabled={exporting}
                         >
@@ -353,7 +353,7 @@ export default function PurchaseOrdersPage() {
                                     <Fragment key={key}>
                                         <tr className={`db-clickable-row ${isOpen ? "po-row-expanded" : ""}`} onClick={() => toggleExpand(key)}>
                                             <td>
-                                                <span className={`po-expand-icon ${isOpen ? "po-expand-open" : ""}`}>
+                                                <span className={`po-expand-icon ${isOpen ? "po-expand-open" : ""}`} style={{ color: 'var(--text-muted)' }}>
                                                     <IconChevronDown />
                                                 </span>
                                             </td>
@@ -365,7 +365,7 @@ export default function PurchaseOrdersPage() {
                                             <td>
                                                 <span className={`db-status-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
                                             </td>
-                                            <td><span style={{ fontSize: '0.8rem', color: '#475569' }}>{fmtDate(po.date)}</span></td>
+                                            <td><span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
                                             <td onClick={(e) => e.stopPropagation()}>
                                                 <input 
                                                     type="date" 
@@ -390,7 +390,7 @@ export default function PurchaseOrdersPage() {
                                                     <option value="Cancelled">Cancelled</option>
                                                 </select>
                                             </td>
-                                            <td style={{ textAlign: "right" }}><strong style={{ color: '#0f172a' }}>₱{fmt(po.totalAmount)}</strong></td>
+                                            <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)' }}>₱{fmt(po.totalAmount)}</strong></td>
                                         </tr>
                                         {isOpen && po.lines.length > 0 && (
                                             <tr className="po-lines-row">
@@ -417,9 +417,9 @@ export default function PurchaseOrdersPage() {
                                                                                 {line.inventoryId}
                                                                             </span>
                                                                         </td>
-                                                                        <td style={{ color: '#64748b' }}>{line.description}</td>
+                                                                        <td style={{ color: 'var(--text-secondary)' }}>{line.description}</td>
                                                                         <td style={{ textAlign: 'right', fontWeight: '700' }}>{Number(line.qty).toLocaleString()} {line.uom}</td>
-                                                                        <td style={{ textAlign: 'right', color: '#0f172a' }}>₱{fmt(line.extCost)}</td>
+                                                                        <td style={{ textAlign: 'right', color: 'var(--text-primary)' }}>₱{fmt(line.extCost)}</td>
                                                                     </tr>
                                                                 ))}
                                                             </tbody>
@@ -461,7 +461,7 @@ export default function PurchaseOrdersPage() {
                         <span className="po-summary-value">{orders.length} Orders</span>
                     </div>
 
-                    <div className="po-summary-item" style={{ color: summaryStats.pendingEtaCount > 0 ? '#dc2626' : 'inherit' }}>
+                    <div className="po-summary-item" style={{ color: summaryStats.pendingEtaCount > 0 ? 'var(--status-danger)' : 'inherit' }}>
                         <span className="po-summary-label">Pending ETA</span>
                         <span className="po-summary-value">{summaryStats.pendingEtaCount}</span>
                     </div>
@@ -472,8 +472,8 @@ export default function PurchaseOrdersPage() {
                     </div>
 
                     <div className="po-summary-item" style={{ borderBottom: 'none', paddingTop: '1.25rem' }}>
-                        <span className="po-summary-label" style={{ fontWeight: '700', color: '#0f172a' }}>Total Value</span>
-                        <span className="po-summary-value" style={{ fontSize: '1.1rem', color: '#2563eb' }}>₱{fmt(summaryStats.totalValue)}</span>
+                        <span className="po-summary-label" style={{ fontWeight: '700', color: 'var(--text-primary)' }}>Total Value</span>
+                        <span className="po-summary-value" style={{ fontSize: '1.1rem', color: 'var(--accent-primary)' }}>₱{fmt(summaryStats.totalValue)}</span>
                     </div>
                 </div>
 
@@ -489,8 +489,8 @@ export default function PurchaseOrdersPage() {
                     </p>
                 </div>
 
-                <div style={{ padding: '1rem', border: '1px dashed #cbd5e1', borderRadius: '12px', textAlign: 'center' }}>
-                    <span style={{ fontSize: '0.7rem', color: '#94a3b8', textTransform: 'uppercase', fontWeight: '700' }}>KGS Purchasing System v1.0</span>
+                <div style={{ padding: '1rem', border: '1px dashed var(--border-medium)', borderRadius: '12px', textAlign: 'center' }}>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '700' }}>KGS Purchasing System v1.0</span>
                 </div>
             </aside>
 

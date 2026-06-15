@@ -176,7 +176,7 @@ export default function SuppliersPage() {
             <main className="db-main">
                 <div className="db-page-title">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.5rem' }}>
-                        <div style={{ background: '#eff6ff', color: '#2563eb', padding: '0.75rem', borderRadius: '12px' }}>
+                        <div style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-primary)', padding: '0.75rem', borderRadius: '12px' }}>
                             <IconTruck />
                         </div>
                         <h1 style={{ margin: 0 }}>Suppliers Directory</h1>
@@ -218,7 +218,7 @@ export default function SuppliersPage() {
                                         right: '1rem', 
                                         background: 'none', 
                                         border: 'none', 
-                                        color: '#94a3b8', 
+                                        color: 'var(--text-muted)', 
                                         cursor: 'pointer',
                                         fontSize: '1.2rem',
                                         display: 'flex',
@@ -236,9 +236,9 @@ export default function SuppliersPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap" style={{ borderRadius: '16px', overflow: 'hidden', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}>
+                <div className="db-table-wrap" style={{ borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border-light)', boxShadow: 'var(--shadow-md)' }}>
                     <table className="db-table">
-                        <thead style={{ background: '#f8fafc' }}>
+                        <thead style={{ background: 'var(--bg-main)' }}>
                             <tr>
                                 <th style={{ width: '200px', padding: '1.25rem' }}>Supplier ID</th>
                                 <th style={{ padding: '1.25rem' }}>Supplier Name</th>
@@ -250,7 +250,7 @@ export default function SuppliersPage() {
                                             style={{ 
                                                 background: 'none', 
                                                 border: 'none', 
-                                                color: '#3b82f6', 
+                                                color: 'var(--accent-primary)', 
                                                 cursor: 'pointer', 
                                                 padding: '2px',
                                                 display: 'flex',
@@ -258,7 +258,7 @@ export default function SuppliersPage() {
                                                 borderRadius: '50%',
                                                 transition: 'background 0.2s'
                                             }}
-                                            onMouseEnter={e => e.currentTarget.style.background = '#dbeafe'}
+                                            onMouseEnter={e => e.currentTarget.style.background = 'rgba(59, 130, 246, 0.1)'}
                                             onMouseLeave={e => e.currentTarget.style.background = 'none'}
                                             title="How is this calculated?"
                                         >
@@ -274,7 +274,7 @@ export default function SuppliersPage() {
                                 <tr><td colSpan={4} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
-                                        <span style={{ color: '#64748b', fontWeight: '500' }}>Fetching suppliers from Acumatica...</span>
+                                        <span style={{ color: 'var(--text-secondary)', fontWeight: '500' }}>Fetching suppliers from Acumatica...</span>
                                     </div>
                                 </td></tr>
                             ) : vendors.length === 0 ? (
@@ -282,11 +282,11 @@ export default function SuppliersPage() {
                             ) : vendors.map(v => (
                                 <tr key={v.vendorId} className="db-clickable-row">
                                     <td style={{ padding: '1.25rem' }}>
-                                        <span className="db-inv-id" style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0' }}>{v.vendorId}</span>
+                                        <span className="db-inv-id" style={{ background: 'var(--bg-main)', color: 'var(--text-secondary)', border: '1px solid var(--border-light)' }}>{v.vendorId}</span>
                                     </td>
                                     <td style={{ padding: '1.25rem' }}>
-                                        <div style={{ fontWeight: '600', color: '#0f172a', fontSize: '0.95rem' }}>{v.vendorName}</div>
-                                        <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem' }}>{v.status}</div>
+                                        <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.95rem' }}>{v.vendorName}</div>
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>{v.status}</div>
                                     </td>
                                     <td style={{ padding: '1.25rem', textAlign: 'center' }}>
                                         <div style={{ 
@@ -296,17 +296,17 @@ export default function SuppliersPage() {
                                             width: '50px', 
                                             height: '50px', 
                                             borderRadius: '50%', 
-                                            border: `4px solid ${v.reliabilityScore >= 90 ? '#22c55e' : v.reliabilityScore >= 80 ? '#eab308' : '#ef4444'}`,
+                                            border: `4px solid ${v.reliabilityScore >= 90 ? 'var(--status-success)' : v.reliabilityScore >= 80 ? 'var(--status-warning)' : 'var(--status-danger)'}`,
                                             fontWeight: '700',
                                             fontSize: '0.85rem',
-                                            color: '#0f172a',
-                                            background: '#fff'
+                                            color: 'var(--text-primary)',
+                                            background: 'var(--bg-surface)'
                                         }}>
                                             {v.reliabilityScore}%
                                         </div>
                                     </td>
                                     <td style={{ padding: '1.25rem' }}>
-                                        <div className="db-select-wrapper" style={{ height: '40px', background: '#fff' }}>
+                                        <div className="db-select-wrapper" style={{ height: '40px', background: 'var(--bg-surface)' }}>
                                             <IconClock />
                                             <select
                                                 className="db-select"
@@ -352,36 +352,36 @@ export default function SuppliersPage() {
                         
                         <div className="idm-content" style={{ padding: '2rem' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
-                                <div style={{ background: '#eff6ff', color: '#2563eb', padding: '0.75rem', borderRadius: '12px' }}>
+                                <div style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-primary)', padding: '0.75rem', borderRadius: '12px' }}>
                                     <IconInfo />
                                 </div>
-                                <h2 style={{ margin: 0, fontSize: '1.5rem', color: '#0f172a' }}>Reliability Score</h2>
+                                <h2 style={{ margin: 0, fontSize: '1.5rem', color: 'var(--text-primary)' }}>Reliability Score</h2>
                             </div>
 
-                            <p style={{ color: '#475569', lineHeight: '1.6', marginBottom: '1.5rem' }}>
+                            <p style={{ color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '1.5rem' }}>
                                 The Reliability Score measures how consistently a supplier delivers orders on or before their promised date.
                             </p>
 
-                            <div style={{ background: '#f8fafc', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '1.5rem' }}>
-                                <h4 style={{ margin: '0 0 0.75rem 0', color: '#0f172a', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Formula</h4>
-                                <div style={{ fontSize: '1.1rem', fontWeight: '700', color: '#2563eb', textAlign: 'center', padding: '1rem 0' }}>
+                            <div style={{ background: 'var(--bg-main)', padding: '1.5rem', borderRadius: '12px', border: '1px solid var(--border-light)', marginBottom: '1.5rem' }}>
+                                <h4 style={{ margin: '0 0 0.75rem 0', color: 'var(--text-primary)', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Formula</h4>
+                                <div style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-primary)', textAlign: 'center', padding: '1rem 0' }}>
                                     (On-Time Orders ÷ Total Orders) × 100
                                 </div>
                             </div>
 
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                                 <div style={{ display: 'flex', gap: '1rem' }}>
-                                    <div style={{ color: '#22c55e', fontWeight: '700' }}>●</div>
+                                    <div style={{ color: 'var(--status-success)', fontWeight: '700' }}>●</div>
                                     <div>
-                                        <strong style={{ color: '#0f172a', display: 'block', marginBottom: '0.25rem' }}>On-Time Definition</strong>
-                                        <span style={{ color: '#64748b', fontSize: '0.9rem' }}>Orders where the actual Receipt Date is less than or equal to the Promised Date.</span>
+                                        <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>On-Time Definition</strong>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Orders where the actual Receipt Date is less than or equal to the Promised Date.</span>
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '1rem' }}>
-                                    <div style={{ color: '#3b82f6', fontWeight: '700' }}>●</div>
+                                    <div style={{ color: 'var(--accent-primary)', fontWeight: '700' }}>●</div>
                                     <div>
-                                        <strong style={{ color: '#0f172a', display: 'block', marginBottom: '0.25rem' }}>Included Data</strong>
-                                        <span style={{ color: '#64748b', fontSize: '0.9rem' }}>Only "Closed" or "Completed" purchase orders with valid promised and receipt dates are factored into the score.</span>
+                                        <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>Included Data</strong>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Only "Closed" or "Completed" purchase orders with valid promised and receipt dates are factored into the score.</span>
                                     </div>
                                 </div>
                             </div>
@@ -392,8 +392,8 @@ export default function SuppliersPage() {
                                     width: '100%', 
                                     marginTop: '2rem', 
                                     padding: '0.75rem', 
-                                    background: '#0f172a', 
-                                    color: '#fff', 
+                                    background: 'var(--text-primary)', 
+                                    color: 'var(--text-inverse)', 
                                     border: 'none', 
                                     borderRadius: '8px', 
                                     fontWeight: '600', 

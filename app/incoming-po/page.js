@@ -174,7 +174,7 @@ export default function IncomingPOPage() {
                 <div className="db-toolbar" style={{ height: 'auto', padding: '1.25rem' }}>
                     <div className="db-toolbar-left" style={{ flexWrap: 'wrap', gap: '1rem' }}>
                         <div className="db-select-wrapper" style={{ paddingLeft: '0.75rem', paddingRight: '0.5rem', minWidth: 'fit-content', height: '42px' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: '#64748b', marginRight: '0.5rem', textTransform: 'uppercase' }}>From:</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-secondary)', marginRight: '0.5rem', textTransform: 'uppercase' }}>From:</span>
                             <input
                                 type="date"
                                 className="db-select"
@@ -183,14 +183,14 @@ export default function IncomingPOPage() {
                                 onChange={(e) => setStartDate(e.target.value)}
                             />
                             {!startDate && (
-                                <span style={{ fontSize: '0.7rem', color: '#94a3b8', fontStyle: 'italic', marginLeft: '0.5rem' }}>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic', marginLeft: '0.5rem' }}>
                                     (Current Month)
                                 </span>
                             )}
                         </div>
 
                         <div className="db-select-wrapper" style={{ paddingLeft: '0.75rem', paddingRight: '0.5rem', minWidth: 'fit-content', height: '42px' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: '#64748b', marginRight: '0.5rem', textTransform: 'uppercase' }}>Status:</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-secondary)', marginRight: '0.5rem', textTransform: 'uppercase' }}>Status:</span>
                             <select
                                 className="db-select"
                                 style={{ width: '140px', padding: '0 0.25rem', height: '36px', fontSize: '0.8rem' }}
@@ -212,8 +212,9 @@ export default function IncomingPOPage() {
 
                         {(startDate || status !== "Open") && (
                             <button
+                                className="db-action-btn"
                                 onClick={() => { setStartDate(""); setStatus("Open"); }}
-                                style={{ background: '#fee2e2', border: 'none', color: '#ef4444', fontSize: '0.7rem', cursor: 'pointer', padding: '6px 12px', borderRadius: '8px', fontWeight: '700', textTransform: 'uppercase' }}
+                                style={{ height: '32px', background: 'var(--status-danger)', border: 'none', color: '#fff', fontSize: '0.7rem', padding: '0 12px' }}
                             >
                                 Reset Filters
                             </button>
@@ -238,7 +239,7 @@ export default function IncomingPOPage() {
                                         right: '1rem', 
                                         background: 'none', 
                                         border: 'none', 
-                                        color: '#94a3b8', 
+                                        color: 'var(--text-muted)', 
                                         cursor: 'pointer',
                                         fontSize: '1.2rem',
                                         display: 'flex',
@@ -294,28 +295,28 @@ export default function IncomingPOPage() {
                                     <Fragment key={key}>
                                         <tr className={`db-clickable-row ${isOpen ? "po-row-expanded" : ""}`} onClick={() => toggleExpand(key)}>
                                             <td>
-                                                <span className={`po-expand-icon ${isOpen ? "po-expand-open" : ""}`} style={{ color: '#94a3b8' }}>
+                                                <span className={`po-expand-icon ${isOpen ? "po-expand-open" : ""}`} style={{ color: 'var(--text-muted)' }}>
                                                     <IconChevronDown />
                                                 </span>
                                             </td>
-                                            <td><span className="db-inv-id" style={{ background: '#eff6ff', borderColor: '#dbeafe' }}>{po.orderNbr}</span></td>
-                                            <td><span style={{ fontSize: '0.75rem', fontWeight: '600', color: '#64748b' }}>{po.orderType}</span></td>
+                                            <td><span className="db-inv-id">{po.orderNbr}</span></td>
+                                            <td><span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)' }}>{po.orderType}</span></td>
                                             <td>
-                                                <div style={{ fontWeight: '700', color: '#0f172a', fontSize: '0.85rem' }}>{po.vendorName || po.vendorId}</div>
-                                                <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{po.vendorId}</div>
+                                                <div style={{ fontWeight: '700', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{po.vendorName || po.vendorId}</div>
+                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{po.vendorId}</div>
                                             </td>
                                             <td>
                                                 <span className={`db-status-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
                                             </td>
-                                            <td><span style={{ fontSize: '0.8rem', color: '#475569' }}>{fmtDate(po.date)}</span></td>
-                                            <td style={{ textAlign: "right" }}><strong style={{ color: '#0f172a' }}>₱{fmt(po.totalAmount)}</strong></td>
+                                            <td><span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
+                                            <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)' }}>₱{fmt(po.totalAmount)}</strong></td>
                                         </tr>
                                         {isOpen && po.lines.length > 0 && (
                                             <tr className="po-lines-row">
                                                 <td colSpan={7} style={{ padding: '0 1rem 1rem 3.5rem' }}>      
-                                                    <div className="po-lines-wrap" style={{ borderRadius: '12px', border: '1px solid #e2e8f0', overflow: 'hidden', boxShadow: '0 4px 12px rgba(0,0,0,0.03)' }}>
+                                                    <div className="po-lines-wrap" style={{ borderRadius: '12px', border: '1px solid var(--border-light)', overflow: 'hidden', boxShadow: 'var(--shadow-md)' }}>
                                                         <table className="po-lines-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
-                                                            <thead style={{ background: '#f8fafc' }}>
+                                                            <thead style={{ background: 'var(--bg-main)' }}>
                                                                 <tr>
                                                                     <th style={{ textAlign: 'left', padding: '0.75rem' }}>Item</th>
                                                                     <th style={{ textAlign: 'left', padding: '0.75rem' }}>Description</th>
@@ -325,7 +326,7 @@ export default function IncomingPOPage() {
                                                             </thead>
                                                             <tbody>
                                                                 {po.lines.map((line, i) => (
-                                                                    <tr key={i} style={{ borderTop: '1px solid #f1f5f9' }}>
+                                                                    <tr key={i} style={{ borderTop: '1px solid var(--border-light)' }}>
                                                                         <td style={{ padding: '0.75rem' }}>     
                                                                             <span 
                                                                                 className="db-inv-id si-clickable-id"
@@ -335,9 +336,9 @@ export default function IncomingPOPage() {
                                                                                 {line.inventoryId}
                                                                             </span>
                                                                         </td>
-                                                                        <td style={{ padding: '0.75rem', color: '#64748b' }}>{line.description}</td>
+                                                                        <td style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>{line.description}</td>
                                                                         <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '700' }}>{Number(line.qty).toLocaleString()} {line.uom}</td>
-                                                                        <td style={{ padding: '0.75rem', textAlign: 'right', color: '#0f172a' }}>₱{fmt(line.extCost)}</td>
+                                                                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)' }}>₱{fmt(line.extCost)}</td>
                                                                     </tr>
                                                                 ))}
                                                             </tbody>

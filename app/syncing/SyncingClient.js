@@ -20,13 +20,13 @@ const IconRocket = () => (
 );
 
 const IconCheck = () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--status-success)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="20 6 9 17 4 12" />
     </svg>
 );
 
 const IconAlert = () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--status-danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
     </svg>
 );
@@ -173,26 +173,26 @@ export default function SyncingClient() {
 
                 {!isSyncing && !complete && !error ? (
                     <div className="qs-strategy-list" style={{ maxWidth: '700px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr', gap: '1rem' }}>
-                        <button className="qs-card" onClick={() => startSync('delta')} style={{ padding: '1.5rem', border: '1px solid #e2e8f0' }}>
-                            <div className="qs-card-icon" style={{ color: '#f59e0b' }}><IconRocket /></div>
+                        <button className="qs-card" onClick={() => startSync('delta')} style={{ padding: '1.5rem', border: '1px solid var(--border-light)' }}>
+                            <div className="qs-card-icon" style={{ color: 'var(--status-warning)' }}><IconRocket /></div>
                             <div className="qs-card-info">
-                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: '#b45309' }}>Sync Today&apos;s Changes (Fast)</span>
+                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: 'var(--status-warning)' }}>Sync Today&apos;s Changes (Fast)</span>
                                 <span className="qs-card-desc">Only sync items that were sold or modified today. Recommended for mid-day updates.</span>
                             </div>
                         </button>
 
-                        <button className="qs-card" onClick={() => startSync('quick')} style={{ padding: '1.5rem', border: '1px solid #e2e8f0' }}>
-                            <div className="qs-card-icon" style={{ color: '#3b82f6' }}><IconSync /></div>
+                        <button className="qs-card" onClick={() => startSync('quick')} style={{ padding: '1.5rem', border: '1px solid var(--border-light)' }}>
+                            <div className="qs-card-icon" style={{ color: 'var(--accent-primary)' }}><IconSync /></div>
                             <div className="qs-card-info">
-                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: '#1d4ed8' }}>Standard Incremental Sync</span>
+                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: 'var(--accent-primary)' }}>Standard Incremental Sync</span>
                                 <span className="qs-card-desc">Sync all changes since the last synchronization. Efficient and reliable.</span>
                             </div>
                         </button>
 
-                        <button className="qs-card" onClick={() => startSync('full')} style={{ padding: '1.5rem', border: '1px solid #e2e8f0' }}>
-                            <div className="qs-card-icon" style={{ color: '#8b5cf6' }}><IconSync /></div>
+                        <button className="qs-card" onClick={() => startSync('full')} style={{ padding: '1.5rem', border: '1px solid var(--border-light)' }}>
+                            <div className="qs-card-icon" style={{ color: 'var(--accent-secondary)' }}><IconSync /></div>
                             <div className="qs-card-info">
-                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: '#6d28d9' }}>Full Daily Refresh</span>
+                                <span className="qs-card-title" style={{ fontSize: '1.1rem', color: 'var(--accent-secondary)' }}>Full Daily Refresh</span>
                                 <span className="qs-card-desc">Sync all 3,000+ items and full sales history. Use for initial setup or end-of-day reporting.</span>
                             </div>
                         </button>
@@ -202,7 +202,7 @@ export default function SyncingClient() {
                         <div className={`qs-status-banner ${complete ? 'complete' : error ? 'error' : 'syncing'}`}>
                             <div style={{ 
                                 width: '10px', height: '10px', borderRadius: '50%', 
-                                background: complete ? '#22c55e' : error ? '#ef4444' : '#3b82f6',
+                                background: complete ? 'var(--status-success)' : error ? 'var(--status-danger)' : 'var(--accent-primary)',
                                 animation: !complete && !error ? 'pulse 1.5s infinite' : 'none',
                                 marginRight: '10px'
                             }}></div>
@@ -214,7 +214,7 @@ export default function SyncingClient() {
                         </div>
 
                         <div style={{ textAlign: 'center', margin: '2rem 0' }}>
-                            <div style={{ fontSize: '3.5rem', fontWeight: '800', color: error ? '#ef4444' : 'var(--primary)' }}>{overallProgress}%</div>
+                            <div style={{ fontSize: '3.5rem', fontWeight: '800', color: error ? 'var(--status-danger)' : 'var(--accent-primary)' }}>{overallProgress}%</div>
                             <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>Overall Progress</div>
                         </div>
 
@@ -227,25 +227,25 @@ export default function SyncingClient() {
                                             {data.count > 0 && (
                                                 <span style={{ 
                                                     fontSize: '0.75rem', 
-                                                    background: '#f1f5f9', 
+                                                    background: 'var(--bg-main)', 
                                                     padding: '2px 8px', 
                                                     borderRadius: '12px', 
-                                                    color: '#64748b',
+                                                    color: 'var(--text-secondary)',
                                                     fontWeight: '600'
                                                 }}>
                                                     {data.count.toLocaleString()} {name === 'Inventory' ? 'items' : 'records'}
                                                 </span>
                                             )}
                                         </div>
-                                        <span style={{ fontSize: '0.9rem', fontWeight: '700', color: data.status === 'done' ? '#16a34a' : 'inherit' }}>
+                                        <span style={{ fontSize: '0.9rem', fontWeight: '700', color: data.status === 'done' ? 'var(--status-success)' : 'inherit' }}>
                                             {data.progress}%
                                         </span>
                                     </div>
-                                    <div className="sync-progress-track" style={{ height: '10px', background: '#e2e8f0', borderRadius: '5px', overflow: 'hidden' }}>
+                                    <div className="sync-progress-track" style={{ height: '10px', background: 'var(--border-light)', borderRadius: '5px', overflow: 'hidden' }}>
                                         <div className="sync-progress-bar" style={{ 
                                             height: '100%',
                                             width: `${data.progress}%`,
-                                            background: error ? '#fca5a5' : data.status === 'done' ? '#22c55e' : 'var(--primary)',
+                                            background: error ? 'rgba(239, 68, 68, 0.4)' : data.status === 'done' ? 'var(--status-success)' : 'var(--accent-primary)',
                                             transition: 'width 0.3s ease'
                                         }} />
                                     </div>
@@ -263,7 +263,7 @@ export default function SyncingClient() {
 
                         {(complete || error) && (
                             <div style={{ marginTop: '2rem', display: 'flex', gap: '1rem' }}>
-                                <button className="sync-start-btn" onClick={() => { setComplete(false); setError(null); setSections({}); setOverallProgress(0); setLogs([]); }} style={{ flex: 1, background: '#64748b' }}>
+                                <button className="sync-start-btn" onClick={() => { setComplete(false); setError(null); setSections({}); setOverallProgress(0); setLogs([]); }} style={{ flex: 1, background: 'var(--text-secondary)' }}>
                                     Sync Again
                                 </button>
                                 <Link href="/dashboard" style={{ flex: 1, textDecoration: 'none' }}>

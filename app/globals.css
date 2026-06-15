@@ -3,13 +3,15 @@
   /* --- Light Theme Palette --- */
   --bg-main: #f8fafc;
   --bg-surface: #ffffff;
-  --bg-sidebar: #0f172a;
+  --bg-sidebar: #ffffff;
   --bg-input: #ffffff;
   
   --text-primary: #0f172a;
   --text-secondary: #475569;
   --text-muted: #94a3b8;
   --text-inverse: #ffffff;
+  --text-sidebar: #475569;
+  --text-sidebar-active: #3b82f6;
   
   --accent-primary: #3b82f6;
   --accent-secondary: #6366f1;
@@ -22,6 +24,7 @@
   --border-light: #e2e8f0;
   --border-medium: #cbd5e1;
   --border-dark: #94a3b8;
+  --border-sidebar: #e2e8f0;
   
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
@@ -49,6 +52,8 @@
   --text-secondary: #94a3b8;
   --text-muted: #64748b;
   --text-inverse: #020617;
+  --text-sidebar: #94a3b8;
+  --text-sidebar-active: #60a5fa;
   
   --accent-primary: #60a5fa;
   --accent-secondary: #818cf8;
@@ -61,6 +66,7 @@
   --border-light: #1e293b;
   --border-medium: #334155;
   --border-dark: #475569;
+  --border-sidebar: rgba(255, 255, 255, 0.08);
   
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);

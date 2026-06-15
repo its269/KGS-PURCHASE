@@ -112,7 +112,7 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                                     <span className="idm-source idm-source-live">● Live from Acumatica</span>
                                 )}
                                 {detail.source === "mysql" && (
-                                    <span className="idm-source idm-source-live" style={{ color: '#10b981', background: '#ecfdf5', borderColor: '#a7f3d0' }}>● Live from MySQL</span>
+                                    <span className="idm-source idm-source-live">● Live from MySQL</span>
                                 )}
                                 {detail.source === "supabase" && (
                                     <span className="idm-source idm-source-cache">● From local database</span>
@@ -138,7 +138,7 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                                 <span className="idm-card-label">Total Available</span>
                                 <div className="idm-card-value-group">
                                     <span className="idm-card-value">{(Number(detail.totalAvailable) || 0).toLocaleString()}</span>
-                                    <span className="idm-card-label" style={{ fontSize: '0.6rem', color: '#94a3b8' }}>Units</span>
+                                    <span className="idm-card-label" style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>Units</span>
                                 </div>
                             </div>
                             <div className="idm-card">
