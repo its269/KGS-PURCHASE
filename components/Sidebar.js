@@ -65,11 +65,11 @@ const IconMoon = () => (
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const { isDarkMode, toggleTheme, mounted: themeMounted } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [userName, setUserName] = useState("Admin User");
   const [isOpen, setIsOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -80,26 +80,8 @@ export default function Sidebar() {
 
       const savedCollapse = localStorage.getItem("sidebar_collapsed") === "true";
       if (savedCollapse) setIsCollapsed(true);
-
-      const savedTheme = localStorage.getItem("theme");
-      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      const shouldBeDark = savedTheme === "dark" || (!savedTheme && prefersDark);
-      setIsDarkMode(shouldBeDark);
     });
   }, []);
-
-  // Sync theme with document attribute
-  useEffect(() => {
-    if (mounted) {
-      if (isDarkMode) {
-        document.documentElement.setAttribute("data-theme", "dark");
-        localStorage.setItem("theme", "dark");
-      } else {
-        document.documentElement.removeAttribute("data-theme");
-        localStorage.setItem("theme", "light");
-      }
-    }
-  }, [isDarkMode, mounted]);
 
   // Sync collapsed state with body class
   useEffect(() => {
@@ -116,10 +98,6 @@ export default function Sidebar() {
       localStorage.setItem("sidebar_collapsed", String(next));
       return next;
     });
-  };
-
-  const toggleTheme = () => {
-    setIsDarkMode(prev => !prev);
   };
 
   // Close sidebar on navigation (mobile)

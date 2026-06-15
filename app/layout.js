@@ -1,6 +1,7 @@
 import "./globals.css";
 import AuthBootstrap from "@/components/AuthBootstrap";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import Script from "next/script";
 
 export const metadata = {
   title: "KGS PURCHASING",
@@ -9,10 +10,14 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <link rel="icon" href="/kelin-logo.png" type="image/png" />
-        <script
+      </head>
+      <body>
+        <Script
+          id="theme-init"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
@@ -30,8 +35,6 @@ export default function RootLayout({ children }) {
             `,
           }}
         />
-      </head>
-      <body suppressHydrationWarning>
         <ThemeProvider>
           <AuthBootstrap />
           {children}
