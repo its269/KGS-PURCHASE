@@ -164,103 +164,77 @@ export default function IncomingPOPage() {
     const toggleExpand = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
 
     return (
-        <div className="db-root">
-            <main className="db-main">
+        <div className="po-root">
+            <main className="po-main">
                 <div className="db-page-title">
                     <h1>Incoming Purchase Orders</h1>
                     <p>Track and manage open purchase orders live from Acumatica ERP.</p>
                 </div>
 
-                <div className="db-toolbar" style={{ height: 'auto', padding: '1.25rem' }}>
-                    <div className="db-toolbar-left" style={{ flexWrap: 'wrap', gap: '1rem' }}>
-                        <div className="db-select-wrapper" style={{ paddingLeft: '0.75rem', paddingRight: '0.5rem', minWidth: 'fit-content', height: '42px' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-secondary)', marginRight: '0.5rem', textTransform: 'uppercase' }}>From:</span>
-                            <input
-                                type="date"
-                                className="db-select"
-                                style={{ width: '135px', padding: '0 0.25rem', height: '36px', fontSize: '0.8rem' }}
-                                value={startDate}
-                                onChange={(e) => setStartDate(e.target.value)}
-                            />
-                            {!startDate && (
-                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic', marginLeft: '0.5rem' }}>
-                                    (Current Month)
-                                </span>
-                            )}
-                        </div>
+                <div className="po-toolbar">
+                    <div className="po-filter-group">
+                        <span className="po-filter-label">From:</span>
+                        <input
+                            type="date"
+                            className="po-select-box"
+                            style={{ width: '150px' }}
+                            value={startDate}
+                            onChange={(e) => setStartDate(e.target.value)}
+                        />
+                    </div>
 
-                        <div className="db-select-wrapper" style={{ paddingLeft: '0.75rem', paddingRight: '0.5rem', minWidth: 'fit-content', height: '42px' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-secondary)', marginRight: '0.5rem', textTransform: 'uppercase' }}>Status:</span>
-                            <select
-                                className="db-select"
-                                style={{ width: '140px', padding: '0 0.25rem', height: '36px', fontSize: '0.8rem' }}
-                                value={status}
-                                onChange={(e) => setStatus(e.target.value)}
-                            >
-                                <option value="">All Statuses</option>
-                                <option value="Hold">Hold</option>
-                                <option value="Open">Open</option>
-                                <option value="Balanced">Balanced</option>
-                                <option value="Pending Approval">Pending Approval</option>
-                                <option value="Pending Printing">Pending Printing</option>
-                                <option value="Pending Email">Pending Email</option>
-                                <option value="Completed">Completed</option>
-                                <option value="Cancelled">Cancelled</option>
-                                <option value="Closed">Closed</option>
-                            </select>
-                        </div>
+                    <div className="po-filter-group">
+                        <span className="po-filter-label">Status:</span>
+                        <select
+                            className="po-select-box"
+                            style={{ width: '160px' }}
+                            value={status}
+                            onChange={(e) => setStatus(e.target.value)}
+                        >
+                            <option value="">All Statuses</option>
+                            <option value="Hold">Hold</option>
+                            <option value="Open">Open</option>
+                            <option value="Balanced">Balanced</option>
+                            <option value="Pending Approval">Pending Approval</option>
+                            <option value="Pending Printing">Pending Printing</option>
+                            <option value="Pending Email">Pending Email</option>
+                            <option value="Completed">Completed</option>
+                            <option value="Cancelled">Cancelled</option>
+                            <option value="Closed">Closed</option>
+                        </select>
+                    </div>
 
-                        {(startDate || status !== "Open") && (
-                            <button
-                                className="db-action-btn"
-                                onClick={() => { setStartDate(""); setStatus("Open"); }}
-                                style={{ height: '32px', background: 'var(--status-danger)', border: 'none', color: '#fff', fontSize: '0.7rem', padding: '0 12px' }}
+                    {(startDate || status !== "Open") && (
+                        <button
+                            className="po-reset-btn"
+                            onClick={() => { setStartDate(""); setStatus("Open"); }}
+                        >
+                            Reset
+                        </button>
+                    )}
+
+                    <div className="db-search-wrapper po-search-container">
+                        <IconSearch />
+                        <input
+                            className="db-search"
+                            type="text"
+                            placeholder="Search Order #, Vendor, or Item..."
+                            value={search}
+                            onChange={e => setSearch(e.target.value)}
+                        />
+                        {search && (
+                            <button 
+                                className="db-search-clear"
+                                onClick={() => setSearch("")}
                             >
-                                Reset Filters
+                                &times;
                             </button>
                         )}
+                    </div>
 
-                        <div className="db-search-wrapper" style={{ flex: '1', minWidth: '250px', height: '42px' }}>
-                            <IconSearch />
-                            <input
-                                className="db-search"
-                                type="text"
-                                placeholder="Search Order #, Vendor, or Item..."
-                                style={{ height: '40px', fontSize: '0.85rem' }}
-                                value={search}
-                                onChange={e => setSearch(e.target.value)}
-                            />
-                            {search && (
-                                <button 
-                                    className="db-search-clear"
-                                    onClick={() => setSearch("")}
-                                    style={{ 
-                                        position: 'absolute', 
-                                        right: '1rem', 
-                                        background: 'none', 
-                                        border: 'none', 
-                                        color: 'var(--text-muted)', 
-                                        cursor: 'pointer',
-                                        fontSize: '1.2rem',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        padding: '4px'
-                                    }}
-                                >
-                                    &times;
-                                </button>
-                            )}
-                        </div>
-                    </div>
-                    <div className="db-toolbar-right">
-                        <button className="db-refresh-btn" onClick={() => fetchOrders()} disabled={loading}>    
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                {loading && <div className="db-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }}></div>}
-                                <span>{loading ? "Loading..." : "Refresh"}</span>
-                            </div>
-                        </button>
-                    </div>
+                    <button className="po-refresh-btn" onClick={() => fetchOrders()} disabled={loading}>    
+                        {loading ? <div className="db-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }}></div> : "Refresh"}
+                    </button>
                 </div>
 
                 {error && <div className="si-error">{error}</div>}
@@ -269,25 +243,25 @@ export default function IncomingPOPage() {
                     <table className="db-table po-table">
                         <thead>
                             <tr>
-                                <th style={{ width: 40 }}></th>
+                                <th style={{ width: 48 }}></th>
                                 <th style={{ width: 140 }}>Order #</th>
-                                <th>Type</th>
+                                <th style={{ width: 100 }}>Type</th>
                                 <th>Vendor</th>
-                                <th style={{ width: 150 }}>Status</th>
+                                <th style={{ width: 140 }}>Status</th>
                                 <th>Order Date</th>
-                                <th style={{ textAlign: "right" }}>Total Amount</th>
+                                <th style={{ textAlign: "right", width: 160 }}>Total Amount</th>
                             </tr>
                         </thead>
                         <tbody>
                             {loading && orders.length === 0 ? (
                                 <tr><td colSpan={7} className="si-loading-cell">
-                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem 0' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
-                                        <span>Fetching orders...</span>
+                                        <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Fetching orders...</span>
                                     </div>
                                 </td></tr>
                             ) : orders.length === 0 ? (
-                                <tr><td colSpan={7} className="si-empty-cell">No purchase orders found for current filters.</td></tr>
+                                <tr><td colSpan={7} className="si-empty-cell" style={{ padding: '4rem 0' }}>No purchase orders found.</td></tr>
                             ) : orders.map(po => {
                                 const key = `${po.orderType}-${po.orderNbr}`;
                                 const isOpen = !!expanded[key];
@@ -295,52 +269,57 @@ export default function IncomingPOPage() {
                                     <Fragment key={key}>
                                         <tr className={`db-clickable-row ${isOpen ? "po-row-expanded" : ""}`} onClick={() => toggleExpand(key)}>
                                             <td>
-                                                <span className={`po-expand-icon ${isOpen ? "po-expand-open" : ""}`} style={{ color: 'var(--text-muted)' }}>
+                                                <span className={`po-expand-icon ${isOpen ? "po-expand-open" : ""}`}>
                                                     <IconChevronDown />
                                                 </span>
                                             </td>
                                             <td><span className="db-inv-id">{po.orderNbr}</span></td>
-                                            <td><span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)' }}>{po.orderType}</span></td>
+                                            <td><span style={{ fontSize: '0.75rem', fontWeight: '800', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>{po.orderType}</span></td>
                                             <td>
-                                                <div style={{ fontWeight: '700', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{po.vendorName || po.vendorId}</div>
-                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{po.vendorId}</div>
+                                                <div className="po-vendor-cell">
+                                                    <span className="po-vendor-name">{po.vendorName || po.vendorId}</span>
+                                                    <span className="po-vendor-id">{po.vendorId}</span>
+                                                </div>
                                             </td>
                                             <td>
-                                                <span className={`db-status-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
+                                                <span className={`db-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
                                             </td>
-                                            <td><span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
-                                            <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)' }}>₱{fmt(po.totalAmount)}</strong></td>
+                                            <td><span style={{ fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
+                                            <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)', fontSize: '1rem' }}>₱{fmt(po.totalAmount)}</strong></td>
                                         </tr>
-                                        {isOpen && po.lines.length > 0 && (
+                                        {isOpen && (
                                             <tr className="po-lines-row">
-                                                <td colSpan={7} style={{ padding: '0 1rem 1rem 3.5rem' }}>      
-                                                    <div className="po-lines-wrap" style={{ borderRadius: '12px', border: '1px solid var(--border-light)', overflow: 'hidden', boxShadow: 'var(--shadow-md)' }}>
-                                                        <table className="po-lines-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
-                                                            <thead style={{ background: 'var(--bg-main)' }}>
+                                                <td colSpan={7}>      
+                                                    <div className="po-lines-wrap">
+                                                        <table className="po-lines-table">
+                                                            <thead>
                                                                 <tr>
-                                                                    <th style={{ textAlign: 'left', padding: '0.75rem' }}>Item</th>
-                                                                    <th style={{ textAlign: 'left', padding: '0.75rem' }}>Description</th>
-                                                                    <th style={{ textAlign: 'right', padding: '0.75rem' }}>Qty</th>
-                                                                    <th style={{ textAlign: 'right', padding: '0.75rem' }}>Ext. Cost</th>
+                                                                    <th style={{ width: 180 }}>Item ID</th>
+                                                                    <th>Description</th>
+                                                                    <th style={{ textAlign: 'right', width: 120 }}>Quantity</th>
+                                                                    <th style={{ textAlign: 'right', width: 150 }}>Ext. Cost</th>
                                                                 </tr>
                                                             </thead>
                                                             <tbody>
-                                                                {po.lines.map((line, i) => (
-                                                                    <tr key={i} style={{ borderTop: '1px solid var(--border-light)' }}>
-                                                                        <td style={{ padding: '0.75rem' }}>     
+                                                                {po.lines && po.lines.length > 0 ? po.lines.map((line, i) => (
+                                                                    <tr key={i}>
+                                                                        <td>
                                                                             <span 
                                                                                 className="db-inv-id si-clickable-id"
-                                                                                style={{ fontSize: '0.7rem', padding: '0.15rem 0.4rem', cursor: 'pointer' }}
                                                                                 onClick={(e) => { e.stopPropagation(); setSelectedId(line.inventoryId); }}
                                                                             >
                                                                                 {line.inventoryId}
                                                                             </span>
                                                                         </td>
-                                                                        <td style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>{line.description}</td>
-                                                                        <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '700' }}>{Number(line.qty).toLocaleString()} {line.uom}</td>
-                                                                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)' }}>₱{fmt(line.extCost)}</td>
+                                                                        <td style={{ color: 'var(--text-secondary)', fontWeight: '500' }}>{line.description}</td>
+                                                                        <td style={{ textAlign: 'right', fontWeight: '700', color: 'var(--text-primary)' }}>
+                                                                            {Number(line.qty).toLocaleString()} <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{line.uom}</span>
+                                                                        </td>
+                                                                        <td style={{ textAlign: 'right', fontWeight: '700', color: 'var(--accent-primary)' }}>₱{fmt(line.extCost)}</td>
                                                                     </tr>
-                                                                ))}
+                                                                )) : (
+                                                                    <tr><td colSpan={4} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>No line items found for this order.</td></tr>
+                                                                )}
                                                             </tbody>
                                                         </table>
                                                     </div>
@@ -356,7 +335,7 @@ export default function IncomingPOPage() {
 
                 {!loading && (
                     <div className="db-pagination">
-                        <span className="db-page-info">Page <strong>{page}</strong></span>
+                        <span className="db-page-info">Showing page <strong>{page}</strong> of data</span>
                         <div className="db-page-btns">
                             <button className="db-page-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
                                 <IconChevronLeft />
