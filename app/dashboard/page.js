@@ -137,6 +137,7 @@ export default function DashboardPage() {
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [loading, setLoading] = useState(true);
     const [showQuickSync, setShowQuickSync] = useState(false);
+    const [activeFilter, setActiveFilter] = useState(null); // null, 'low_stock', 'out_of_stock'
 
     // Hydration fix & Initial Restoration
     useEffect(() => {
@@ -303,12 +304,12 @@ export default function DashboardPage() {
                     <span className="db-stat-value">₱{(globalStats.totalValue || 0).toLocaleString("en-PH", { minimumFractionDigits: 0 })}</span>
                     <span className="db-stat-sub">Estimated inventory value</span>
                 </div>
-                <div className="db-stat-card db-stat-warn">
+                <div className="db-stat-card db-stat-warn db-stat-clickable" onClick={() => setActiveFilter("low_stock")}>
                     <span className="db-stat-label">Low Stock (Units)</span>
                     <span className="db-stat-value">{(globalStats.totalLowStock || 0).toLocaleString()}</span>
                     <span className="db-stat-sub">{(globalStats.lowStock || 0)} products under {LOW_STOCK_THRESHOLD} units</span>
                 </div>
-                <div className="db-stat-card db-stat-danger">
+                <div className="db-stat-card db-stat-danger db-stat-clickable" onClick={() => setActiveFilter("out_of_stock")}>
                     <span className="db-stat-label">Out of Stock</span>
                     <span className="db-stat-value">{(globalStats.outOfStock || 0).toLocaleString()}</span>
                     <span className="db-stat-sub">Zero units on hand</span>
@@ -386,6 +387,103 @@ export default function DashboardPage() {
                 </div>
 
             </main>
+
+            {activeFilter && (
+                <FilteredStockModal 
+                    filter={activeFilter} 
+                    branch={selectedBranch}
+                    onClose={() => setActiveFilter(null)} 
+                />
+            )}
+        </div>
+    );
+}
+
+/* ── Filtered Stock Modal Component ───────────────────────── */
+function FilteredStockModal({ filter, branch, onClose }) {
+    const [items, setItems] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    const title = filter === "low_stock" ? "Low Stock Items" : "Out of Stock Items";
+
+    useEffect(() => {
+        const fetchFiltered = async () => {
+            setLoading(true);
+            try {
+                const params = new URLSearchParams({
+                    page: "1",
+                    pageSize: "100", // Show top 100
+                    branch: branch,
+                    filter: filter,
+                    source: "mysql"
+                });
+                const res = await fetchWithAuth(`/api/inventory?${params}`);
+                if (res.ok) {
+                    const result = await res.json();
+                    setItems(result.data || []);
+                } else {
+                    throw new Error("Failed to fetch filtered list");
+                }
+            } catch (err) {
+                setError(err.message);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchFiltered();
+    }, [filter, branch]);
+
+    return (
+        <div className="db-modal-overlay" onClick={onClose}>
+            <div className="db-modal" style={{ maxWidth: '800px' }} onClick={e => e.stopPropagation()}>
+                <div className="db-modal-header">
+                    <h2 className="db-modal-title">{title}</h2>
+                    <button className="db-modal-close" onClick={onClose}><IconClose /></button>
+                </div>
+                <div className="db-modal-body" style={{ padding: 0 }}>
+                    {loading ? (
+                        <div style={{ padding: '3rem', textAlign: 'center' }}>
+                            <div className="db-spinner" style={{ margin: '0 auto 1rem' }} />
+                            <p style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Loading items...</p>
+                        </div>
+                    ) : error ? (
+                        <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--status-danger)' }}>{error}</div>
+                    ) : items.length === 0 ? (
+                        <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>No items found for this filter.</div>
+                    ) : (
+                        <table className="db-table" style={{ fontSize: '0.85rem' }}>
+                            <thead style={{ position: 'sticky', top: 0, zIndex: 10 }}>
+                                <tr>
+                                    <th style={{ padding: '1rem' }}>ID</th>
+                                    <th>Description</th>
+                                    <th className="db-num">On Hand</th>
+                                    <th>Branch</th>
+                                    <th>Site</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {items.map((item, i) => (
+                                    <tr key={i}>
+                                        <td style={{ padding: '0.75rem 1rem' }}><span className="db-inv-id">{cellVal(item, "InventoryID")}</span></td>
+                                        <td>{cellVal(item, "Description")}</td>
+                                        <td className="db-num" style={{ fontWeight: '700' }}>
+                                            <span className={Number(item.OnHand?.value) > 0 ? "db-badge db-badge-green" : "db-badge db-status-out"}>
+                                                {Number(item.OnHand?.value).toLocaleString()}
+                                            </span>
+                                        </td>
+                                        <td>{cellVal(item, "Branch")}</td>
+                                        <td>{cellVal(item, "SiteID")}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+                <div className="db-modal-footer">
+                    <button className="db-action-btn" onClick={onClose}>Close</button>
+                </div>
+            </div>
         </div>
     );
 }

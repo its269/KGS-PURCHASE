@@ -304,7 +304,7 @@ export const MySqlService = {
     /**
      * Fetch inventory with pagination, search, and branch filtering (for Dashboard)
      */
-    async getInventory({ page = 1, pageSize = 50, search = "", branch = "" }) {
+    async getInventory({ page = 1, pageSize = 50, search = "", branch = "", filter = "" }) {
         const offset = (page - 1) * pageSize;
 
         try {
@@ -315,16 +315,18 @@ export const MySqlService = {
                 whereClauses.push("branch_id = ?");
                 params.push(branch);
             } else {
-                // If no branch filter, prefer showing site-specific rows, 
-                // but we'll include everything and let the UI handle it.
-                // To avoid double-counting in stats, we'll keep the catalog filter for now
-                // but make it optional if the user wants to see everything.
                 whereClauses.push("default_warehouse != '__catalog__'");
             }
 
             if (search) {
                 whereClauses.push("(inventory_id LIKE ? OR inventory_name LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`);
+            }
+
+            if (filter === "low_stock") {
+                whereClauses.push("on_hand > 0 AND on_hand < 10");
+            } else if (filter === "out_of_stock") {
+                whereClauses.push("on_hand <= 0");
             }
 
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;

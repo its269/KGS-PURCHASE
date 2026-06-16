@@ -19,13 +19,14 @@ export async function GET(request) {
         const stats = searchParams.get("stats") === "true";
         const count = searchParams.get("count") === "true";
         const source = searchParams.get("source") || "mysql"; // Default to mysql for speed
+        const filter = searchParams.get("filter") || "";
 
         let result;
 
         if (source === "mysql") {
             console.log("[BFF] Fetching from MySQL...");
             try {
-                const inventory = await MySqlService.getInventory({ page, pageSize, search, branch });
+                const inventory = await MySqlService.getInventory({ page, pageSize, search, branch, filter });
 
                 // If MySQL is empty for this query, fall back to Acumatica for a live check
                 if (inventory.data.length === 0) {

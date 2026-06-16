@@ -86,6 +86,19 @@
     border-color: var(--accent-primary);
 }
 
+.db-stat-clickable {
+    cursor: pointer;
+}
+
+.db-stat-clickable:hover {
+    background: var(--bg-main);
+}
+
+.db-stat-clickable:active {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
 .db-stat-label {
     font-size: 0.7rem;
     font-weight: 800;

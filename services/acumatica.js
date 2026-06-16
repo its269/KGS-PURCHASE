@@ -315,7 +315,14 @@ export const AcumaticaService = {
                     currentStock: totalAvailable,
                     suggestedQty: Math.ceil(suggestedQty),
                     priorityLevel: priority,
-                    generatedDate: new Date().toISOString()
+                    generatedDate: new Date().toISOString(),
+                    aiInsights: {
+                        formula: `(Optimal Stock: 100) - (Current Stock: ${totalAvailable})`,
+                        message: totalAvailable < 10 
+                            ? "Critical stock level detected. Immediate replenishment advised to avoid complete stockout." 
+                            : "Stock level is below safety threshold. Restocking recommended to maintain operational buffer.",
+                        stockoutRisk: totalAvailable < 10 ? "Critical (90%+)" : totalAvailable < 30 ? "High (60%)" : "Moderate (30%)"
+                    }
                 });
             }
         }
