@@ -314,12 +314,12 @@ export default function DashboardPage() {
                     <span className="db-stat-value">{(globalStats.outOfStock || 0).toLocaleString()}</span>
                     <span className="db-stat-sub">Zero units on hand</span>
                 </div>
-                <div className="db-stat-card db-stat-info">
+                <div className={`db-stat-card ${globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000 ? "db-stat-danger db-stat-stale" : "db-stat-info"}`}>
                     <span className="db-stat-label">Data Freshness</span>
                     <span className="db-stat-value db-stat-value-sm">
                         {globalStats.lastSync ? new Date(globalStats.lastSync).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Never"}
                     </span>
-                    <span className="db-stat-sub">Last successful sync</span>
+                    <span className="db-stat-sub">{globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000 ? "Warning: Data is stale (>24h)" : "Last successful sync"}</span>
                 </div>
                 </div>
 

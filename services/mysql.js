@@ -274,6 +274,80 @@ export const MySqlService = {
     },
 
     /**
+     * Get a map of inventory IDs to their latest vendor IDs
+     */
+    async getItemVendorMap() {
+        try {
+            const [rows] = await purchasePool.query(`
+                SELECT d.inventory_id, h.vendor_id
+                FROM purchase_history h
+                JOIN purchase_order_details d ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
+                INNER JOIN (
+                    SELECT d2.inventory_id, MAX(h2.order_date) as max_date
+                    FROM purchase_history h2
+                    JOIN purchase_order_details d2 ON h2.order_nbr COLLATE utf8mb4_unicode_ci = d2.order_nbr
+                    GROUP BY d2.inventory_id
+                ) latest ON d.inventory_id = latest.inventory_id AND h.order_date = latest.max_date
+            `);
+            const map = new Map();
+            rows.forEach(r => map.set(String(r.inventory_id || "").toUpperCase().trim(), r.vendor_id));
+            return map;
+        } catch (err) {
+            console.error("[MySQL getItemVendorMap Error]", err);
+            return new Map();
+        }
+    },
+
+    /**
+     * Get the latest vendor for a specific inventory item from purchase history
+     */
+    async getLatestVendorForItem(inventoryId) {
+        try {
+            const [rows] = await purchasePool.query(`
+                SELECT h.vendor_id
+                FROM purchase_history h
+                JOIN purchase_order_details d ON h.order_nbr = d.order_nbr
+                WHERE d.inventory_id = ?
+                ORDER BY h.order_date DESC
+                LIMIT 1
+            `, [inventoryId]);
+            return rows[0]?.vendor_id || null;
+        } catch (err) {
+            console.error("[MySQL getLatestVendorForItem Error]", err);
+            return null;
+        }
+    },
+
+    /**
+     * Calculate average lead times per vendor (Order Date to Receipt Date)
+     */
+    async getVendorLeadTimes() {
+        try {
+            const [rows] = await purchasePool.query(`
+                SELECT 
+                    vendor_id,
+                    AVG(DATEDIFF(receipt_date, order_date)) as avg_lead_time,
+                    COUNT(*) as sample_size
+                FROM purchase_history
+                WHERE status IN ('Closed', 'Completed') 
+                  AND order_date IS NOT NULL 
+                  AND receipt_date IS NOT NULL
+                GROUP BY vendor_id
+            `);
+            return rows.reduce((acc, row) => {
+                acc[row.vendor_id] = {
+                    days: Math.round(row.avg_lead_time) || 0,
+                    sample: row.sample_size
+                };
+                return acc;
+            }, {});
+        } catch (err) {
+            console.error("[MySQL getVendorLeadTimes Error]", err);
+            return {};
+        }
+    },
+
+    /**
      * Get calculated reliability scores for all vendors
      */
     async getSupplierPerformance() {
@@ -401,7 +475,8 @@ export const MySqlService = {
 
             const [[stats]] = await pool.query(
                 `SELECT
-                    COUNT(*) as total,
+                    COUNT(DISTINCT inventory_id) as totalProducts,
+                    COUNT(*) as totalRows,
                     SUM(COALESCE(on_hand, 0)) as totalStock,
                     SUM(COALESCE(on_hand, 0) * COALESCE(default_price, 0)) as totalValue,
                     SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN 1 ELSE 0 END) as lowStockCount,
@@ -418,7 +493,8 @@ export const MySqlService = {
                 lowStock: Number(stats.lowStockCount) || 0,
                 totalLowStock: Number(stats.totalLowStock) || 0,
                 outOfStock: Number(stats.outOfStockCount) || 0,
-                count: Number(stats.total) || 0,
+                count: Number(stats.totalProducts) || 0,
+                totalRows: Number(stats.totalRows) || 0,
                 lastSync: stats.lastSync
             };
         } catch (err) {
@@ -659,7 +735,7 @@ export const MySqlService = {
                 const chunk = items.slice(i, i + CHUNK);
                 const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?)').join(',');
                 const values = chunk.flatMap(item => [
-                    item.inventory_id,
+                    String(item.inventory_id || "").trim(),
                     '__catalog__',
                     item.description,
                     item.item_class,
@@ -712,8 +788,8 @@ export const MySqlService = {
                 const chunk = levels.slice(i, i + CHUNK);
                 const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
                 const values = chunk.flatMap(l => [
-                    l.inventory_id,
-                    l.branch_id,
+                    String(l.inventory_id || "").trim(),
+                    String(l.branch_id || "").trim(),
                     l.description || null,
                     l.item_class || null,
                     safeNum(l.default_price),
@@ -721,8 +797,8 @@ export const MySqlService = {
                     l.base_unit || '',
                     l.item_type || '',
                     l.posting_class || '',
-                    l.branch_id,
-                    l.site_id,
+                    String(l.branch_id || "").trim(),
+                    String(l.site_id || "").trim(),
                     safeNum(l.on_hand) ?? 0,
                     safeNum(l.available) ?? 0,
                     now,
@@ -806,6 +882,44 @@ export const MySqlService = {
         } catch (err) {
             await connection.rollback();
             console.error("[MySQL upsertPeriodicSales Error]", err);
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Identify and handle orphaned sales records (no matching inventory item)
+     */
+    async validateSalesIntegrity() {
+        const connection = await purchasePool.getConnection();
+        try {
+            console.log(">>> [MySQL] Validating Sales Integrity...");
+            const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+            
+            // 1. Find orphaned records
+            const [orphans] = await connection.query(`
+                SELECT COUNT(*) as count 
+                FROM product_periodic_sales s
+                LEFT JOIN \`${inventoryDb}\`.inventory_items i ON s.inventory_id = i.inventory_id
+                WHERE i.inventory_id IS NULL
+            `);
+            
+            console.log(`>>> [MySQL] Found ${orphans[0].count} orphaned sales records.`);
+            
+            // 2. Mark orphans with a special class if they exist (optional, for visibility)
+            if (orphans[0].count > 0) {
+                await connection.query(`
+                    UPDATE product_periodic_sales s
+                    LEFT JOIN \`${inventoryDb}\`.inventory_items i ON s.inventory_id = i.inventory_id
+                    SET s.item_class = 'ORPHANED'
+                    WHERE i.inventory_id IS NULL
+                `);
+            }
+            
+            return orphans[0].count;
+        } catch (err) {
+            console.error("[MySQL validateSalesIntegrity Error]", err);
             throw err;
         } finally {
             connection.release();

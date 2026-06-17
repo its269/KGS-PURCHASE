@@ -19,27 +19,41 @@ export async function GET(request) {
             recs = await AcumaticaService.getReplenishmentRecommendations({ cookie });
         }
 
-        // Advanced AI Enrichment using MySQL Sales Velocity
+        // Advanced AI Enrichment using MySQL Sales Velocity & Lead Times
         try {
             const salesMap = await MySqlService.getPeriodicSalesSummary();
+            const vendorMap = await MySqlService.getItemVendorMap();
+            const leadTimeMap = await MySqlService.getVendorLeadTimes();
+
             recs = recs.map(r => {
-                const sales = salesMap.get(r.itemId.toUpperCase()) || { qty_sold: 0 };
+                const itemId = r.itemId.toUpperCase().trim();
+                const sales = salesMap.get(itemId) || { qty_sold: 0 };
+                const vendorId = vendorMap.get(itemId);
+                const leadTime = vendorId ? (leadTimeMap[vendorId]?.days || 0) : 0;
+                
                 const velocity = sales.qty_sold / 90; // Average per day over 90 days
                 
                 if (velocity > 0) {
                     const daysLeft = Math.floor(r.currentStock / velocity);
                     const isCritical = daysLeft < 7;
+                    const isLongLeadDanger = leadTime > 0 && daysLeft <= leadTime;
                     
+                    let aiMessage = `Sales velocity is ${velocity.toFixed(2)} units/day. ${daysLeft} days of stock remaining at current rate.`;
+                    if (isCritical) aiMessage += " Stockout highly likely within a week.";
+                    if (isLongLeadDanger) aiMessage += ` Warning: Lead time for vendor ${vendorId} is ${leadTime} days. Order now to prevent stockout!`;
+
                     return {
                         ...r,
                         aiInsights: {
                             ...r.aiInsights,
                             salesVelocity: velocity.toFixed(2),
                             daysRemaining: daysLeft,
-                            message: `Sales velocity is ${velocity.toFixed(2)} units/day. ${daysLeft} days of stock remaining at current rate. ${isCritical ? "Stockout highly likely within a week." : ""}`,
-                            formula: `(Stock: ${r.currentStock}) / (Avg Daily Sales: ${velocity.toFixed(2)}) = ${daysLeft} days left`
+                            leadTimeDays: leadTime,
+                            vendorId: vendorId,
+                            message: aiMessage,
+                            formula: `(Stock: ${r.currentStock}) / (Avg Daily Sales: ${velocity.toFixed(2)}) = ${daysLeft} days left. [Lead Time: ${leadTime} days]`
                         },
-                        priorityLevel: isCritical ? "High" : r.priorityLevel
+                        priorityLevel: (isCritical || isLongLeadDanger) ? "High" : r.priorityLevel
                     };
                 }
                 return r;

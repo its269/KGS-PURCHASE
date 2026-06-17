@@ -555,6 +555,7 @@ export async function POST(request) {
                     send({ section: "Data Enrichment", details: "Filling missing categories...", progress: 98 });
                     try {
                         await MySqlService.enrichSalesData();
+                        await MySqlService.validateSalesIntegrity();
                     } catch (e) {
                         console.error(">>> [Sync API] Enrichment error:", e);
                     }
