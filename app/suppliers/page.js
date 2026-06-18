@@ -67,25 +67,39 @@ export default function SuppliersPage() {
     const [showReliabilityInfo, setShowReliabilityInfo] = useState(false);
 
     const isInitialMount = useRef(true);
+    const saveTimeoutRef = useRef({});
 
     // Initial restoration & Hydration fix
     useEffect(() => {
-        const savedLeadTimes = localStorage.getItem("supplier_lead_times");
         const savedPage = localStorage.getItem("supplier_filter_page");
         const initialPage = savedPage ? parseInt(savedPage) : 1;
         const savedSearch = localStorage.getItem("supplier_filter_search") || "";
 
-        Promise.resolve().then(() => {
-            if (savedLeadTimes) {
-                try {
-                    setLeadTimes(JSON.parse(savedLeadTimes));
-                } catch (e) {
-                    console.error("Failed to parse lead times", e);
-                }
-            }
-
+        Promise.resolve().then(async () => {
+            // 1. Load filters
             setPage(initialPage);
             setSearch(savedSearch);
+
+            // 2. Fetch PERSISTENT lead times from DB
+            try {
+                const res = await fetchWithAuth("/api/annotations?module=supplier");
+                if (res.ok) {
+                    const dbLeadTimes = await res.json();
+                    // Transform { [vendorId]: { leadTime: value } } to { [vendorId]: value }
+                    const flattened = Object.keys(dbLeadTimes).reduce((acc, vid) => {
+                        acc[vid] = dbLeadTimes[vid].leadTime;
+                        return acc;
+                    }, {});
+                    setLeadTimes(prev => ({ ...prev, ...flattened }));
+                } else {
+                    const savedLeadTimes = localStorage.getItem("supplier_lead_times");
+                    if (savedLeadTimes) setLeadTimes(JSON.parse(savedLeadTimes));
+                }
+            } catch (e) {
+                console.error("Failed to fetch lead times", e);
+                const savedLeadTimes = localStorage.getItem("supplier_lead_times");
+                if (savedLeadTimes) setLeadTimes(JSON.parse(savedLeadTimes));
+            }
 
             const params = new URLSearchParams({ page: String(initialPage), pageSize: String(PAGE_SIZE) });
             if (savedSearch) params.set("search", savedSearch);
@@ -99,23 +113,37 @@ export default function SuppliersPage() {
         });
     }, []);
 
-    // Save lead times to localStorage
+    // Save lead times to localStorage (Backup)
     useEffect(() => {
         if (!isInitialMount.current && Object.keys(leadTimes).length > 0) {
             localStorage.setItem("supplier_lead_times", JSON.stringify(leadTimes));
         }
     }, [leadTimes]);
 
-    // Save filters to localStorage
-    useEffect(() => {
-        if (!isInitialMount.current) {
-            localStorage.setItem("supplier_filter_page", page.toString());
-            localStorage.setItem("supplier_filter_search", search);
-        }
-    }, [page, search]);
-
     const handleLeadTimeChange = (vendorId, value) => {
+        // 1. UI update
         setLeadTimes(prev => ({ ...prev, [vendorId]: value }));
+
+        // 2. Persist to DB (Debounced)
+        if (saveTimeoutRef.current[vendorId]) {
+            clearTimeout(saveTimeoutRef.current[vendorId]);
+        }
+
+        saveTimeoutRef.current[vendorId] = setTimeout(async () => {
+            try {
+                await fetchWithAuth("/api/annotations", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        module: "supplier",
+                        refId: vendorId,
+                        fieldKey: "leadTime",
+                        fieldValue: value
+                    })
+                });
+            } catch (e) {
+                console.error("Failed to persist lead time", e);
+            }
+        }, 800);
     };
 
     useEffect(() => {
@@ -302,7 +330,7 @@ export default function SuppliersPage() {
                                             color: 'var(--text-primary)',
                                             background: 'var(--bg-surface)'
                                         }}>
-                                            {v.reliabilityScore}%
+                                            {Math.round(v.reliabilityScore)}%
                                         </div>
                                     </td>
                                     <td style={{ padding: '1.25rem' }}>
@@ -314,12 +342,17 @@ export default function SuppliersPage() {
                                                 onChange={(e) => handleLeadTimeChange(v.vendorId, e.target.value)}
                                                 style={{ border: 'none', background: 'transparent', width: '100%', cursor: 'pointer', fontSize: '0.85rem' }}
                                             >
-                                                <option value="">— Select Time —</option>
+                                                <option value="">— Target —</option>
                                                 {LEAD_TIME_OPTIONS.map(opt => (
                                                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                                                 ))}
                                             </select>
                                         </div>
+                                        {v.avgLeadTime > 0 && (
+                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.4rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                <span style={{ color: 'var(--accent-primary)' }}>●</span> Actual: {v.avgLeadTime} days
+                                            </div>
+                                        )}
                                     </td>
                                 </tr>
                             ))}
@@ -359,13 +392,30 @@ export default function SuppliersPage() {
                             </div>
 
                             <p style={{ color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '1.5rem' }}>
-                                The Reliability Score measures how consistently a supplier delivers orders on or before their promised date.
+                                The Reliability Score measures how consistently a supplier delivers orders on or before their promised date. It is expressed as a percentage to make it easy to compare vendors.
                             </p>
 
                             <div style={{ background: 'var(--bg-main)', padding: '1.5rem', borderRadius: '12px', border: '1px solid var(--border-light)', marginBottom: '1.5rem' }}>
-                                <h4 style={{ margin: '0 0 0.75rem 0', color: 'var(--text-primary)', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Formula</h4>
-                                <div style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-primary)', textAlign: 'center', padding: '1rem 0' }}>
-                                    (On-Time Orders ÷ Total Orders) × 100
+                                <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-primary)', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-light)', paddingBottom: '0.5rem' }}>Core Performance Formulas</h4>
+                                
+                                <div style={{ marginBottom: '1.5rem' }}>
+                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', marginBottom: '0.5rem' }}>1. Reliability Score (%)</div>
+                                    <div style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-primary)', textAlign: 'center', padding: '0.75rem', background: 'var(--bg-surface)', borderRadius: '8px' }}>
+                                        (On-Time Orders ÷ Total Orders) × 100
+                                    </div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                                        *On-Time = Orders received on or before the Promised Date.
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', marginBottom: '0.5rem' }}>2. Actual Avg. Lead Time (Days)</div>
+                                    <div style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--status-success)', textAlign: 'center', padding: '0.75rem', background: 'var(--bg-surface)', borderRadius: '8px' }}>
+                                        Σ(Receipt Date - Order Date) ÷ Total Orders
+                                    </div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                                        *Lead Time = The real number of days from PO creation to warehouse arrival.
+                                    </div>
                                 </div>
                             </div>
 
@@ -373,15 +423,17 @@ export default function SuppliersPage() {
                                 <div style={{ display: 'flex', gap: '1rem' }}>
                                     <div style={{ color: 'var(--status-success)', fontWeight: '700' }}>●</div>
                                     <div>
-                                        <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>On-Time Definition</strong>
-                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Orders where the actual Receipt Date is less than or equal to the Promised Date.</span>
+                                        <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>Measurement Period</strong>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                                            Metrics are calculated using the last <strong>12 months</strong> of historical data to reflect recent supplier performance.
+                                        </span>
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '1rem' }}>
                                     <div style={{ color: 'var(--accent-primary)', fontWeight: '700' }}>●</div>
                                     <div>
-                                        <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>Included Data</strong>
-                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Only "Closed" or "Completed" purchase orders with valid promised and receipt dates are factored into the score.</span>
+                                        <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>Why it matters</strong>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>These formulas help identify which suppliers consistently meet deadlines versus those who frequently cause stockouts due to delays.</span>
                                     </div>
                                 </div>
                             </div>

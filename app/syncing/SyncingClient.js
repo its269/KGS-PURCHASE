@@ -45,11 +45,32 @@ export default function SyncingClient() {
     const [complete, setComplete] = useState(false);
     const [error, setError] = useState(null);
     const [logs, setLogs] = useState([]);
+    const [history, setHistory] = useState([]);
+    const [loadingHistory, setLoadingHistory] = useState(true);
     const logsEndRef = useRef(null);
 
     const addLog = (msg) => {
         setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
     };
+
+    const fetchHistory = useCallback(async () => {
+        setLoadingHistory(true);
+        try {
+            const res = await fetch("/api/sync");
+            if (res.ok) {
+                const data = await res.json();
+                setHistory(data || []);
+            }
+        } catch (err) {
+            console.error("Failed to fetch sync history", err);
+        } finally {
+            setLoadingHistory(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchHistory();
+    }, [fetchHistory]);
 
     useEffect(() => {
         if (logsEndRef.current) {
@@ -134,11 +155,13 @@ export default function SyncingClient() {
                             setComplete(true);
                             setOverallProgress(100);
                             addLog("Sync completed successfully!");
+                            fetchHistory();
                         }
 
                         if (data.status === "error") {
                             setError(data.message);
                             addLog(`ERROR: ${data.message}`);
+                            fetchHistory();
                         }
                     } catch (e) {
                         console.error("Failed to parse sync line", e);
@@ -281,6 +304,47 @@ export default function SyncingClient() {
                         <Link href="/dashboard" className="sync-back-btn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
                             <IconChevronLeft /> Back to Dashboard
                         </Link>
+                    </div>
+                )}
+
+                {!isSyncing && (
+                    <div className="sync-history-section" style={{ marginTop: '3rem', maxWidth: '800px', margin: '3rem auto 0' }}>
+                        <h2 style={{ fontSize: '1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <IconSync /> Recent Sync History
+                        </h2>
+                        
+                        <div className="db-table-wrap" style={{ borderRadius: '12px', border: '1px solid var(--border-light)' }}>
+                            <table className="db-table">
+                                <thead style={{ background: 'var(--bg-main)' }}>
+                                    <tr>
+                                        <th style={{ padding: '1rem' }}>Time</th>
+                                        <th>Mode</th>
+                                        <th>Section</th>
+                                        <th>Status</th>
+                                        <th style={{ textAlign: 'right' }}>Records</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {loadingHistory ? (
+                                        <tr><td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>Loading history...</td></tr>
+                                    ) : history.length === 0 ? (
+                                        <tr><td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No sync history found.</td></tr>
+                                    ) : history.map(h => (
+                                        <tr key={h.id}>
+                                            <td style={{ padding: '1rem', fontSize: '0.85rem' }}>{new Date(h.timestamp).toLocaleString()}</td>
+                                            <td style={{ fontSize: '0.85rem', textTransform: 'capitalize' }}>{h.mode}</td>
+                                            <td style={{ fontSize: '0.85rem' }}>{h.section}</td>
+                                            <td>
+                                                <span className={`db-status-badge ${h.status === 'completed' ? 'po-status-closed' : h.status === 'started' ? 'po-status-open' : 'po-status-cancelled'}`} style={{ fontSize: '0.7rem' }}>
+                                                    {h.status}
+                                                </span>
+                                            </td>
+                                            <td style={{ textAlign: 'right', fontWeight: '600', paddingRight: '1rem' }}>{h.records > 0 ? h.records.toLocaleString() : '—'}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 )}
             </main>

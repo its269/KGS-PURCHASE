@@ -96,30 +96,40 @@ export default function PurchaseOrdersPage() {
     };
 
     const isInitialMount = useRef(true);
+    const saveTimeoutRef = useRef({}); // key -> timeout
 
     // Initial restoration & Hydration fix
     useEffect(() => {
-        const savedInputs = localStorage.getItem("po_user_inputs");
         const savedPage = localStorage.getItem("po_filter_page");
         const savedSearch = localStorage.getItem("po_filter_search");
         const savedStart = localStorage.getItem("po_filter_startDate");
         const savedStatus = localStorage.getItem("po_filter_status");
 
-        Promise.resolve().then(() => {
-            if (savedInputs) {
-                try {
-                    setUserInputs(JSON.parse(savedInputs));
-                } catch (e) {
-                    console.error("Failed to parse po_user_inputs", e);
-                }
-            }
-
+        Promise.resolve().then(async () => {
+            // 1. Load filters
             if (savedPage) setPage(parseInt(savedPage));
             if (savedSearch) setSearch(savedSearch);
             if (savedStart) setStartDate(savedStart);
             if (savedStatus) setStatus(savedStatus);
 
-            // Pre-fetch check from cache
+            // 2. Fetch PERSISTENT annotations from DB
+            try {
+                const res = await fetchWithAuth("/api/annotations?module=po");
+                if (res.ok) {
+                    const dbInputs = await res.json();
+                    setUserInputs(prev => ({ ...prev, ...dbInputs }));
+                } else {
+                    // Fallback to local if DB fails
+                    const savedInputs = localStorage.getItem("po_user_inputs");
+                    if (savedInputs) setUserInputs(JSON.parse(savedInputs));
+                }
+            } catch (e) {
+                console.error("Failed to fetch annotations", e);
+                const savedInputs = localStorage.getItem("po_user_inputs");
+                if (savedInputs) setUserInputs(JSON.parse(savedInputs));
+            }
+
+            // 3. Pre-fetch check from cache
             const params = new URLSearchParams({
                 page: savedPage || "1",
                 pageSize: String(PAGE_SIZE),
@@ -137,7 +147,7 @@ export default function PurchaseOrdersPage() {
         });
     }, []);
 
-    // Save user inputs to localStorage
+    // Backup to localStorage just in case
     useEffect(() => {
         if (!isInitialMount.current) {
             localStorage.setItem("po_user_inputs", JSON.stringify(userInputs));
@@ -145,10 +155,32 @@ export default function PurchaseOrdersPage() {
     }, [userInputs]);
 
     const handleUserInput = (key, field, value) => {
+        // 1. Update UI immediately
         setUserInputs(prev => ({
             ...prev,
             [key]: { ...(prev[key] || {}), [field]: value }
         }));
+
+        // 2. Persist to DB (Debounced)
+        if (saveTimeoutRef.current[key + field]) {
+            clearTimeout(saveTimeoutRef.current[key + field]);
+        }
+
+        saveTimeoutRef.current[key + field] = setTimeout(async () => {
+            try {
+                await fetchWithAuth("/api/annotations", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        module: "po",
+                        refId: key,
+                        fieldKey: field,
+                        fieldValue: value
+                    })
+                });
+            } catch (e) {
+                console.error("Failed to persist annotation", e);
+            }
+        }, 800);
     };
 
     // Save filters to localStorage

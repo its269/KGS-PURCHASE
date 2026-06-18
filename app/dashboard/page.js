@@ -104,7 +104,7 @@ const InventoryRow = memo(({ row, index }) => {
             <td className="db-row-num col-mobile-hide">{index}</td>
             <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
             <td className="db-desc">{cellVal(row, "Description")}</td>
-            <td className="col-tablet-hide"><span className="db-branch-tag">{cellVal(row, "Branch")}</span></td>
+            <td><span className="db-branch-tag">{cellVal(row, "Branch")}</span></td>
             <td className="col-tablet-hide">{cellVal(row, "SiteID")}</td>
             <td className="db-num"><span className={onHand > 0 ? "db-badge db-badge-green" : "db-badge"}>{onHand.toLocaleString()}</span></td>
             <td className="db-num col-mobile-hide"><span className={available > 0 ? "db-badge db-badge-blue" : "db-badge"}>{available.toLocaleString()}</span></td>
@@ -130,7 +130,15 @@ export default function DashboardPage() {
     const [allInventory, setAllInventory] = useState([]);
     const [dataSource, setDataSource] = useState("mysql");
     const [totalCount, setTotalCount] = useState(0);
-    const [globalStats, setGlobalStats] = useState({ totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 });
+    const [globalStats, setGlobalStats] = useState({ 
+        totalStock: 0, 
+        totalValue: 0, 
+        lowStock: 0, 
+        totalLowStock: 0, 
+        outOfStock: 0,
+        deadStock: 0,
+        overstock: 0 
+    });
     const [hasMore, setHasMore] = useState(false);
 
     const [branchOptions, setBranchOptions] = useState([]);
@@ -314,6 +322,16 @@ export default function DashboardPage() {
                     <span className="db-stat-value">{(globalStats.outOfStock || 0).toLocaleString()}</span>
                     <span className="db-stat-sub">Zero units on hand</span>
                 </div>
+                <div className="db-stat-card db-stat-warn db-stat-clickable" onClick={() => setActiveFilter("dead_stock")}>
+                    <span className="db-stat-label">Dead Stock</span>
+                    <span className="db-stat-value">{(globalStats.deadStock || 0).toLocaleString()}</span>
+                    <span className="db-stat-sub">Zero sales in 90 days</span>
+                </div>
+                <div className="db-stat-card db-stat-info db-stat-clickable" onClick={() => setActiveFilter("overstock")}>
+                    <span className="db-stat-label">Overstock</span>
+                    <span className="db-stat-value">{(globalStats.overstock || 0).toLocaleString()}</span>
+                    <span className="db-stat-sub">{">"}180 days of supply</span>
+                </div>
                 <div className={`db-stat-card ${globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000 ? "db-stat-danger db-stat-stale" : "db-stat-info"}`}>
                     <span className="db-stat-label">Data Freshness</span>
                     <span className="db-stat-value db-stat-value-sm">
@@ -353,7 +371,7 @@ export default function DashboardPage() {
                                     <th className="col-mobile-hide">#</th>
                                     <th>Inventory ID</th>
                                     <th>Description</th>
-                                    <th className="col-tablet-hide">Branch</th>
+                                    <th>Branch</th>
                                     <th className="col-tablet-hide">Site</th>
                                     <th className="db-num">On Hand</th>
                                     <th className="db-num col-mobile-hide">Available</th>
@@ -405,7 +423,13 @@ function FilteredStockModal({ filter, branch, onClose }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    const title = filter === "low_stock" ? "Low Stock Items" : "Out of Stock Items";
+    const title = useMemo(() => {
+        if (filter === "low_stock") return "Low Stock Items";
+        if (filter === "out_of_stock") return "Out of Stock Items";
+        if (filter === "dead_stock") return "Dead Stock (No sales in 90 days)";
+        if (filter === "overstock") return "Overstock Items (Excessive Supply)";
+        return "Filtered Items";
+    }, [filter]);
 
     useEffect(() => {
         const fetchFiltered = async () => {

@@ -246,7 +246,9 @@ export const MySqlService = {
                 `SELECT 
                     vendor_id as VendorID,
                     vendor_name as VendorName,
-                    status as Status
+                    status as Status,
+                    COALESCE(avg_lead_time, 0) as AvgLeadTime,
+                    COALESCE(reliability_score, 100.00) as ReliabilityScore
                  FROM vendors
                  ${whereClause}
                  ORDER BY VendorName ASC
@@ -263,12 +265,48 @@ export const MySqlService = {
                 data: rows.map(r => ({
                     VendorID: { value: r.VendorID },
                     VendorName: { value: r.VendorName },
-                    Status: { value: r.Status }
+                    Status: { value: r.Status },
+                    AvgLeadTime: { value: r.AvgLeadTime },
+                    ReliabilityScore: { value: r.ReliabilityScore }
                 })),
                 totalCount: total
             };
         } catch (err) {
             console.error("[MySQL getVendors Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Calculate and persist performance metrics for all vendors
+     */
+    async calculateAndStoreVendorPerformance() {
+        try {
+            console.log(">>> [MySQL] Calculating Vendor Performance Metrics...");
+            
+            // 1. Get Lead Times
+            const leadTimes = await this.getVendorLeadTimes();
+            
+            // 2. Get Reliability Scores
+            const reliability = await this.getSupplierPerformance();
+            
+            // 3. Update Vendors table
+            const vendorIds = new Set([...Object.keys(leadTimes), ...Object.keys(reliability)]);
+            
+            for (const vid of vendorIds) {
+                const lt = leadTimes[vid]?.days || 0;
+                const rs = reliability[vid] || 100.00;
+                
+                await purchasePool.query(
+                    `UPDATE vendors SET avg_lead_time = ?, reliability_score = ? WHERE vendor_id = ?`,
+                    [lt, rs, vid]
+                );
+            }
+            
+            console.log(`>>> [MySQL] Performance calculation complete for ${vendorIds.size} vendors.`);
+            return vendorIds.size;
+        } catch (err) {
+            console.error("[MySQL calculateAndStoreVendorPerformance Error]", err);
             throw err;
         }
     },
@@ -380,27 +418,32 @@ export const MySqlService = {
      */
     async getInventory({ page = 1, pageSize = 50, search = "", branch = "", filter = "" }) {
         const offset = (page - 1) * pageSize;
+        const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
 
         try {
-            let whereClauses = ["default_warehouse IS NOT NULL"];
+            let whereClauses = ["i.default_warehouse IS NOT NULL"];
             let params = [];
 
             if (branch) {
-                whereClauses.push("branch_id = ?");
+                whereClauses.push("i.branch_id = ?");
                 params.push(branch);
             } else {
-                whereClauses.push("default_warehouse != '__catalog__'");
+                whereClauses.push("i.default_warehouse != '__catalog__'");
             }
 
             if (search) {
-                whereClauses.push("(inventory_id LIKE ? OR inventory_name LIKE ?)");
+                whereClauses.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`);
             }
 
             if (filter === "low_stock") {
-                whereClauses.push("on_hand > 0 AND on_hand < 10");
+                whereClauses.push("i.on_hand > 0 AND i.on_hand < 10");
             } else if (filter === "out_of_stock") {
-                whereClauses.push("on_hand <= 0");
+                whereClauses.push("i.on_hand <= 0");
+            } else if (filter === "dead_stock") {
+                whereClauses.push("i.on_hand > 0 AND COALESCE(s.total_qty, 0) <= 0");
+            } else if (filter === "overstock") {
+                whereClauses.push("i.on_hand > (COALESCE(s.total_qty, 0) * 2) AND COALESCE(s.total_qty, 0) > 0");
             }
 
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
@@ -408,25 +451,38 @@ export const MySqlService = {
             const limitInt = parseInt(pageSize, 10);
             const offsetInt = parseInt(offset, 10);
 
-            const [rows] = await pool.query(
-                `SELECT 
-                    inventory_id as InventoryID, 
-                    inventory_name as Description, 
-                    item_class as ItemClass, 
-                    branch_id as Branch, 
-                    site_id as SiteID, 
-                    COALESCE(on_hand, 0) as OnHand, 
-                    COALESCE(available, 0) as Available, 
-                    default_price as DefaultPrice 
-                 FROM inventory_items 
+            const query = `
+                SELECT 
+                    i.inventory_id as InventoryID, 
+                    i.inventory_name as Description, 
+                    i.item_class as ItemClass, 
+                    i.branch_id as Branch, 
+                    i.site_id as SiteID, 
+                    COALESCE(i.on_hand, 0) as OnHand, 
+                    COALESCE(i.available, 0) as Available, 
+                    i.default_price as DefaultPrice,
+                    COALESCE(s.total_qty, 0) as QtySold
+                 FROM inventory_items i
+                 LEFT JOIN (
+                    SELECT inventory_id, SUM(qty) as total_qty 
+                    FROM \`${purchaseDb}\`.product_periodic_sales 
+                    GROUP BY inventory_id
+                 ) s ON i.inventory_id = s.inventory_id
                  ${wherePart} 
-                 ORDER BY inventory_id ASC 
-                 LIMIT ${limitInt} OFFSET ${offsetInt}`,
-                params
-            );
+                 ORDER BY i.inventory_id ASC 
+                 LIMIT ${limitInt} OFFSET ${offsetInt}`;
+
+            const [rows] = await pool.query(query, params);
 
             const [[{ total }]] = await pool.query(
-                `SELECT COUNT(*) as total FROM inventory_items ${wherePart}`,
+                `SELECT COUNT(*) as total 
+                 FROM inventory_items i 
+                 LEFT JOIN (
+                    SELECT inventory_id, SUM(qty) as total_qty 
+                    FROM \`${purchaseDb}\`.product_periodic_sales 
+                    GROUP BY inventory_id
+                 ) s ON i.inventory_id = s.inventory_id
+                 ${wherePart}`,
                 params
             );
 
@@ -440,6 +496,7 @@ export const MySqlService = {
                 Available: { value: item.Available },
                 DefaultPrice: { value: item.DefaultPrice || 0 },
                 ItemClass: { value: item.ItemClass || "" },
+                QtySold: { value: item.QtySold }
             }));
 
             return {
@@ -454,38 +511,51 @@ export const MySqlService = {
     },
 
     /**
-     * Calculate global stats (Total Value, Low Stock, etc.)
+     * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
     async getGlobalStats(branch = "", search = "") {
         try {
-            let whereClauses = ["default_warehouse IS NOT NULL", "default_warehouse != '__catalog__'"];
+            const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+            let whereClauses = ["i.default_warehouse IS NOT NULL", "i.default_warehouse != '__catalog__'"];
             let params = [];
 
             if (branch) {
-                whereClauses.push("branch_id = ?");
+                whereClauses.push("i.branch_id = ?");
                 params.push(branch);
             }
 
             if (search) {
-                whereClauses.push("(inventory_id LIKE ? OR inventory_name LIKE ?)");
+                whereClauses.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`);
             }
 
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
 
-            const [[stats]] = await pool.query(
-                `SELECT
-                    COUNT(DISTINCT inventory_id) as totalProducts,
-                    COUNT(*) as totalRows,
-                    SUM(COALESCE(on_hand, 0)) as totalStock,
-                    SUM(COALESCE(on_hand, 0) * COALESCE(default_price, 0)) as totalValue,
-                    SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN 1 ELSE 0 END) as lowStockCount,
-                    SUM(CASE WHEN on_hand > 0 AND on_hand < 10 THEN on_hand ELSE 0 END) as totalLowStock,
-                    SUM(CASE WHEN on_hand <= 0 THEN 1 ELSE 0 END) as outOfStockCount,
-                    MAX(last_sync) as lastSync
-                 FROM inventory_items ${wherePart}`,
-                params
-            );
+            const query = `
+                SELECT
+                    COUNT(DISTINCT i.inventory_id) as totalProducts,
+                    SUM(COALESCE(i.on_hand, 0)) as totalStock,
+                    SUM(COALESCE(i.on_hand, 0) * COALESCE(i.default_price, 0)) as totalValue,
+                    SUM(CASE WHEN i.on_hand > 0 AND i.on_hand < 10 THEN 1 ELSE 0 END) as lowStockCount,
+                    SUM(CASE WHEN i.on_hand > 0 AND i.on_hand < 10 THEN i.on_hand ELSE 0 END) as totalLowStock,
+                    SUM(CASE WHEN i.on_hand <= 0 THEN 1 ELSE 0 END) as outOfStockCount,
+                    
+                    /* Dead Stock: On Hand > 0 but 0 sales in last 90 days */
+                    SUM(CASE WHEN i.on_hand > 0 AND COALESCE(s.total_qty, 0) <= 0 THEN 1 ELSE 0 END) as deadStockCount,
+                    
+                    /* Overstock: On Hand > (ADS * 180 days). Since ADS = total_qty/90, this is On Hand > total_qty * 2 */
+                    SUM(CASE WHEN i.on_hand > (COALESCE(s.total_qty, 0) * 2) AND COALESCE(s.total_qty, 0) > 0 THEN 1 ELSE 0 END) as overstockCount,
+                    
+                    MAX(i.last_sync) as lastSync
+                 FROM inventory_items i
+                 LEFT JOIN (
+                    SELECT inventory_id, SUM(qty) as total_qty 
+                    FROM \`${purchaseDb}\`.product_periodic_sales 
+                    GROUP BY inventory_id
+                 ) s ON i.inventory_id = s.inventory_id
+                 ${wherePart}`;
+
+            const [[stats]] = await pool.query(query, params);
 
             return {
                 totalStock: Number(stats.totalStock) || 0,
@@ -493,8 +563,9 @@ export const MySqlService = {
                 lowStock: Number(stats.lowStockCount) || 0,
                 totalLowStock: Number(stats.totalLowStock) || 0,
                 outOfStock: Number(stats.outOfStockCount) || 0,
+                deadStock: Number(stats.deadStockCount) || 0,
+                overstock: Number(stats.overstockCount) || 0,
                 count: Number(stats.totalProducts) || 0,
-                totalRows: Number(stats.totalRows) || 0,
                 lastSync: stats.lastSync
             };
         } catch (err) {
@@ -521,7 +592,7 @@ export const MySqlService = {
                 params = [`%${search}%`, `%${search}%`];
             }
 
-            // 1. Fetch items from Inventory database with summed stock
+            // 1. Fetch items from Inventory database with summed stock and list of branches
             const query = `
                 SELECT 
                     TRIM(i.inventory_id) as inventoryId, 
@@ -530,7 +601,8 @@ export const MySqlService = {
                     MAX(i.item_status) as itemStatus,
                     MAX(i.base_unit) as baseUnit,
                     MAX(i.default_price) as price,
-                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand
+                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand,
+                    GROUP_CONCAT(DISTINCT CASE WHEN i.default_warehouse != '__catalog__' AND i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
                  FROM inventory_items i
                  ${whereClause} 
                  GROUP BY TRIM(i.inventory_id)
@@ -923,6 +995,81 @@ export const MySqlService = {
             throw err;
         } finally {
             connection.release();
+        }
+    },
+
+    /**
+     * Log a synchronization event
+     */
+    async logSyncEvent(mode, section, status, records = 0, message = null) {
+        try {
+            await purchasePool.query(
+                `INSERT INTO sync_logs (mode, section, status, records_processed, message)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [mode, section, status, records, message]
+            );
+            return true;
+        } catch (err) {
+            console.error("[MySQL logSyncEvent Error]", err);
+            return false;
+        }
+    },
+
+    /**
+     * Fetch recent sync logs
+     */
+    async getSyncLogs(limit = 20) {
+        try {
+            const [rows] = await purchasePool.query(
+                `SELECT id, timestamp, mode, section, status, records_processed as records, message 
+                 FROM sync_logs 
+                 ORDER BY timestamp DESC 
+                 LIMIT ?`,
+                [limit]
+            );
+            return rows;
+        } catch (err) {
+            console.error("[MySQL getSyncLogs Error]", err);
+            return [];
+        }
+    },
+
+    /**
+     * Get all persistent user annotations for a specific module
+     */
+    async getAnnotations(moduleName) {
+        try {
+            const [rows] = await purchasePool.query(
+                "SELECT ref_id, field_key, field_value FROM user_annotations WHERE module = ?",
+                [moduleName]
+            );
+            // Transform to { [ref_id]: { [field_key]: value } }
+            return rows.reduce((acc, row) => {
+                if (!acc[row.ref_id]) acc[row.ref_id] = {};
+                acc[row.ref_id][row.field_key] = row.field_value;
+                return acc;
+            }, {});
+        } catch (err) {
+            console.error("[MySQL getAnnotations Error]", err);
+            return {};
+        }
+    },
+
+    /**
+     * Persist or update a user annotation
+     */
+    async upsertAnnotation(moduleName, refId, fieldKey, fieldValue) {
+        try {
+            await purchasePool.query(
+                `INSERT INTO user_annotations (module, ref_id, field_key, field_value)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE field_value = VALUES(field_value)`,
+                [moduleName, refId, fieldKey, fieldValue]
+            );
+            return true;
+        } catch (err) {
+            console.error("[MySQL upsertAnnotation Error]", err);
+            return false;
         }
     },
 

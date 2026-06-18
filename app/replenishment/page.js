@@ -208,6 +208,18 @@ export default function ReplenishmentPage() {
                                             <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
                                                 {r.aiInsights?.message || "Analyzing stock patterns..."}
                                             </p>
+                                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                                                {r.aiInsights?.daysRemaining !== undefined && (
+                                                    <div style={{ fontSize: '0.7rem', background: 'rgba(0,0,0,0.05)', padding: '2px 6px', borderRadius: '4px', fontWeight: '600' }}>
+                                                        {r.aiInsights.daysRemaining} Days Left
+                                                    </div>
+                                                )}
+                                                {r.aiInsights?.salesVelocity !== undefined && (
+                                                    <div style={{ fontSize: '0.7rem', background: 'rgba(0,0,0,0.05)', padding: '2px 6px', borderRadius: '4px', fontWeight: '600' }}>
+                                                        {r.aiInsights.salesVelocity} units/day
+                                                    </div>
+                                                )}
+                                            </div>
                                             <div style={{ marginTop: '0.5rem', fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                                                 <IconSparkles /> Formula: {r.aiInsights?.formula}
                                             </div>

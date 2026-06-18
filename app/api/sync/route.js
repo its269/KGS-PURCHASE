@@ -94,9 +94,27 @@ export async function POST(request) {
                 \`vendor_id\` VARCHAR(100) PRIMARY KEY,
                 \`vendor_name\` VARCHAR(255),
                 \`status\` VARCHAR(50),
+                \`avg_lead_time\` INT DEFAULT 0,
+                \`reliability_score\` DECIMAL(5,2) DEFAULT 100.00,
                 \`last_sync\` DATETIME
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+
+        // Ensure vendors has performance columns (for older schemas)
+        const vCols = [
+            { name: "avg_lead_time", def: "INT DEFAULT 0" },
+            { name: "reliability_score", def: "DECIMAL(5,2) DEFAULT 100.00" }
+        ];
+        for (const c of vCols) {
+            const [[row]] = await conn.query(
+                `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS 
+                 WHERE TABLE_SCHEMA=? AND TABLE_NAME='vendors' AND COLUMN_NAME=?`,
+                [purchaseDb, c.name]
+            );
+            if (row.cnt === 0) {
+                await conn.query(`ALTER TABLE \`${purchaseDb}\`.\`vendors\` ADD COLUMN \`${c.name}\` ${c.def}`);
+            }
+        }
 
         // Ensure purchase_history table exists
         await conn.query(`
@@ -122,6 +140,19 @@ export async function POST(request) {
         if (phVendorNameCol.cnt === 0) {
             await conn.query(`ALTER TABLE \`${purchaseDb}\`.\`purchase_history\` ADD COLUMN \`vendor_name\` VARCHAR(255) NULL AFTER \`vendor_id\``);
         }
+
+        // Ensure sync_logs table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`sync_logs\` (
+                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+                \`timestamp\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                \`mode\` VARCHAR(50),
+                \`section\` VARCHAR(100),
+                \`status\` VARCHAR(50),
+                \`records_processed\` INT DEFAULT 0,
+                \`message\` TEXT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
 
         // Ensure purchase_order_details table exists
         await conn.query(`
@@ -227,6 +258,8 @@ export async function POST(request) {
                 const isDelta = options.mode === "delta" || options.mode === "incremental";
                 const todayStr = new Date().toISOString().split('T')[0];
 
+                await MySqlService.logSyncEvent(options.mode, "All", "started", 0, `Sync started via API`);
+
                 // Get last sync timestamps for incremental mode
                 let lastInvSync = null;
                 let lastSalesSync = null;
@@ -258,7 +291,9 @@ export async function POST(request) {
                             branch_name: String(b.Description || b.BranchID).trim(), active: true
                         })));
                     }
-                } catch (e) { }
+                } catch (e) {
+                    await MySqlService.logSyncEvent(options.mode, "Branches", "error", 0, e.message);
+                }
 
                 // 1.5 VENDORS (Sync every time or if inventory/sales is selected)
                 if (options.inventory || options.sales) {
@@ -276,9 +311,11 @@ export async function POST(request) {
                                 last_sync: new Date()
                             }));
                             await MySqlService.upsertVendors(vendorRows);
+                            await MySqlService.logSyncEvent(options.mode, "Suppliers", "completed", vendorRows.length);
                         }
                     } catch (e) {
                         console.error(">>> [Sync API] Vendor sync error:", e.message);
+                        await MySqlService.logSyncEvent(options.mode, "Suppliers", "error", 0, e.message);
                     }
                 }
 
@@ -377,6 +414,7 @@ export async function POST(request) {
                         if (items.length < top) break;
                     }
                     console.log(`>>> [Sync API] Inventory sync complete. Total: ${totalSynced}`);
+                    await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced);
                     send({ section: "Inventory", status: "done", details: `Inventory sync complete.`, progress: 100 });
                 }
 
@@ -456,6 +494,7 @@ export async function POST(request) {
                         send({ section: "Sales history", details: `Synced ${sTotal} records...`, progress: salesProg, count: sTotal });
                         if (invoices.length < 100) break;
                     }
+                    await MySqlService.logSyncEvent(options.mode, "Sales history", "completed", sTotal);
                     send({ section: "Sales history", status: "done", details: "Sales sync complete.", progress: 100 });
 
                     // 3.5 PURCHASE ORDERS (Incoming PO Details)
@@ -464,6 +503,7 @@ export async function POST(request) {
                         let poStart = options.startDate || "2024-01-01";
                         const poFilter = `OrderDate ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
                         let poSkip = 0;
+                        let poTotal = 0;
                         while (!signal.aborted) {
                             const url = `${ACU_BASE}/PurchaseOrder?$expand=Details&$top=50&$skip=${poSkip}&$filter=${encodeURIComponent(poFilter)}`;
                             const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
@@ -505,12 +545,15 @@ export async function POST(request) {
                             if (historyRows.length > 0) await MySqlService.upsertPurchaseHistory(historyRows);
                             if (lineRows.length > 0) await MySqlService.upsertPurchaseOrderDetails(lineRows);
 
+                            poTotal += orders.length;
                             poSkip += orders.length;
                             if (orders.length < 50) break;
                         }
+                        await MySqlService.logSyncEvent(options.mode, "Incoming PO", "completed", poTotal);
                         send({ section: "Incoming PO", status: "done", details: "Purchase order sync complete.", progress: 100 });
                     } catch (poErr) {
                         console.error(">>> [Sync API] PO sync error:", poErr.message);
+                        await MySqlService.logSyncEvent(options.mode, "Incoming PO", "error", 0, poErr.message);
                     }
                 }
 
@@ -547,6 +590,7 @@ export async function POST(request) {
                         }
                         if (levels.length > 0) await MySqlService.upsertInventoryLevels(levels);
                     }
+                    await MySqlService.logSyncEvent(options.mode, "Smart Delta", "completed", idList.length);
                     send({ section: "Inventory", status: "done", details: "Stock refresh complete.", progress: 100 });
                 }
 
@@ -556,16 +600,24 @@ export async function POST(request) {
                     try {
                         await MySqlService.enrichSalesData();
                         await MySqlService.validateSalesIntegrity();
+                        
+                        // New: Calculate Vendor Performance
+                        send({ section: "Data Enrichment", details: "Calculating vendor performance...", progress: 99 });
+                        const vCount = await MySqlService.calculateAndStoreVendorPerformance();
+                        await MySqlService.logSyncEvent(options.mode, "Suppliers Performance", "completed", vCount);
                     } catch (e) {
                         console.error(">>> [Sync API] Enrichment error:", e);
+                        await MySqlService.logSyncEvent(options.mode, "Data Enrichment", "error", 0, e.message);
                     }
                     send({ section: "Data Enrichment", status: "done", details: "Enrichment complete.", progress: 100 });
                 }
 
+                await MySqlService.logSyncEvent(options.mode, "All", "completed", 0, "Sync finished successfully");
                 send({ status: "complete", message: "Sync completed successfully" });
                 finish();
             } catch (err) {
                 console.error(">>> [Sync Error]", err);
+                await MySqlService.logSyncEvent(options.mode, "All", "error", 0, err.message);
                 send({ status: "error", message: err?.message || String(err) || "An unknown sync error occurred" });
                 finish();
             }
@@ -573,4 +625,23 @@ export async function POST(request) {
     });
 
     return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
+}
+
+/**
+ * GET handler to fetch recent sync logs
+ */
+export async function GET(request) {
+    try {
+        const cookie = getSessionFromRequest(request);
+        if (!cookie) return Response.json({ message: "Unauthorized" }, { status: 401 });
+
+        const { searchParams } = new URL(request.url);
+        const limit = parseInt(searchParams.get("limit") || "20");
+
+        const logs = await MySqlService.getSyncLogs(limit);
+        return Response.json(logs);
+    } catch (err) {
+        console.error("[GET Sync Logs Error]", err);
+        return Response.json({ message: "Internal server error" }, { status: 500 });
+    }
 }

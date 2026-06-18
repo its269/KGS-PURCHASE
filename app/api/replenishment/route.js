@@ -1,68 +1,109 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/session-store";
-import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * AI Replenishment API
+ * Uses MySQL sales velocity (ADS) and lead times to predict stockouts and suggest order quantities.
+ */
 export async function GET(request) {
     const cookie = getSessionFromRequest(request);
     
+    // We prioritize MySQL data, but still check for a session to ensure authorized access
     if (!cookie) {
         return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
     try {
-        let recs = [];
-        if (cookie !== "__bypass__") {
-            recs = await AcumaticaService.getReplenishmentRecommendations({ cookie });
-        }
+        console.log(">>> [AI Replenishment] Running dynamic sales velocity analysis...");
 
-        // Advanced AI Enrichment using MySQL Sales Velocity & Lead Times
-        try {
-            const salesMap = await MySqlService.getPeriodicSalesSummary();
-            const vendorMap = await MySqlService.getItemVendorMap();
-            const leadTimeMap = await MySqlService.getVendorLeadTimes();
+        // 1. Fetch data from MySQL (Last 90 days of sales + current stock levels)
+        // We fetch a large batch (500 items) to cover the most active products
+        const { items } = await MySqlService.getStockItems({ page: 1, pageSize: 500 });
+        const vendorMap = await MySqlService.getItemVendorMap();
+        const leadTimeMap = await MySqlService.getVendorLeadTimes();
 
-            recs = recs.map(r => {
-                const itemId = r.itemId.toUpperCase().trim();
-                const sales = salesMap.get(itemId) || { qty_sold: 0 };
-                const vendorId = vendorMap.get(itemId);
-                const leadTime = vendorId ? (leadTimeMap[vendorId]?.days || 0) : 0;
+        const TARGET_DAYS_OF_COVER = 60; // We want to stock enough for 2 months
+        const SAFETY_BUFFER_DAYS = 7;
+        
+        const recommendations = [];
+        let recId = 2000;
+
+        for (const item of items) {
+            const itemId = (item.inventoryId || "").toUpperCase().trim();
+            const currentStock = Number(item.totalOnHand) || 0;
+            const qtySold90 = Number(item.totalQtySold) || 0;
+            const ads = qtySold90 / 90; // Average Daily Sales
+            
+            const vendorId = vendorMap.get(itemId);
+            const leadTime = vendorId ? (leadTimeMap[vendorId]?.days || 0) : 0;
+
+            // --- AI Logic ---
+            
+            // Case A: Item has sales history (Velocity-based)
+            if (ads > 0) {
+                const daysRemaining = Math.floor(currentStock / ads);
+                const targetStock = Math.ceil(ads * TARGET_DAYS_OF_COVER);
+                const suggestedQty = Math.max(0, targetStock - currentStock);
                 
-                const velocity = sales.qty_sold / 90; // Average per day over 90 days
-                
-                if (velocity > 0) {
-                    const daysLeft = Math.floor(r.currentStock / velocity);
-                    const isCritical = daysLeft < 7;
-                    const isLongLeadDanger = leadTime > 0 && daysLeft <= leadTime;
-                    
-                    let aiMessage = `Sales velocity is ${velocity.toFixed(2)} units/day. ${daysLeft} days of stock remaining at current rate.`;
-                    if (isCritical) aiMessage += " Stockout highly likely within a week.";
-                    if (isLongLeadDanger) aiMessage += ` Warning: Lead time for vendor ${vendorId} is ${leadTime} days. Order now to prevent stockout!`;
+                // Priority: High if stock lasts less than lead time + safety buffer
+                const isCritical = daysRemaining <= (leadTime + SAFETY_BUFFER_DAYS);
+                const priority = isCritical ? "High" : daysRemaining < 30 ? "Medium" : "Low";
 
-                    return {
-                        ...r,
+                if (suggestedQty > 0 || isCritical) {
+                    recommendations.push({
+                        recommendationId: `REC-${recId++}`,
+                        itemId: item.inventoryId,
+                        description: item.description,
+                        currentStock: currentStock,
+                        suggestedQty: suggestedQty,
+                        priorityLevel: priority,
+                        generatedDate: new Date().toISOString(),
                         aiInsights: {
-                            ...r.aiInsights,
-                            salesVelocity: velocity.toFixed(2),
-                            daysRemaining: daysLeft,
+                            salesVelocity: ads.toFixed(2),
+                            daysRemaining: daysRemaining,
                             leadTimeDays: leadTime,
                             vendorId: vendorId,
-                            message: aiMessage,
-                            formula: `(Stock: ${r.currentStock}) / (Avg Daily Sales: ${velocity.toFixed(2)}) = ${daysLeft} days left. [Lead Time: ${leadTime} days]`
-                        },
-                        priorityLevel: (isCritical || isLongLeadDanger) ? "High" : r.priorityLevel
-                    };
+                            formula: `(ADS: ${ads.toFixed(2)}) * (Target: ${TARGET_DAYS_OF_COVER} days) - (Stock: ${currentStock})`,
+                            message: `Selling ~${ads.toFixed(2)} units/day. Current stock lasts ${daysRemaining} days. Suggested restock covers ${TARGET_DAYS_OF_COVER} days of sales.`,
+                            stockoutRisk: isCritical ? "Critical (Order Now)" : daysRemaining < 30 ? "High" : "Moderate"
+                        }
+                    });
                 }
-                return r;
-            });
-        } catch (mysqlErr) {
-            console.warn("[Replenishment Enrichment] MySQL fallback failed", mysqlErr.message);
+            } 
+            // Case B: No sales in 90 days, but stock is extremely low (Fixed-threshold fallback)
+            else if (currentStock < 5 && item.itemStatus === "Active") {
+                recommendations.push({
+                    recommendationId: `REC-${recId++}`,
+                    itemId: item.inventoryId,
+                    description: item.description,
+                    currentStock: currentStock,
+                    suggestedQty: 10, // Default minimum restock for active but slow items
+                    priorityLevel: "Low",
+                    generatedDate: new Date().toISOString(),
+                    aiInsights: {
+                        salesVelocity: "0.00",
+                        daysRemaining: "N/A",
+                        message: "No sales recorded in last 90 days. Minimum restock suggested to maintain basic availability for active catalog item.",
+                        formula: "Fixed minimum threshold (5 units)"
+                    }
+                });
+            }
         }
 
-        return NextResponse.json(recs);
+        // Sort: High priority first, then by suggested quantity
+        const sorted = recommendations.sort((a, b) => {
+            const pMap = { "High": 3, "Medium": 2, "Low": 1 };
+            if (pMap[b.priorityLevel] !== pMap[a.priorityLevel]) {
+                return pMap[b.priorityLevel] - pMap[a.priorityLevel];
+            }
+            return b.suggestedQty - a.suggestedQty;
+        });
+
+        return NextResponse.json(sorted);
     } catch (err) {
         console.error("[Replenishment API Error]", err);
         return NextResponse.json({ message: err.message }, { status: 500 });

@@ -34,6 +34,8 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
     const [detail, setDetail] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [notes, setNotes] = useState("");
+    const [savingNotes, setSavingNotes] = useState(false);
 
     useEffect(() => {
         if (!inventoryId) return;
@@ -48,6 +50,7 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
             if (cached) {
                 hasCache = true;
                 setDetail(cached);
+                setNotes(cached.annotations?.internal_notes || "");
                 setLoading(false);
             }
         });
@@ -60,6 +63,7 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                 const r = await fetchWithAuth(`/api/stock-items/${encodeURIComponent(inventoryId)}`, { signal: controller.signal });
                 const d = await r.json();
                 setDetail(d);
+                setNotes(d.annotations?.internal_notes || "");
                 DataCache.set(cacheKey, d);
             } catch (err) {
                 if (err.name !== 'AbortError') setError("Failed to load details.");
@@ -71,6 +75,34 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
         fetchDetail();
         return () => controller.abort();
     }, [inventoryId]);
+
+    const handleSaveNotes = async () => {
+        setSavingNotes(true);
+        try {
+            await fetchWithAuth("/api/annotations", {
+                method: "POST",
+                body: JSON.stringify({
+                    module: "inventory",
+                    refId: inventoryId,
+                    fieldKey: "internal_notes",
+                    fieldValue: notes
+                })
+            });
+            // Update cache
+            const cacheKey = `stock_detail_${inventoryId}`;
+            const cached = DataCache.get(cacheKey);
+            if (cached) {
+                DataCache.set(cacheKey, {
+                    ...cached,
+                    annotations: { ...(cached.annotations || {}), internal_notes: notes }
+                });
+            }
+        } catch (err) {
+            console.error("Failed to save notes", err);
+        } finally {
+            setSavingNotes(false);
+        }
+    };
 
     if (!inventoryId) return null;
 
@@ -183,6 +215,39 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                                     <span className="idm-meta-value">{fmtDate(detail.lastSync)}</span>
                                 </div>
                             )}
+                        </div>
+
+                        {/* Internal Notes Section */}
+                        <div className="idm-section">
+                            <h3 className="idm-section-title">Internal Notes & Annotations</h3>
+                            <div style={{ background: 'var(--bg-main)', padding: '1rem', borderRadius: '12px', border: '1px solid var(--border-light)' }}>
+                                <textarea
+                                    className="idm-notes-area"
+                                    placeholder="Add internal notes about this item (e.g., replacement info, quality notes)..."
+                                    value={notes}
+                                    onChange={(e) => setNotes(e.target.value)}
+                                    style={{ 
+                                        width: '100%', 
+                                        minHeight: '80px', 
+                                        background: 'transparent', 
+                                        border: 'none', 
+                                        color: 'var(--text-primary)',
+                                        fontSize: '0.9rem',
+                                        resize: 'vertical',
+                                        outline: 'none'
+                                    }}
+                                />
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                                    <button 
+                                        className="db-action-btn"
+                                        onClick={handleSaveNotes}
+                                        disabled={savingNotes}
+                                        style={{ height: '32px', fontSize: '0.75rem', padding: '0 1rem' }}
+                                    >
+                                        {savingNotes ? "Saving..." : "Save Notes"}
+                                    </button>
+                                </div>
+                            </div>
                         </div>
 
                         {/* Warehouse Breakdown */}

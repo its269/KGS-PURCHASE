@@ -235,6 +235,23 @@ export default function Sidebar() {
           <button
             className="sidebar-logout"
             onClick={() => {
+              if (confirm("Perform a Hard Refresh? This will clear the local data cache and reload the app.")) {
+                DataCache.clear();
+                window.location.reload();
+              }
+            }}
+            title={isCollapsed ? "Hard Refresh (Clear Cache)" : ""}
+            style={{ marginBottom: '0.5rem', borderBottom: '1px solid var(--border-light)', borderRadius: '0', paddingBottom: '0.75rem' }}
+          >
+            <span className="sidebar-item-icon">
+              <IconSync />
+            </span>
+            {!isCollapsed && <span>Hard Refresh</span>}
+          </button>
+
+          <button
+            className="sidebar-logout"
+            onClick={() => {
               // Clear user info
               localStorage.removeItem("acu_session");
               localStorage.removeItem("userName");

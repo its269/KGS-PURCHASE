@@ -25,8 +25,16 @@ export async function GET(request, { params }) {
         console.log(`[Stock Item Detail API] Fetching from MySQL (db_purchase) for ${inventoryId}`);
         const mysqlDetail = await MySqlService.getStockItemDetail(inventoryId);
         
+        // Fetch annotations for this inventory item
+        const annotations = await MySqlService.getAnnotations("inventory");
+        const itemAnnotations = annotations[inventoryId] || {};
+        
         if (mysqlDetail && mysqlDetail.branches && mysqlDetail.branches.length > 0) {
-            return NextResponse.json({ ...mysqlDetail, source: "mysql" });
+            return NextResponse.json({ 
+                ...mysqlDetail, 
+                annotations: itemAnnotations,
+                source: "mysql" 
+            });
         }
 
         // --- Fallback: fetch live from Acumatica ---
@@ -95,6 +103,7 @@ export async function GET(request, { params }) {
             totalOnHand,
             totalAvailable,
             branches,
+            annotations: itemAnnotations,
             source: "acumatica",
         };
 
