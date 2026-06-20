@@ -344,7 +344,7 @@ export const MySqlService = {
             const [rows] = await purchasePool.query(`
                 SELECT h.vendor_id
                 FROM purchase_history h
-                JOIN purchase_order_details d ON h.order_nbr = d.order_nbr
+                JOIN purchase_order_details d ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
                 WHERE d.inventory_id = ?
                 ORDER BY h.order_date DESC
                 LIMIT 1
@@ -578,19 +578,25 @@ export const MySqlService = {
      * Fetch stock items from MySQL database (one row per unique inventory_id)
      * Enriched with total sales and quantity sold.
      */
-    async getStockItems({ page = 1, pageSize = 50, search = "" } = {}) {
+    async getStockItems({ page = 1, pageSize = 50, search = "", branch = "" } = {}) {
         const offset = (page - 1) * pageSize;
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
 
         try {
-            let whereClause = "";
-            let params = [];
+            const whereParts = [];
+            const params = [];
 
             if (search) {
-                whereClause = "WHERE (i.inventory_id LIKE ? OR i.inventory_name LIKE ?)";
-                params = [`%${search}%`, `%${search}%`];
+                whereParts.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
+                params.push(`%${search}%`, `%${search}%`);
             }
+            if (branch && branch !== "All Branches") {
+                whereParts.push("i.default_warehouse = ?");
+                params.push(branch);
+            }
+
+            const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
 
             // 1. Fetch items from Inventory database with summed stock and list of branches
             const query = `
@@ -620,7 +626,7 @@ export const MySqlService = {
             );
 
             // 2. Fetch sales summary from Purchase database
-            const salesMap = await this.getPeriodicSalesSummary({ search });
+            const salesMap = await this.getPeriodicSalesSummary({ search, branch });
 
             // 3. Merge
             const enriched = rows.map(r => {

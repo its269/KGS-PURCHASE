@@ -242,7 +242,9 @@ export async function POST(request) {
                 const k = Object.keys(obj).find(i => i.toLowerCase() === keyName.toLowerCase());
                 if (!k) return "";
                 const val = obj[k];
-                return (val?.value !== undefined ? val.value : val) ?? "";
+                if (val === null || val === undefined) return "";
+                if (typeof val === "object") return val.value ?? "";
+                return val;
             };
 
             const getAny = (obj, ...keys) => {
@@ -501,7 +503,7 @@ export async function POST(request) {
                     send({ section: "Incoming PO", details: "Updating purchase order details...", progress: 50 });
                     try {
                         let poStart = options.startDate || "2024-01-01";
-                        const poFilter = `OrderDate ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
+                        const poFilter = `Date ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
                         let poSkip = 0;
                         let poTotal = 0;
                         while (!signal.aborted) {
@@ -519,8 +521,8 @@ export async function POST(request) {
                                     vendor_id: getF(o, "VendorID"),
                                     vendor_name: getF(o, "VendorName"),
                                     status: getF(o, "Status"),
-                                    order_date: getF(o, "OrderDate"),
-                                    promised_date: getF(o, "PromisedDate"),
+                                    order_date: getF(o, "Date"),
+                                    promised_date: getF(o, "PromisedOn"),
                                     receipt_date: null, // Would come from receipt sync if implemented
                                     total_amount: parseFloat(getF(o, "OrderTotal") || 0)
                                 });
@@ -534,7 +536,7 @@ export async function POST(request) {
                                         order_nbr: getF(o, "OrderNbr"),
                                         line_nbr: parseInt(getF(d, "LineNbr") || 0),
                                         inventory_id: getF(d, "InventoryID"),
-                                        description: getF(d, "Description"),
+                                        description: getAny(d, "LineDescription", "Description"),
                                         qty: parseFloat(getF(d, "OrderQty") || 0),
                                         uom: getF(d, "UOM"),
                                         ext_cost: parseFloat(getF(d, "ExtendedCost") || 0),

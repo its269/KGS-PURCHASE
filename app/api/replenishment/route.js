@@ -17,12 +17,15 @@ export async function GET(request) {
         return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
+    const { searchParams } = new URL(request.url);
+    const branch = searchParams.get("branch") || "MAIN";
+
     try {
-        console.log(">>> [AI Replenishment] Running dynamic sales velocity analysis...");
+        console.log(`>>> [AI Replenishment] Running dynamic sales velocity analysis for branch: ${branch}`);
 
         // 1. Fetch data from MySQL (Last 90 days of sales + current stock levels)
         // We fetch a large batch (500 items) to cover the most active products
-        const { items } = await MySqlService.getStockItems({ page: 1, pageSize: 500 });
+        const { items } = await MySqlService.getStockItems({ branch, page: 1, pageSize: 500 });
         const vendorMap = await MySqlService.getItemVendorMap();
         const leadTimeMap = await MySqlService.getVendorLeadTimes();
 
@@ -61,6 +64,8 @@ export async function GET(request) {
                         currentStock: currentStock,
                         suggestedQty: suggestedQty,
                         priorityLevel: priority,
+                        branchId: branch,
+                        restockSource: branch === "MAIN" ? "External Vendor" : "Transfer from MAIN Warehouse",
                         generatedDate: new Date().toISOString(),
                         aiInsights: {
                             salesVelocity: ads.toFixed(2),
@@ -83,6 +88,8 @@ export async function GET(request) {
                     currentStock: currentStock,
                     suggestedQty: 10, // Default minimum restock for active but slow items
                     priorityLevel: "Low",
+                    branchId: branch,
+                    restockSource: branch === "MAIN" ? "External Vendor" : "Transfer from MAIN Warehouse",
                     generatedDate: new Date().toISOString(),
                     aiInsights: {
                         salesVelocity: "0.00",

@@ -32,6 +32,16 @@ const IconBrain = () => (
         <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.48-2.04z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.48-2.04z"/>
     </svg>
 );
+const IconFilter = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+);
+const IconChevron = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="6 9 12 15 18 9" />
+    </svg>
+);
 
 function priorityClass(priority) {
     if (priority === "High") return "db-status-badge po-status-cancelled"; // Red
@@ -46,41 +56,65 @@ function fmtDate(d) {
 
 export default function ReplenishmentPage() {
     const [recs, setRecs] = useState([]);
+    const [branches, setBranches] = useState([]);
+    const [selectedBranch, setSelectedBranch] = useState("MAIN");
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [showInfo, setShowInfo] = useState(false);
 
-    const fetchRecommendations = useCallback(async (isBackground = false) => {
+    const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = selectedBranch) => {
         if (!isBackground) setLoading(true);
         setError(null);
         try {
-            const cacheKey = "replenishment_recs";
-            const res = await fetchWithAuth("/api/replenishment");
+            const res = await fetchWithAuth(`/api/replenishment?branch=${branchToFetch}`);
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.message || `HTTP ${res.status}`);
             }
             const data = await res.json();
             setRecs(data || []);
-            DataCache.set(cacheKey, data || []);
+            DataCache.set(`replenishment_recs_${branchToFetch}`, data || []);
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (!isBackground) setError(err.message || "Failed to generate recommendations. Please try again.");
         } finally {
             setLoading(false);
         }
+    }, [selectedBranch]);
+
+    useEffect(() => {
+        let active = true;
+        async function loadBranches() {
+            try {
+                const res = await fetchWithAuth("/api/branches?source=mysql");
+                if (res.ok && active) {
+                    const data = await res.json();
+                    setBranches(data || []);
+                }
+            } catch (err) {
+                console.error("Failed to load branches", err);
+            }
+        }
+        loadBranches();
+        return () => { active = false; };
     }, []);
 
     useEffect(() => {
-        const cacheKey = "replenishment_recs";
+        let active = true;
+        const cacheKey = `replenishment_recs_${selectedBranch}`;
         const cached = DataCache.get(cacheKey);
-        if (cached) {
-            setRecs(cached || []);
-            Promise.resolve().then(() => fetchRecommendations(true));
-        } else {
-            Promise.resolve().then(() => fetchRecommendations(false));
-        }
-    }, [fetchRecommendations]);
+
+        const load = async () => {
+            if (cached) {
+                await new Promise(r => setTimeout(r, 0));
+                if (active) setRecs(cached);
+            }
+            if (active) await fetchRecommendations(!!cached, selectedBranch);
+        };
+
+        load();
+        return () => { active = false; };
+    }, [fetchRecommendations, selectedBranch]);
 
     const stats = useMemo(() => {
         const highPriority = recs.filter(r => r.priorityLevel === "High").length;
@@ -101,26 +135,89 @@ export default function ReplenishmentPage() {
                     <p>Advanced AI-driven insights for restocking based on sales velocity and warehouse availability.</p>
                 </div>
 
+                {/* Educational Banner */}
+                <div style={{
+                    background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(147, 51, 234, 0.04) 100%)',
+                    border: '1px solid rgba(99, 102, 241, 0.15)',
+                    borderRadius: '16px',
+                    padding: '1.25rem 1.5rem',
+                    marginBottom: '2rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem',
+                    boxShadow: 'var(--shadow-sm)'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <div style={{ color: 'var(--accent-primary)', display: 'flex', alignItems: 'center' }}>
+                            <IconBrain />
+                        </div>
+                        <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                            Understanding Replenishment & Branch Roles
+                        </h3>
+                    </div>
+                    <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                        This module calculates stockout risk and suggested order quantities by comparing current branch stock levels with its average daily sales (ADS).
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '0.25rem' }}>
+                        <div style={{ padding: '1rem', background: 'var(--bg-surface)', borderRadius: '12px', border: '1px solid var(--border-light)' }}>
+                            <div style={{ fontWeight: '700', fontSize: '0.8rem', color: 'var(--accent-primary)', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                MAIN Warehouse (HQ Supplier)
+                            </div>
+                            <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                                The **MAIN** branch is the central hub and the source of all products. Recommendations for MAIN should be fulfilled by ordering from **External Vendors** (via Purchase Orders).
+                            </p>
+                        </div>
+                        <div style={{ padding: '1rem', background: 'var(--bg-surface)', borderRadius: '12px', border: '1px solid var(--border-light)' }}>
+                            <div style={{ fontWeight: '700', fontSize: '0.8rem', color: 'var(--status-open)', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                Regional Branches (e.g. Cebu, Davao)
+                            </div>
+                            <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                                Regional branches are supplied by the central hub. Recommendations for these branches should be fulfilled by **Transferring Stock from the MAIN Warehouse** (via Stock Transfers).
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <div className="db-stats" style={{ marginBottom: '2rem' }}>
                     <div className="db-stat-card db-stat-danger">
                         <span className="db-stat-label">Stockout Risk</span>
                         <span className="db-stat-value" style={{ color: 'var(--status-danger)' }}>{stats.highPriority}</span>
-                        <span className="db-stat-sub">High Risk Items</span>
+                        <span className="db-stat-sub">High Risk in {selectedBranch}</span>
                     </div>
                     <div className="db-stat-card">
                         <span className="db-stat-label">Total Suggested</span>
                         <span className="db-stat-value">{stats.totalSuggested.toLocaleString()}</span>
-                        <span className="db-stat-sub">Optimized units recommended</span>
+                        <span className="db-stat-sub">Recommended for {selectedBranch}</span>
                     </div>
                     <div className="db-stat-card">
                         <span className="db-stat-label">AI Coverage</span>
                         <span className="db-stat-value">{recs.length}</span>
-                        <span className="db-stat-sub">Items analyzed with Sales Velocity</span>
+                        <span className="db-stat-sub">Items in {selectedBranch}</span>
                     </div>
                 </div>
 
                 <div className="db-toolbar" style={{ borderRadius: '16px', padding: '1.25rem' }}>
-                    <div className="db-toolbar-left">
+                    <div className="db-toolbar-left" style={{ gap: '1.25rem' }}>
+                        {/* Branch Selector Dropdown */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-secondary)' }}>Branch:</span>
+                            <div className="db-select-wrapper">
+                                <IconFilter />
+                                <select 
+                                    className="db-select" 
+                                    value={selectedBranch} 
+                                    onChange={(e) => setSelectedBranch(e.target.value)}
+                                    style={{ paddingLeft: '2.25rem', paddingRight: '2rem', height: '38px', borderRadius: '10px' }}
+                                >
+                                    <option value="MAIN">MAIN (Central Supplier)</option>
+                                    {branches.filter(b => b.SiteID !== "MAIN" && b.SiteID !== "__catalog__").map(b => (
+                                        <option key={b.SiteID} value={b.SiteID}>{b.SiteID}</option>
+                                    ))}
+                                </select>
+                                <IconChevron />
+                            </div>
+                        </div>
+
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem', fontWeight: '500' }}>
                             <IconCalendar />
                             <span>Last Intelligence Run: {recs.length > 0 ? fmtDate(recs[0].generatedDate) : "Never"}</span>
@@ -130,8 +227,8 @@ export default function ReplenishmentPage() {
                         <button 
                             className="db-refresh-btn" 
                             onClick={() => {
-                                DataCache.delete("replenishment_recs");
-                                fetchRecommendations();
+                                DataCache.delete(`replenishment_recs_${selectedBranch}`);
+                                fetchRecommendations(false, selectedBranch);
                             }} 
                             disabled={loading}
                         >
@@ -151,6 +248,8 @@ export default function ReplenishmentPage() {
                             <tr>
                                 <th style={{ padding: '1.25rem' }}>Item ID</th>
                                 <th>Description</th>
+                                <th>Branch / Destination</th>
+                                <th>Restock Source</th>
                                 <th style={{ textAlign: 'right' }}>Current Stock</th>
                                 <th style={{ textAlign: 'center' }}>Priority</th>
                                 <th style={{ textAlign: 'center' }}>
@@ -169,19 +268,19 @@ export default function ReplenishmentPage() {
                         </thead>
                         <tbody>
                             {loading && recs.length === 0 ? (
-                                <tr><td colSpan={6} className="si-loading-cell">
+                                <tr><td colSpan={8} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span style={{ color: 'var(--text-secondary)' }}>Processing warehouse logs & sales velocity...</span>
                                     </div>
                                 </td></tr>
                             ) : recs.length === 0 ? (
-                                <tr><td colSpan={6} className="si-empty-cell" style={{ padding: '4rem' }}>
+                                <tr><td colSpan={8} className="si-empty-cell" style={{ padding: '4rem' }}>
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                                         <div style={{ color: 'var(--status-warning)' }}><IconAlertCircle /></div>
-                                        <span>No replenishment needed at this time. All items have healthy stock levels.</span>
+                                        <span>No replenishment needed for {selectedBranch} at this time. All items have healthy stock levels.</span>
                                         <button 
-                                            onClick={() => fetchRecommendations()} 
+                                            onClick={() => fetchRecommendations(false, selectedBranch)} 
                                             className="db-action-btn db-action-sync"
                                             style={{ height: '36px', padding: '0 1.5rem', fontSize: '0.85rem' }}
                                         >
@@ -195,6 +294,28 @@ export default function ReplenishmentPage() {
                                         <span className="db-inv-id">{r.itemId}</span>
                                     </td>
                                     <td className="db-desc">{r.description}</td>
+                                    <td>
+                                        <span style={{
+                                            fontSize: '0.75rem',
+                                            fontWeight: '700',
+                                            color: r.branchId === "MAIN" ? "var(--accent-primary)" : "var(--text-primary)",
+                                            background: r.branchId === "MAIN" ? "rgba(99, 102, 241, 0.08)" : "var(--bg-surface)",
+                                            padding: '4px 8px',
+                                            borderRadius: '6px',
+                                            border: '1px solid ' + (r.branchId === "MAIN" ? "rgba(99, 102, 241, 0.15)" : "var(--border-light)")
+                                        }}>
+                                            {r.branchId}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <span style={{
+                                            fontSize: '0.7rem',
+                                            fontWeight: '600',
+                                            color: r.branchId === "MAIN" ? "var(--accent-primary)" : "var(--status-open)",
+                                        }}>
+                                            {r.restockSource}
+                                        </span>
+                                    </td>
                                     <td style={{ textAlign: 'right', fontWeight: '600' }}>{r.currentStock}</td>
                                     <td style={{ textAlign: 'center' }}>
                                         <span className={priorityClass(r.priorityLevel)}>{r.priorityLevel}</span>

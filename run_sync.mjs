@@ -33,8 +33,8 @@ async function run() {
     const sessionCookie = cookies.find(c => c.startsWith("acu_session="));
     console.log("Logged in. Session:", sessionCookie);
 
-    console.log("Triggering Sync (PO only)...");
-    const syncRes = await fetch(`${BASE}/api/sync?inventory=true&sales=false&mode=delta`, {
+    console.log("Triggering Sync (PO & Sales)...");
+    const syncRes = await fetch(`${BASE}/api/sync?inventory=false&sales=true&mode=delta`, {
         method: "POST",
         headers: { "Cookie": sessionCookie }
     });

@@ -10,7 +10,9 @@ function getF(obj, key) {
     const k = Object.keys(obj).find(i => i.toLowerCase() === key.toLowerCase());
     if (!k) return "";
     const val = obj[k];
-    return (val?.value !== undefined ? val.value : val) ?? "";
+    if (val === null || val === undefined) return "";
+    if (typeof val === "object") return val.value ?? "";
+    return val;
 }
 
 export const runtime = "nodejs";

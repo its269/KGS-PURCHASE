@@ -266,7 +266,7 @@ export const AcumaticaService = {
                 description: getAny(line, "LineDescription", "Description"),
                 qty: parseFloat(getF(line, "OrderQty") || 0),
                 uom: getF(line, "UOM"),
-                extCost: parseFloat(getF(line, "LineAmount") || 0)
+                extCost: parseFloat(getAny(line, "ExtendedCost", "LineAmount") || 0)
             }))
         }));
 
