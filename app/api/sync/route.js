@@ -537,9 +537,9 @@ export async function POST(request) {
                                         line_nbr: parseInt(getF(d, "LineNbr") || 0),
                                         inventory_id: getF(d, "InventoryID"),
                                         description: getAny(d, "LineDescription", "Description"),
-                                        qty: parseFloat(getF(d, "OrderQty") || 0),
+                                        qty: parseFloat(getAny(d, "OrderQty", "Qty") || 0),
                                         uom: getF(d, "UOM"),
-                                        ext_cost: parseFloat(getF(d, "ExtendedCost") || 0),
+                                        ext_cost: parseFloat(getAny(d, "ExtendedCost", "LineAmount") || 0),
                                         last_sync: new Date()
                                     });
                                 }

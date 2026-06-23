@@ -103,6 +103,22 @@ input, select, textarea {
   font-family: inherit;
 }
 
+/* Native select dropdown — readable options in dark theme (all modules) */
+select {
+  cursor: pointer;
+}
+
+select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+select option:checked,
+select option:hover {
+  background-color: #3b82f6;
+  color: #ffffff;
+}
+
 /* Scrollbar styling for modern feel */
 ::-webkit-scrollbar {
   width: 8px;

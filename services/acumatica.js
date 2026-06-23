@@ -25,6 +25,57 @@ const getAny = (obj, ...keys) => {
     return "";
 };
 
+/** Extract PO detail lines from an Acumatica PurchaseOrder record */
+const extractPoDetails = (po) => {
+    let details =
+        po?.Details ||
+        po?.details ||
+        po?.Transactions ||
+        po?.transactions ||
+        po?.PurchaseOrderDetails ||
+        [];
+    if (details && !Array.isArray(details) && details.value) details = details.value;
+    return Array.isArray(details) ? details : [];
+};
+
+/** Map a single Acumatica PO detail line to the flattened UI model */
+const mapPoLine = (line) => {
+    const qty = parseFloat(getAny(line, "OrderQty", "Qty", "Quantity") || 0);
+    const unitCost = parseFloat(getAny(line, "UnitCost", "CuryUnitCost") || 0);
+    let extCost = parseFloat(getAny(line, "ExtendedCost", "LineAmount", "Amount", "CuryExtCost") || 0);
+    if (!extCost && qty && unitCost) extCost = qty * unitCost;
+
+    return {
+        inventoryId: getF(line, "InventoryID"),
+        description: getAny(line, "LineDescription", "Description", "TransactionDescription"),
+        qty,
+        uom: getF(line, "UOM"),
+        extCost,
+    };
+};
+
+/** Map a PurchaseOrder header + lines to the API response shape */
+const mapPurchaseOrder = (po) => ({
+    orderNbr: getF(po, "OrderNbr"),
+    orderType: getF(po, "OrderType"),
+    status: getF(po, "Status"),
+    date: getF(po, "Date"),
+    vendorId: getF(po, "VendorID"),
+    vendorName: getF(po, "VendorName"),
+    totalAmount: parseFloat(getF(po, "OrderTotal") || 0),
+    lines: extractPoDetails(po).map(mapPoLine),
+});
+
+/** Build OData filters for a PO number (handles combined type+nbr like MNLP260480). */
+const buildOrderFilters = (orderNbr) => {
+    const full = String(orderNbr || "").trim().replace(/'/g, "''");
+    if (!full) return [];
+    const filters = [`OrderNbr eq '${full}'`];
+    const m = full.match(/^([A-Z]+)(\d+)$/);
+    if (m) filters.push(`OrderType eq '${m[1]}' and OrderNbr eq '${m[2]}'`);
+    return filters;
+};
+
 // --- SALES SYNC STATE MANAGEMENT ---
 let activeSalesSyncId = 0;
 let salesAbortController = null;
@@ -253,24 +304,51 @@ export const AcumaticaService = {
         const rawOrders = data.value || (Array.isArray(data) ? data : []);
 
         const hasMore = rawOrders.length > pageSize;
-        const orders = rawOrders.slice(0, pageSize).map(po => ({
-            orderNbr: getF(po, "OrderNbr"),
-            orderType: getF(po, "OrderType"),
-            status: getF(po, "Status"),
-            date: getF(po, "Date"),
-            vendorId: getF(po, "VendorID"),
-            vendorName: getF(po, "VendorName"),
-            totalAmount: parseFloat(getF(po, "OrderTotal") || 0),
-            lines: (po.Details?.value || po.Details || []).map(line => ({
-                inventoryId: getF(line, "InventoryID"),
-                description: getAny(line, "LineDescription", "Description"),
-                qty: parseFloat(getF(line, "OrderQty") || 0),
-                uom: getF(line, "UOM"),
-                extCost: parseFloat(getAny(line, "ExtendedCost", "LineAmount") || 0)
-            }))
-        }));
+        const orders = rawOrders.slice(0, pageSize).map(mapPurchaseOrder);
 
         return { orders, hasMore };
+    },
+
+    /** Fetch line items for specific order numbers (used when MySQL lines are missing) */
+    async getPurchaseOrderLinesByNbrs(orderNbrs, cookie) {
+        const nbrs = [...new Set(orderNbrs.map(n => String(n || "").trim()).filter(Boolean))];
+        if (!nbrs.length || !cookie) return new Map();
+
+        const lineMap = new Map();
+        const CONCURRENCY = 4;
+
+        const fetchOne = async (nbr) => {
+            for (const filter of buildOrderFilters(nbr)) {
+                try {
+                    const url = `${ACU_BASE}/PurchaseOrder?$expand=Details&$filter=${encodeURIComponent(filter)}&$top=1`;
+                    const res = await this.fetchWithRetry(url, cookie);
+                    const data = await res.json();
+                    const rawOrders = data.value || (Array.isArray(data) ? data : []);
+                    if (!rawOrders.length) continue;
+
+                    const mapped = mapPurchaseOrder(rawOrders[0]);
+                    const key = String(nbr).trim();
+                    if (mapped.lines?.length) {
+                        lineMap.set(key, mapped.lines);
+                        if (mapped.orderNbr && mapped.orderNbr !== key) {
+                            lineMap.set(String(mapped.orderNbr).trim(), mapped.lines);
+                        }
+                        return;
+                    }
+                } catch {
+                    // try next filter variant
+                }
+            }
+        };
+
+        for (let i = 0; i < nbrs.length; i += CONCURRENCY) {
+            const batch = nbrs.slice(i, i + CONCURRENCY);
+            await Promise.all(batch.map(nbr => fetchOne(nbr).catch(err => {
+                console.error(`[PO Line Fetch] ${nbr}:`, err.message);
+            })));
+        }
+
+        return lineMap;
     },
 
     /** ── REPLENISHMENT RECOMMENDATIONS ── */

@@ -367,6 +367,7 @@ export default function SuppliersPage() {
                             <button className="db-page-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
                                 <IconChevronLeft />
                             </button>
+                            <span className="db-page-dots">Page {page}</span>
                             <button className="db-page-btn" onClick={() => setPage(p => p + 1)} disabled={!hasMore}>
                                 <IconChevronRight />
                             </button>

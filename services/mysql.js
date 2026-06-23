@@ -87,17 +87,17 @@ export const MySqlService = {
             let params = [];
 
             if (status) {
-                whereClauses.push("status = ?");
+                whereClauses.push("h.status = ?");
                 params.push(status);
             }
 
             if (startDate) {
-                whereClauses.push("order_date >= ?");
+                whereClauses.push("h.order_date >= ?");
                 params.push(startDate);
             }
 
             if (search) {
-                whereClauses.push("(order_nbr LIKE ? OR vendor_id LIKE ? OR vendor_name LIKE ?)");
+                whereClauses.push("(h.order_nbr LIKE ? OR h.vendor_id LIKE ? OR h.vendor_name LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`, `%${search}%`);
             }
 
@@ -105,35 +105,51 @@ export const MySqlService = {
 
             const [rows] = await purchasePool.query(
                 `SELECT 
-                    order_nbr as orderNbr,
-                    vendor_id as vendorId,
-                    vendor_name as vendorName,
-                    status,
-                    order_date as date,
-                    total_amount as totalAmount
-                 FROM purchase_history
+                    h.order_nbr as orderNbr,
+                    h.vendor_id as vendorId,
+                    h.vendor_name as vendorName,
+                    h.status,
+                    h.order_date as date,
+                    h.total_amount as totalAmount
+                 FROM purchase_history h
                  ${wherePart}
-                 ORDER BY order_date DESC, order_nbr DESC
+                 ORDER BY h.order_date DESC, h.order_nbr DESC
                  LIMIT ${limitInt} OFFSET ${offsetInt}`,
                 params
             );
 
-            // Fetch lines for each order
-            const ordersWithLines = await Promise.all(rows.map(async (order) => {
-                const [lines] = await purchasePool.query(
-                    `SELECT inventory_id as inventoryId, description, qty, uom, ext_cost as extCost 
-                     FROM purchase_order_details WHERE order_nbr = ?`,
-                    [order.orderNbr]
+            let linesByOrder = new Map();
+            if (rows.length > 0) {
+                const orderNbrs = rows.map(r => r.orderNbr);
+                const placeholders = orderNbrs.map(() => "?").join(",");
+                const [lineRows] = await purchasePool.query(
+                    `SELECT order_nbr, line_nbr as lineNbr, inventory_id as inventoryId, description, qty, uom, ext_cost as extCost
+                     FROM purchase_order_details
+                     WHERE order_nbr COLLATE utf8mb4_unicode_ci IN (${placeholders})
+                     ORDER BY line_nbr ASC`,
+                    orderNbrs
                 );
-                return {
-                    ...order,
-                    orderType: "Normal",
-                    lines: lines
-                };
+                for (const line of lineRows) {
+                    const key = String(line.order_nbr || "").trim();
+                    if (!linesByOrder.has(key)) linesByOrder.set(key, []);
+                    linesByOrder.get(key).push({
+                        inventoryId: line.inventoryId,
+                        description: line.description,
+                        qty: line.qty,
+                        uom: line.uom,
+                        extCost: line.extCost,
+                    });
+                }
+            }
+
+            const ordersWithLines = rows.map(order => ({
+                ...order,
+                orderType: "Normal",
+                lines: linesByOrder.get(String(order.orderNbr || "").trim()) || [],
             }));
 
             const [[{ total }]] = await purchasePool.query(
-                `SELECT COUNT(*) as total FROM purchase_history ${wherePart}`,
+                `SELECT COUNT(*) as total FROM purchase_history h ${wherePart}`,
                 params
             );
 

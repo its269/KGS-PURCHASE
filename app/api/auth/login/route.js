@@ -9,13 +9,20 @@ export async function POST(request) {
 
         const sessionId = crypto.randomUUID();
 
-        // Try OAuth2 Bearer token first
+        // Try OAuth2 Bearer token first; also capture cookie session for PO entity access
         let usedTokenAuth = false;
+        let backupCookies = [];
         try {
             const tokenData = await AuthService.loginWithToken({ username, password, company });
-            setTokenSession(sessionId, tokenData);
             usedTokenAuth = true;
             console.log('[Login] OAuth2 token login successful');
+            try {
+                backupCookies = await AuthService.login({ username, password, company });
+                console.log('[Login] Cookie backup captured for PO access (' + (backupCookies?.length ?? 0) + ' cookie(s))');
+            } catch (cookieErr) {
+                console.warn('[Login] Cookie backup failed:', cookieErr.message);
+            }
+            setTokenSession(sessionId, tokenData, backupCookies);
         } catch (tokenErr) {
             console.warn('[Login] OAuth2 token login failed, falling back to cookie auth:', tokenErr.message);
         }

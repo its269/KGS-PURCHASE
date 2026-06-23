@@ -10,6 +10,11 @@ import "@/styles/po.css";
 
 const PAGE_SIZE = 50;
 
+function isPoCacheUsable(cached) {
+    if (!cached?.orders?.length) return false;
+    return cached.orders.some(o => o.lines?.length);
+}
+
 const IconSearch = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -154,9 +159,12 @@ export default function IncomingPOPage() {
         const cacheKey = `inc_po_orders_${params.toString()}`;
 
         const cached = DataCache.get(cacheKey);
-        if (cached) {
+        if (cached && isPoCacheUsable(cached)) {
+            setOrders(cached.orders ?? []);
+            setHasMore(cached.hasMore ?? false);
             Promise.resolve().then(() => fetchOrders(true));
         } else {
+            if (cached) DataCache.delete(cacheKey);
             Promise.resolve().then(() => fetchOrders(false));
         }
     }, [fetchOrders, page, debSearch, startDate, status]);
@@ -335,11 +343,12 @@ export default function IncomingPOPage() {
 
                 {!loading && (
                     <div className="db-pagination">
-                        <span className="db-page-info">Showing page <strong>{page}</strong> of data</span>
+                        <span className="db-page-info">Showing page <strong>{page}</strong></span>
                         <div className="db-page-btns">
                             <button className="db-page-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
                                 <IconChevronLeft />
                             </button>
+                            <span className="db-page-dots">Page {page}</span>
                             <button className="db-page-btn" onClick={() => setPage(p => p + 1)} disabled={!hasMore}>
                                 <IconChevronRight />
                             </button>
