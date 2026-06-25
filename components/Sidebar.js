@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { DataCache } from "@/lib/data-cache";
 import { useTheme } from "./ThemeProvider";
+import { withBasePath } from "@/lib/base-path";
 import "@/styles/sidebar.css";
 
 /* ── SVG Icons ─────────────────────────────────────────── */
@@ -249,7 +250,7 @@ export default function Sidebar() {
               DataCache.clear();
               // Navigate directly — the logout route clears the cookie and
               // redirects to /signin in a single server response.
-              window.location.href = "/api/auth/logout";
+              window.location.href = withBasePath("/api/auth/logout");
             }}
             title={isCollapsed ? "Logout" : ""}
           >

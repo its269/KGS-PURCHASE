@@ -1,10 +1,13 @@
 /** @type {import('next').NextConfig} */
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
 const nextConfig = {
+  basePath,
+
   // mysql2 uses native Node.js modules — must not be bundled by Next.js
   serverExternalPackages: ["mysql2", "@supabase/supabase-js"],
 
-  // Standalone output: smallest possible production bundle
-  // Nginx will serve /_next/static & /public directly — only SSR hits Node
+  // Standalone output for Windows PM2 production deploy
   output: "standalone",
 
   // Built-in gzip compression for SSR responses (fallback when Nginx is absent)

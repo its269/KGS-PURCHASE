@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import "@/styles/signin.css";
+import { withBasePath } from "@/lib/base-path";
 
-const LOGIN_API = "/api/auth/login";
+const LOGIN_API = withBasePath("/api/auth/login");
 
 /* ── SVG Icons ─────────────────────────────────────────── */
 const IconUser = () => (
@@ -85,7 +86,7 @@ export default function SignInPage() {
             // Fetch the user's full name (FirstName + LastName) from Acumatica
             let displayName = username;
             try {
-                const meRes = await fetch(`/api/auth/me?username=${encodeURIComponent(username)}`, {
+                const meRes = await fetch(withBasePath(`/api/auth/me?username=${encodeURIComponent(username)}`), {
                     headers: { "Authorization": `Bearer ${sessionId}` }
                 });
                 if (meRes.ok) {
@@ -103,7 +104,7 @@ export default function SignInPage() {
             localStorage.setItem("userName", displayName);
             
             // Direct reload to ensure all components pick up the new session
-            window.location.href = "/dashboard";
+            window.location.href = withBasePath("/dashboard");
         } catch (err) {
             setError("Unable to connect to the server. Please try again.");
         } finally {

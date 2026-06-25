@@ -1,6 +1,7 @@
 import { AuthService } from "@/services/auth";
 import { NextResponse } from "next/server";
 import { setSession, setTokenSession } from "@/lib/session-store";
+import { getCookiePath } from "@/lib/base-path";
 
 export async function POST(request) {
     try {
@@ -59,7 +60,7 @@ export async function POST(request) {
             httpOnly: true,
             secure: process.env.NODE_ENV === "production",
             sameSite: "lax",
-            path: "/",
+            path: getCookiePath(),
             maxAge: 8 * 60 * 60, // 8 hours
         });
         

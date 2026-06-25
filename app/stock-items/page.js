@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
+import { withBasePath } from "@/lib/base-path";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
@@ -47,7 +48,7 @@ export default function StockItemsPage() {
     const handleExport = async () => {
         setExporting(true);
         try {
-            window.location.href = "/api/export?type=inventory";
+            window.location.href = withBasePath("/api/export?type=inventory");
         } catch (e) {
             console.error("Export failed", e);
         } finally {

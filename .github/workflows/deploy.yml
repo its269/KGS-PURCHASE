@@ -1,0 +1,107 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: self-hosted
+    timeout-minutes: 90
+
+    steps:
+      - name: Pull latest code
+        shell: cmd
+        run: |
+          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Stop app and backup current production build
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-pm2-env.ps1
+          pm2 stop kgs-purchase-http 2>&1 | Out-Null
+          Start-Sleep -Seconds 8
+          & .\scripts\backup-next-build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit 0
+
+      - name: Build production bundle
+        timeout-minutes: 45
+        shell: cmd
+        run: |
+          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          set NEXT_TELEMETRY_DISABLED=1
+          set NODE_OPTIONS=--max-old-space-size=8192
+          set NEXT_PUBLIC_BASE_PATH=/kgs-purchase
+          npm run build 2>&1
+
+      - name: Copy standalone assets
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\copy-standalone-assets.ps1
+
+      - name: Verify build
+        shell: cmd
+        run: |
+          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          if not exist ".next\BUILD_ID" (
+            echo BUILD_ID missing - build failed
+            exit /b 1
+          )
+          if not exist ".next\standalone\server.js" (
+            echo standalone server.js missing
+            exit /b 1
+          )
+          echo Build verified - ID: && type .next\BUILD_ID
+
+      - name: Restart production server
+        shell: cmd
+        run: |
+          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          call scripts\pm2-env.bat
+          call pm2 reload kgs-purchase-http --update-env
+          if errorlevel 1 (
+            call pm2 start ecosystem.config.js --only kgs-purchase-http
+          )
+          call pm2 save
+          call pm2 status
+
+      - name: Health check
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 8
+          try {
+            $r = Invoke-WebRequest -Uri 'http://localhost:3001/kgs-purchase/signin' -UseBasicParsing -TimeoutSec 15
+            Write-Host "OK - HTTP $($r.StatusCode)"
+          } catch {
+            Write-Host "WARN: $($_.Exception.Message)"
+          }
+
+      - name: Rollback on failure or cancel
+        if: failure() || cancelled()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-pm2-env.ps1
+          Write-Host "Rolling back..."
+          pm2 stop kgs-purchase-http 2>&1 | Out-Null
+          Start-Sleep -Seconds 8
+          & .\scripts\restore-next-backup.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pm2 reload kgs-purchase-http --update-env
+          if ($LASTEXITCODE -ne 0) {
+            pm2 start ecosystem.config.js --only kgs-purchase-http
+          }
+          pm2 save
+          pm2 status
+          Write-Host "Rollback complete"
+          exit 0

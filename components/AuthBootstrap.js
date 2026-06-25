@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect } from "react";
+import { withBasePath } from "@/lib/base-path";
 
 /**
- * AuthBootstrap component that intercepts all fetch calls to /api/* 
+ * AuthBootstrap component that intercepts all fetch calls to /api/*
  * and adds the Authorization header if a session exists in localStorage.
- * This effectively removes the need for cookie-based auth on the client.
  */
 export default function AuthBootstrap() {
     useEffect(() => {
@@ -13,9 +13,14 @@ export default function AuthBootstrap() {
         window.fetch = async (...args) => {
             let [resource, config] = args;
 
-            // Only intercept relative /api/ calls
-            const isApiCall = typeof resource === 'string' && (resource.startsWith('/api/') || resource.startsWith('api/'));
-            
+            if (typeof resource === "string" && resource.startsWith("/api/")) {
+                resource = withBasePath(resource);
+            }
+
+            const isApiCall =
+                typeof resource === "string" &&
+                (resource.includes("/api/") || resource.startsWith("api/"));
+
             if (isApiCall) {
                 const sessionId = localStorage.getItem("acu_session");
                 if (sessionId) {

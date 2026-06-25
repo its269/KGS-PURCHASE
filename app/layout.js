@@ -1,6 +1,7 @@
 import "./globals.css";
 import AuthBootstrap from "@/components/AuthBootstrap";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { withBasePath } from "@/lib/base-path";
 
 export const metadata = {
   title: "KGS PURCHASING",
@@ -11,7 +12,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <link rel="icon" href="/kelin-logo.png" type="image/png" />
+        <link rel="icon" href={`${withBasePath("/kelin-logo.png")}`} type="image/png" />
         <script
           dangerouslySetInnerHTML={{
             __html: `

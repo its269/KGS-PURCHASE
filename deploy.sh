@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# =============================================================
-#  deploy.sh  — Build & launch acu-inventory with Nginx
-#  Run on your Linux server:  chmod +x deploy.sh && ./deploy.sh
-# =============================================================
+# DEPRECATED: Production deploy uses Windows self-hosted GitHub Actions + PM2.
+# See .github/workflows/deploy.yml and scripts/bootstrap-production.ps1
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -3,6 +3,7 @@
 import { Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
+import { withBasePath } from "@/lib/base-path";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
@@ -92,7 +93,7 @@ export default function PurchaseOrdersPage() {
     const handleExport = async () => {
         setExporting(true);
         try {
-            window.location.href = "/api/export?type=po";
+            window.location.href = withBasePath("/api/export?type=po");
         } catch (e) {
             console.error("Export failed", e);
         } finally {
