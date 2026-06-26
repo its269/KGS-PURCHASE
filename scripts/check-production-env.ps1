@@ -25,7 +25,6 @@ $required = @(
     'MYSQL_USER',
     'MYSQL_PASSWORD',
     'NEXT_PUBLIC_BASE_PATH',
-    'NEXT_PUBLIC_BASE_URL',
     'SYNC_SECRET'
 )
 
