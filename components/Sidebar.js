@@ -4,10 +4,10 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { DataCache } from "@/lib/data-cache";
+import { fetchWithAuth } from "@/lib/api-client";
 import { useTheme } from "./ThemeProvider";
 import { withBasePath } from "@/lib/base-path";
 import "@/styles/sidebar.css";
-
 /* ── SVG Icons ─────────────────────────────────────────── */
 const IconInventory = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -71,6 +71,9 @@ export default function Sidebar() {
   const [userName, setUserName] = useState("Admin User");
   const [isOpen, setIsOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [companies, setCompanies] = useState([]);
+  const [activeCompanyId, setActiveCompanyId] = useState("main");
+  const [switchingCompany, setSwitchingCompany] = useState(false);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -83,6 +86,48 @@ export default function Sidebar() {
       if (savedCollapse) setIsCollapsed(true);
     });
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    fetchWithAuth("/api/company")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data) return;
+        setCompanies(data.companies || []);
+        setActiveCompanyId(data.activeCompanyId || "main");
+        localStorage.setItem("activeCompanyId", data.activeCompanyId || "main");
+      })
+      .catch(() => {});
+  }, [mounted]);
+
+  const handleCompanyChange = async (e) => {
+    const nextId = e.target.value;
+    if (!nextId || nextId === activeCompanyId) return;
+    setSwitchingCompany(true);
+    try {
+      const res = await fetchWithAuth("/api/company", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: nextId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const hint = data.acumaticaCompany
+          ? `\n\nTried Acumatica company: "${data.acumaticaCompany}"`
+          : "";
+        throw new Error((data.message || "Failed to switch company") + hint);
+      }
+      setActiveCompanyId(data.activeCompanyId);
+      localStorage.setItem("activeCompanyId", data.activeCompanyId);
+      DataCache.clear();
+      window.dispatchEvent(new CustomEvent("company-changed", { detail: { companyId: data.activeCompanyId } }));
+    } catch (err) {
+      console.error("[Sidebar] Company switch failed:", err.message);
+      alert(err.message || "Could not switch company.");
+    } finally {
+      setSwitchingCompany(false);
+    }
+  };
 
   // Sync collapsed state with body class
   useEffect(() => {
@@ -182,6 +227,26 @@ export default function Sidebar() {
           {!isCollapsed && (
             <div className="sidebar-user-header">
               <span className="sidebar-user-name">{userName}</span>
+            </div>
+          )}
+
+          {companies.length >= 2 && (
+            <div className="sidebar-company-field">
+              {!isCollapsed && <label className="sidebar-company-label" htmlFor="sidebar-company">Company</label>}
+              <select
+                id="sidebar-company"
+                className="sidebar-company-select"
+                value={activeCompanyId}
+                onChange={handleCompanyChange}
+                disabled={switchingCompany}
+                title={isCollapsed ? "Switch company" : undefined}
+              >
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id} disabled={c.connected === false}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
         </div>

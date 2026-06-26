@@ -144,7 +144,53 @@
   box-shadow: 0 0 6px var(--status-success);
 }
 
-.sidebar-user-header .sidebar-user-name {
+
+.sidebar-company-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0 0.25rem;
+}
+
+.sidebar-company-label {
+  font-size: 0.65rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.sidebar-company-select {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-medium);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sidebar-company-select:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.sidebar.collapsed .sidebar-company-field {
+  padding: 0;
+}
+
+.sidebar.collapsed .sidebar-company-select {
+  font-size: 0;
+  padding: 0.45rem;
+  text-indent: -9999px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%233b82f6' stroke-width='2'%3E%3Cpath d='M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9Z'/%3E%3Cpath d='M3 9l2.45-4.9A2 2 0 0 1 7.24 3h9.52a2 2 0 0 1 4.8 1.1L21 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+.sidebar-user-name {
   font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-secondary);

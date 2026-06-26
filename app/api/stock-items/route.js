@@ -1,20 +1,21 @@
 import { MySqlService } from "@/services/mysql";
 import { AcumaticaService } from "@/services/acumatica";
 import { NextResponse } from "next/server";
-import { getSessionFromRequest } from "@/lib/session-store";
+import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
 
 export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10)));
     const search = searchParams.get("search") || "";
+    const companyId = getActiveCompanyFromRequest(request) || "main";
 
     try {
         const cookie = getSessionFromRequest(request);
         if (!cookie) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-        console.log(`[Stock Items API] Fetching from MySQL - Page: ${page}, Size: ${pageSize}, Search: "${search}"`);
-        const result = await MySqlService.getStockItems({ page, pageSize, search });
+        console.log(`[Stock Items API] MySQL — company: ${companyId}, page: ${page}`);
+        const result = await MySqlService.getStockItems({ page, pageSize, search, companyId });
         
         if (result.items.length === 0) {
             if (cookie === "__bypass__") {
@@ -24,7 +25,7 @@ export async function GET(request) {
             throw new Error("EMPTY_MYSQL");
         }
 
-        return NextResponse.json({ ...result, source: "mysql" });
+        return NextResponse.json({ ...result, source: "mysql", companyId });
     } catch (err) {
         console.error("[Stock Items API MySQL Error]", err.message);
 

@@ -25,6 +25,58 @@ const getAny = (obj, ...keys) => {
     return "";
 };
 
+/** Catalog fields shared across all warehouse rows for one StockItem */
+export function extractStockItemCatalog(item) {
+    const invId = String(getF(item, "InventoryID")).trim();
+    if (!invId) return null;
+    return {
+        inventory_id: invId,
+        description: String(getF(item, "Description")).trim(),
+        item_class: String(getF(item, "ItemClass")).trim(),
+        default_price: parseFloat(getF(item, "DefaultPrice") || 0),
+        item_status: String(getF(item, "ItemStatus") || "Active"),
+        base_unit: String(getF(item, "BaseUnit") || ""),
+        item_type: String(getF(item, "ItemType") || ""),
+        posting_class: String(getF(item, "PostingClass") || ""),
+    };
+}
+
+/**
+ * Map Acumatica WarehouseDetails to per-site stock rows.
+ * SiteID (branch) is the location key — WarehouseID is the physical warehouse only.
+ */
+export function extractWarehouseLevels(item, catalogFields = {}) {
+    const invId = String(getF(item, "InventoryID")).trim();
+    if (!invId) return [];
+
+    let wds = item.WarehouseDetails || [];
+    if (wds && !Array.isArray(wds) && wds.value) wds = wds.value;
+    if (!Array.isArray(wds)) wds = [];
+
+    const levels = [];
+    for (const wh of wds) {
+        const siteId = String(
+            getAny(wh, "SiteID", "Branch", "BranchID", "LinkBranch") || getAny(wh, "WarehouseID")
+        ).trim();
+        if (!siteId) continue;
+
+        const onHand = parseFloat(getAny(wh, "QtyOnHand", "OnHand", "Qty") || 0);
+        let available = parseFloat(getAny(wh, "QtyAvailable", "Available", "QtyAvail", "AvailableQty") || 0);
+        const onHandVal = Number.isNaN(onHand) ? 0 : onHand;
+        if (Number.isNaN(available)) available = onHandVal;
+
+        levels.push({
+            inventory_id: invId,
+            branch_id: siteId,
+            site_id: siteId,
+            on_hand: onHandVal,
+            available: Number.isNaN(available) ? onHandVal : available,
+            ...catalogFields,
+        });
+    }
+    return levels;
+}
+
 /** Extract PO detail lines from an Acumatica PurchaseOrder record */
 const extractPoDetails = (po) => {
     let details =
@@ -79,6 +131,54 @@ const buildOrderFilters = (orderNbr) => {
 // --- SALES SYNC STATE MANAGEMENT ---
 let activeSalesSyncId = 0;
 let salesAbortController = null;
+
+/** List Acumatica companies visible to the logged-in user (after main-company auth). */
+export async function discoverAcumaticaCompanies(cookie) {
+    const endpoints = [
+        `${ACU_BASE}/Company?$select=CompanyID,CompanyName`,
+        `${ACU_BASE}/Companies?$select=CompanyID,CompanyName`,
+    ];
+    for (const url of endpoints) {
+        try {
+            const res = await AcumaticaService.fetchWithRetry(url, cookie);
+            const data = await res.json();
+            const rows = data.value || (Array.isArray(data) ? data : []);
+            if (!rows.length) continue;
+            const companies = rows
+                .map((r) => ({
+                    id: String(getF(r, "CompanyID")).trim(),
+                    name: String(getF(r, "CompanyName") || getF(r, "CompanyID")).trim(),
+                }))
+                .filter((c) => c.id);
+            if (companies.length) return companies;
+        } catch (err) {
+            console.warn("[Acumatica discoverCompanies]", url, err.message);
+        }
+    }
+    return [];
+}
+
+/** Pick the ecommerce company ID from discovery or env. */
+export function pickEcommerceCompany(companies, mainCompanyId) {
+    const mainKey = String(mainCompanyId || "").trim().toUpperCase();
+    const envEcom = String(process.env.ACUMATICA_ECOM_COMPANY || "").trim();
+
+    if (envEcom) {
+        const envMatch = companies.find((c) => c.id.toUpperCase() === envEcom.toUpperCase());
+        if (envMatch) return envMatch.id;
+    }
+
+    const ecomMatch = companies.find((c) => {
+        const id = c.id.toUpperCase();
+        const name = (c.name || "").toUpperCase();
+        if (!id || id === mainKey) return false;
+        return id.includes("ECOM") || name.includes("ECOM");
+    });
+    if (ecomMatch) return ecomMatch.id;
+
+    const nonMain = companies.find((c) => c.id.toUpperCase() !== mainKey);
+    return nonMain?.id || envEcom || null;
+}
 
 export const AcumaticaService = {
     async fetchWithRetry(url, credential, options = {}) {
@@ -198,16 +298,23 @@ export const AcumaticaService = {
                 continue;
             }
             for (const wh of wds) {
-                const whId = getF(wh, "WarehouseID");
-                if (branch && whId.toLowerCase() !== branch.toLowerCase()) continue;
+                const siteId = String(
+                    getAny(wh, "SiteID", "Branch", "BranchID", "LinkBranch") || getF(wh, "WarehouseID")
+                ).trim();
+                if (branch && siteId.toLowerCase() !== branch.toLowerCase()) continue;
+
+                const onHand = parseFloat(getAny(wh, "QtyOnHand", "OnHand", "Qty") || 0);
+                let available = parseFloat(getAny(wh, "QtyAvailable", "Available", "QtyAvail", "AvailableQty") || 0);
+                const onHandVal = Number.isNaN(onHand) ? 0 : onHand;
+                if (Number.isNaN(available)) available = onHandVal;
 
                 flattened.push({
                     InventoryID: { value: getF(item, "InventoryID") },
                     Description: { value: getF(item, "Description") },
-                    Branch: { value: whId },
-                    SiteID: { value: whId },
-                    OnHand: { value: parseFloat(getF(wh, "QtyOnHand") || 0) },
-                    Available: { value: parseFloat(getF(wh, "QtyAvailable") || 0) },
+                    Branch: { value: siteId },
+                    SiteID: { value: siteId },
+                    OnHand: { value: onHandVal },
+                    Available: { value: Number.isNaN(available) ? onHandVal : available },
                     DefaultPrice: { value: parseFloat(getF(item, "DefaultPrice") || 0) },
                     ItemClass: { value: getF(item, "ItemClass") },
                     ItemStatus: { value: getF(item, "ItemStatus") },
@@ -412,6 +519,40 @@ export const AcumaticaService = {
             }
             return a.currentStock - b.currentStock; // Lower stock first within same priority
         });
+    },
+
+    /** Live branch stock from Acumatica for specific items */
+    async getBranchStockForItems(itemIds, branch, cookie) {
+        const map = new Map();
+        const ids = [...new Set(itemIds.map((id) => String(id || "").trim()).filter(Boolean))];
+        if (!ids.length || !cookie || cookie === "__bypass__") return map;
+
+        const branchKey = String(branch || "").toUpperCase().trim();
+        const CHUNK = 6;
+
+        for (let i = 0; i < ids.length; i += CHUNK) {
+            const batch = ids.slice(i, i + CHUNK);
+            const filter = batch.map((id) => `InventoryID eq '${id.replace(/'/g, "''")}'`).join(" or ");
+            const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$filter=${encodeURIComponent(filter)}`;
+            try {
+                const res = await this.fetchWithRetry(url, cookie);
+                const data = await res.json();
+                for (const item of (data.value || [])) {
+                    const invKey = String(getF(item, "InventoryID")).trim().toUpperCase();
+                    const levels = extractWarehouseLevels(item);
+                    let stock = 0;
+                    for (const level of levels) {
+                        if (!branchKey || level.branch_id.toUpperCase() === branchKey) {
+                            stock += level.on_hand;
+                        }
+                    }
+                    map.set(invKey, stock);
+                }
+            } catch (err) {
+                console.error("[Acumatica getBranchStockForItems]", err.message);
+            }
+        }
+        return map;
     },
 
     /** ── SALES: Discover Periods and Fetch Data ── */

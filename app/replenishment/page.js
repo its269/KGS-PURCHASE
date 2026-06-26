@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
@@ -21,6 +21,90 @@ const IconSparkles = () => (
         <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
     </svg>
 );
+const IconInfo = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+);
+
+function ColumnInfoHeader({ label, panelId, openId, setOpenId, align = "left", children }) {
+    const open = openId === panelId;
+    const wrapRef = useRef(null);
+    const btnRef = useRef(null);
+    const [panelPos, setPanelPos] = useState(null);
+
+    const updatePanelPos = useCallback(() => {
+        if (!btnRef.current) return;
+        const rect = btnRef.current.getBoundingClientRect();
+        const panelWidth = Math.min(360, window.innerWidth - 24);
+        let left = align === "right" ? rect.right - panelWidth : rect.left;
+        left = Math.max(12, Math.min(left, window.innerWidth - panelWidth - 12));
+        setPanelPos({
+            top: rect.bottom + 6,
+            left,
+            width: panelWidth,
+        });
+    }, [align]);
+
+    useEffect(() => {
+        if (!open) {
+            setPanelPos(null);
+            return;
+        }
+        updatePanelPos();
+        window.addEventListener("resize", updatePanelPos);
+        window.addEventListener("scroll", updatePanelPos, true);
+        return () => {
+            window.removeEventListener("resize", updatePanelPos);
+            window.removeEventListener("scroll", updatePanelPos, true);
+        };
+    }, [open, updatePanelPos]);
+
+    useEffect(() => {
+        if (!open) return;
+        const onDocClick = (ev) => {
+            if (wrapRef.current && !wrapRef.current.contains(ev.target)) {
+                setOpenId(null);
+            }
+        };
+        document.addEventListener("mousedown", onDocClick);
+        return () => document.removeEventListener("mousedown", onDocClick);
+    }, [open, setOpenId]);
+
+    return (
+        <span className={`repl-col-head ${align === "right" ? "repl-col-head-right" : ""}`}>
+            <span className="repl-col-head-label">{label}</span>
+            <span className="repl-col-info-wrap" ref={wrapRef}>
+                <button
+                    ref={btnRef}
+                    type="button"
+                    className="repl-col-info-btn"
+                    aria-label={`How ${label} is calculated`}
+                    aria-expanded={open}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenId(open ? null : panelId);
+                    }}
+                >
+                    <IconInfo />
+                </button>
+                {open && panelPos && (
+                    <div
+                        className="repl-col-info-panel repl-col-info-panel-fixed"
+                        role="dialog"
+                        style={{
+                            top: panelPos.top,
+                            left: panelPos.left,
+                            width: panelPos.width,
+                        }}
+                    >
+                        {children}
+                    </div>
+                )}
+            </span>
+        </span>
+    );
+}
 
 function priorityLabel(level) {
     if (level === "High") return "Urgent";
@@ -120,6 +204,7 @@ export default function ReplenishmentPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [expandedAi, setExpandedAi] = useState({});
+    const [openColumnInfo, setOpenColumnInfo] = useState(null);
 
     const applyPayload = useCallback((data) => {
         const list = Array.isArray(data) ? data : (data?.recommendations ?? []);
@@ -132,7 +217,12 @@ export default function ReplenishmentPage() {
         if (!isBackground) setLoading(true);
         setError(null);
         try {
-            const res = await fetchWithAuth(`/api/replenishment?branch=${branchToFetch}`);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 45000);
+            const res = await fetchWithAuth(`/api/replenishment?branch=${branchToFetch}`, {
+                signal: controller.signal,
+            });
+            clearTimeout(timeout);
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.message || `HTTP ${res.status}`);
@@ -142,7 +232,11 @@ export default function ReplenishmentPage() {
             DataCache.set(`replenishment_recs_${branchToFetch}`, data);
         } catch (err) {
             if (err.message === "Unauthorized") return;
-            if (!isBackground) setError(err.message || "Failed to load recommendations.");
+            if (err.name === "AbortError") {
+                if (!isBackground) setError("Request timed out. Try Refresh, or run Full Daily Refresh in Sync Center.");
+            } else if (!isBackground) {
+                setError(err.message || "Failed to load recommendations.");
+            }
         } finally {
             setLoading(false);
         }
@@ -311,8 +405,38 @@ export default function ReplenishmentPage() {
                             <tr>
                                 <th style={{ width: "90px" }}>Status</th>
                                 <th>Product</th>
-                                <th style={{ width: "100px", textAlign: "right" }}>In stock</th>
-                                <th style={{ width: "110px", textAlign: "right" }}>Sells / day</th>
+                                <th style={{ width: "100px", textAlign: "right" }}>Branch stock</th>
+                                <th className="repl-col-th" style={{ width: "128px", textAlign: "right" }}>
+                                    <ColumnInfoHeader
+                                        label="Sells / day"
+                                        panelId="sells-per-day"
+                                        openId={openColumnInfo}
+                                        setOpenId={setOpenColumnInfo}
+                                        align="right"
+                                    >
+                                        <strong>How &quot;Sells / day&quot; is calculated</strong>
+                                        <p>
+                                            This is the <strong>average number of units sold per day</strong> for each product at branch{" "}
+                                            <strong>{selectedBranch}</strong> — not today&apos;s sales alone.
+                                        </p>
+                                        <p className="repl-col-info-formula">
+                                            Sells / day = Units sold in the last 90 days at {selectedBranch} ÷ 90
+                                        </p>
+                                        <p><strong>Example</strong></p>
+                                        <ul>
+                                            <li>6,381 units sold in 90 days at {selectedBranch}</li>
+                                            <li>6,381 ÷ 90 = <strong>70.9 units per day</strong></li>
+                                        </ul>
+                                        <p>
+                                            Sales totals come from synced Acumatica invoice data (same source as{" "}
+                                            <strong>Last 3 Months Sales</strong>). Only sales recorded for the selected branch are counted.
+                                        </p>
+                                        <p className="repl-col-info-note">
+                                            <strong>Days left</strong> uses this rate: Branch stock ÷ Sells / day (e.g. 462 ÷ 70.9 ≈ 6 days).
+                                            Tap <strong>Explain</strong> on any row for that product&apos;s exact numbers.
+                                        </p>
+                                    </ColumnInfoHeader>
+                                </th>
                                 <th style={{ width: "110px", textAlign: "right" }}>Days left</th>
                                 <th style={{ width: "110px", textAlign: "right" }}>Order qty</th>
                                 <th>What to do</th>

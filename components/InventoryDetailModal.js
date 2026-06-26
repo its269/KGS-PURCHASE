@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
+import { DIMENSION_FIELDS } from "@/lib/item-dimensions";
 import "@/styles/inventory-detail.css";
 
 const IconClose = () => (
@@ -30,50 +31,89 @@ function fmtDate(d) {
     return date.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
 }
 
+function dimObjectFromApi(dim) {
+    if (!dim) {
+        return { pcs_per_box: "", length_m: "", height_m: "", width_m: "", weight_kg: "", cbm: "" };
+    }
+    const out = {};
+    for (const { key } of DIMENSION_FIELDS) {
+        out[key] = dim[key] != null && dim[key] !== "" ? String(dim[key]) : "";
+    }
+    return out;
+}
+
+function dimPayloadFromForm(form) {
+    const out = {};
+    for (const { key } of DIMENSION_FIELDS) {
+        const v = form[key];
+        out[key] = v === "" || v === null || v === undefined ? null : Number(v);
+    }
+    return out;
+}
+
 export default function InventoryDetailModal({ inventoryId, onClose }) {
     const [detail, setDetail] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [notes, setNotes] = useState("");
     const [savingNotes, setSavingNotes] = useState(false);
+    const [dimensions, setDimensions] = useState({});
+    const [savingDims, setSavingDims] = useState(false);
+    const [dimSaved, setDimSaved] = useState(false);
 
     useEffect(() => {
         if (!inventoryId) return;
 
         const cacheKey = `stock_detail_${inventoryId}`;
-        
-        // Use a local variable to track cache presence for fetchDetail
-        let hasCache = false;
+        let cancelled = false;
 
-        Promise.resolve().then(() => {
-            const cached = DataCache.get(cacheKey);
-            if (cached) {
-                hasCache = true;
-                setDetail(cached);
-                setNotes(cached.annotations?.internal_notes || "");
-                setLoading(false);
-            }
-        });
+        const cached = DataCache.get(cacheKey);
+        if (cached) {
+            setDetail(cached);
+            setNotes(cached.annotations?.internal_notes || "");
+            setDimensions(dimObjectFromApi(cached.dimensions));
+            setLoading(false);
+            setError(null);
+        } else {
+            setLoading(true);
+            setDetail(null);
+            setError(null);
+        }
 
         const controller = new AbortController();
-        const fetchDetail = async () => {
-            if (!hasCache) setLoading(true);
-            setError(null);
+
+        (async () => {
             try {
-                const r = await fetchWithAuth(`/api/stock-items/${encodeURIComponent(inventoryId)}`, { signal: controller.signal });
+                const r = await fetchWithAuth(`/api/stock-items/${encodeURIComponent(inventoryId)}`, {
+                    signal: controller.signal,
+                });
+                if (cancelled) return;
                 const d = await r.json();
+                if (!r.ok) {
+                    throw new Error(d.error || d.message || "Failed to load details");
+                }
                 setDetail(d);
                 setNotes(d.annotations?.internal_notes || "");
+                setDimensions(dimObjectFromApi(d.dimensions));
+                setError(null);
                 DataCache.set(cacheKey, d);
             } catch (err) {
-                if (err.name !== 'AbortError') setError("Failed to load details.");
+                if (cancelled) return;
+                const aborted =
+                    err.name === "AbortError" ||
+                    String(err.message || "").toLowerCase().includes("abort");
+                if (!aborted) {
+                    setError(err.message || "Failed to load details.");
+                }
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
-        };
+        })();
 
-        fetchDetail();
-        return () => controller.abort();
+        return () => {
+            cancelled = true;
+            controller.abort();
+        };
     }, [inventoryId]);
 
     const handleSaveNotes = async () => {
@@ -101,6 +141,37 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
             console.error("Failed to save notes", err);
         } finally {
             setSavingNotes(false);
+        }
+    };
+
+    const handleDimChange = (key, value) => {
+        setDimSaved(false);
+        setDimensions((prev) => ({ ...prev, [key]: value }));
+    };
+
+    const handleSaveDimensions = async () => {
+        setSavingDims(true);
+        setDimSaved(false);
+        try {
+            const res = await fetchWithAuth(`/api/stock-items/${encodeURIComponent(inventoryId)}/dimensions`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(dimPayloadFromForm(dimensions)),
+            });
+            if (!res.ok) throw new Error("Save failed");
+            const data = await res.json();
+            const saved = dimObjectFromApi(data.dimensions);
+            setDimensions(saved);
+            setDimSaved(true);
+            const cacheKey = `stock_detail_${inventoryId}`;
+            const cached = DataCache.get(cacheKey);
+            if (cached) {
+                DataCache.set(cacheKey, { ...cached, dimensions: data.dimensions });
+            }
+        } catch (err) {
+            console.error("Failed to save dimensions", err);
+        } finally {
+            setSavingDims(false);
         }
     };
 
@@ -215,6 +286,40 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                                     <span className="idm-meta-value">{fmtDate(detail.lastSync)}</span>
                                 </div>
                             )}
+                        </div>
+
+                        {/* Packaging dimensions */}
+                        <div className="idm-section">
+                            <h3 className="idm-section-title">Packaging Dimensions</h3>
+                            <p className="idm-dim-hint">Per-box measurements for this item (stored in this app only).</p>
+                            <div className="idm-dim-grid">
+                                {DIMENSION_FIELDS.map(({ key, label, step }) => (
+                                    <label key={key} className="idm-dim-field">
+                                        <span className="idm-dim-label">{label}</span>
+                                        <input
+                                            type="number"
+                                            step={step}
+                                            min="0"
+                                            className="idm-dim-input"
+                                            value={dimensions[key] ?? ""}
+                                            onChange={(e) => handleDimChange(key, e.target.value)}
+                                            placeholder="—"
+                                        />
+                                    </label>
+                                ))}
+                            </div>
+                            <div className="idm-dim-actions">
+                                {dimSaved && <span className="idm-dim-saved">Saved</span>}
+                                <button
+                                    type="button"
+                                    className="db-action-btn"
+                                    onClick={handleSaveDimensions}
+                                    disabled={savingDims}
+                                    style={{ height: "32px", fontSize: "0.75rem", padding: "0 1rem" }}
+                                >
+                                    {savingDims ? "Saving..." : "Save Dimensions"}
+                                </button>
+                            </div>
                         </div>
 
                         {/* Internal Notes Section */}

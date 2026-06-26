@@ -46,14 +46,6 @@ const IconClose = () => (
     </svg>
 );
 
-const LEAD_TIME_OPTIONS = [
-    { label: "1-2 Weeks", value: "1-2w" },
-    { label: "3-4 Weeks", value: "3-4w" },
-    { label: "1-2 Months", value: "1-2m" },
-    { label: "3-6 Months", value: "3-6m" },
-    { label: "On Demand", value: "od" },
-];
-
 export default function SuppliersPage() {
     /* ── State ────────────────────────────────────────────── */
     const [vendors, setVendors] = useState([]);
@@ -334,19 +326,18 @@ export default function SuppliersPage() {
                                         </div>
                                     </td>
                                     <td style={{ padding: '1.25rem' }}>
-                                        <div className="db-select-wrapper" style={{ height: '40px', background: 'var(--bg-surface)' }}>
+                                        <div className="sup-lead-time-input">
                                             <IconClock />
-                                            <select
-                                                className="db-select"
-                                                value={leadTimes[v.vendorId] || ""}
+                                            <input
+                                                type="number"
+                                                className="sup-lead-time-field"
+                                                min="0"
+                                                step="1"
+                                                placeholder="Days"
+                                                value={leadTimes[v.vendorId] ?? ""}
                                                 onChange={(e) => handleLeadTimeChange(v.vendorId, e.target.value)}
-                                                style={{ border: 'none', background: 'transparent', width: '100%', cursor: 'pointer', fontSize: '0.85rem' }}
-                                            >
-                                                <option value="">— Target —</option>
-                                                {LEAD_TIME_OPTIONS.map(opt => (
-                                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                                ))}
-                                            </select>
+                                            />
+                                            <span className="sup-lead-time-suffix">days</span>
                                         </div>
                                         {v.avgLeadTime > 0 && (
                                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.4rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>

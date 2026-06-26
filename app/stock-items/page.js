@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
+import { DIMENSION_FIELDS } from "@/lib/item-dimensions";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
@@ -30,6 +31,11 @@ const IconDownload = () => (
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
     </svg>
 );
+const IconInfo = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+);
 
 /* ── Main Page ──────────────────────────────────────────── */
 export default function StockItemsPage() {
@@ -44,6 +50,17 @@ export default function StockItemsPage() {
     const [error, setError] = useState(null);
     const [selectedId, setSelectedId] = useState(null);
     const [exporting, setExporting] = useState(false);
+    const [importing, setImporting] = useState(false);
+    const [importMsg, setImportMsg] = useState(null);
+    const [importProgress, setImportProgress] = useState(0);
+    const [importStatus, setImportStatus] = useState("");
+    const [importError, setImportError] = useState(false);
+    const [showImportInfo, setShowImportInfo] = useState(false);
+    const [companyLabel, setCompanyLabel] = useState("Main Company");
+    const fileInputRef = useRef(null);
+    const importInfoRef = useRef(null);
+
+    const cachePrefix = () => `stock_items_${localStorage.getItem("activeCompanyId") || "main"}_`;
 
     const handleExport = async () => {
         setExporting(true);
@@ -56,11 +73,101 @@ export default function StockItemsPage() {
         }
     };
 
+    const handleImportDimensions = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setImporting(true);
+        setImportMsg(null);
+        setImportError(false);
+        setImportProgress(5);
+        setImportStatus("Reading file…");
+        try {
+            const XLSX = await import("xlsx");
+            setImportProgress(20);
+            const buffer = await file.arrayBuffer();
+            const workbook = XLSX.read(buffer, { type: "array" });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+            const rowCount = rows.length;
+            setImportProgress(35);
+            setImportStatus(rowCount > 0
+                ? `Found ${rowCount.toLocaleString()} row${rowCount === 1 ? "" : "s"}. Uploading…`
+                : "Uploading file…");
+
+            const form = new FormData();
+            form.append("file", file);
+            setImportProgress(50);
+            setImportStatus("Importing dimensions…");
+
+            const res = await fetchWithAuth("/api/stock-items/dimensions/import", {
+                method: "POST",
+                body: form,
+            });
+            setImportProgress(85);
+            setImportStatus("Saving to database…");
+
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || "Import failed");
+
+            setImportProgress(100);
+            setImportStatus("Import complete");
+            setImportMsg(data.message);
+            DataCache.clear();
+            fetchItems();
+        } catch (err) {
+            if (err.message !== "Unauthorized") {
+                setImportError(true);
+                setImportMsg(err.message || "Import failed");
+                setImportStatus("Import failed");
+            }
+        } finally {
+            setTimeout(() => {
+                setImporting(false);
+                setImportProgress(0);
+                setImportStatus("");
+            }, 1200);
+            e.target.value = "";
+        }
+    };
+
+    useEffect(() => {
+        if (!showImportInfo) return;
+        const onDocClick = (ev) => {
+            if (importInfoRef.current && !importInfoRef.current.contains(ev.target)) {
+                setShowImportInfo(false);
+            }
+        };
+        document.addEventListener("mousedown", onDocClick);
+        return () => document.removeEventListener("mousedown", onDocClick);
+    }, [showImportInfo]);
+
+    useEffect(() => {
+        const loadCompany = () => {
+            fetchWithAuth("/api/company")
+                .then((res) => (res.ok ? res.json() : null))
+                .then((data) => {
+                    if (!data) return;
+                    const active = data.companies?.find((c) => c.id === data.activeCompanyId);
+                    setCompanyLabel(active?.label || "Main Company");
+                })
+                .catch(() => {});
+        };
+        loadCompany();
+        const onCompanyChange = () => {
+            setPage(1);
+            setItems([]);
+            DataCache.clear();
+            loadCompany();
+        };
+        window.addEventListener("company-changed", onCompanyChange);
+        return () => window.removeEventListener("company-changed", onCompanyChange);
+    }, []);
+
     // Initial restoration & Hydration fix
     useEffect(() => {
         Promise.resolve().then(() => {
             const params = new URLSearchParams({ page: "1", pageSize: String(PAGE_SIZE) });
-            const cached = DataCache.get(`stock_items_${params.toString()}`);
+            const cached = DataCache.get(`${cachePrefix()}${params.toString()}`);
             if (cached) {
                 setItems(cached.items ?? []);
                 setTotalCount(cached.totalCount ?? 0);
@@ -84,7 +191,7 @@ export default function StockItemsPage() {
         try {
             const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
             if (debouncedSearch) params.set("search", debouncedSearch);
-            const cacheKey = `stock_items_${params.toString()}`;
+            const cacheKey = `${cachePrefix()}${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/stock-items?${params}`);
             if (!res.ok) {
@@ -108,7 +215,7 @@ export default function StockItemsPage() {
     useEffect(() => {
         const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
         if (debouncedSearch) params.set("search", debouncedSearch);
-        const cacheKey = `stock_items_${params.toString()}`;
+        const cacheKey = `${cachePrefix()}${params.toString()}`;
 
         const cached = DataCache.get(cacheKey);
         if (cached) {
@@ -124,8 +231,9 @@ export default function StockItemsPage() {
         <div className="db-root">
             <main className="db-main">
                 <div className="db-page-title">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <h1>Stock Items Masterlist</h1>
+                        <span className="si-company-badge">{companyLabel}</span>
                         <span className={`db-data-source ${dataSource.includes("acumatica") ? 'db-data-source-fallback' : 'db-data-source-live'}`} style={{ fontSize: '0.65rem', padding: '0.2rem 0.6rem' }}>
                             {dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}
                         </span>
@@ -160,6 +268,50 @@ export default function StockItemsPage() {
                         </div>
                     </div>
                     <div className="db-toolbar-right">
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".xlsx,.xls,.csv"
+                            style={{ display: "none" }}
+                            onChange={handleImportDimensions}
+                        />
+                        <div className="si-import-group" ref={importInfoRef}>
+                            <button
+                                type="button"
+                                className="si-view-btn"
+                                style={{ display: "flex", alignItems: "center", gap: "0.5rem", height: "42px" }}
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={importing}
+                            >
+                                {importing ? "Importing…" : "Import Dimensions"}
+                            </button>
+                            <button
+                                type="button"
+                                className="si-import-info-btn"
+                                aria-label="Import file format requirements"
+                                aria-expanded={showImportInfo}
+                                onClick={() => setShowImportInfo((v) => !v)}
+                                disabled={importing}
+                            >
+                                <IconInfo />
+                            </button>
+                            {showImportInfo && (
+                                <div className="si-import-info-panel" role="dialog" aria-label="Import format guide">
+                                    <strong>Required file format</strong>
+                                    <p>Upload an Excel (.xlsx, .xls) or CSV file with a header row. The first column must match stock items by Inventory ID.</p>
+                                    <ul>
+                                        <li><strong>Inventory ID</strong> — must match an existing stock item</li>
+                                        {DIMENSION_FIELDS.map((f) => (
+                                            <li key={f.key}><strong>{f.label}</strong> — optional numeric value</li>
+                                        ))}
+                                    </ul>
+                                    <p className="si-import-info-note">
+                                        Unknown Inventory IDs are skipped. Existing dimension values are not overwritten — only empty fields are filled.
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+
                         <button 
                             className="si-view-btn" 
                             style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--text-primary)', color: 'var(--text-inverse)', border: 'none', padding: '0.6rem 1.25rem', height: '42px' }}
@@ -178,6 +330,28 @@ export default function StockItemsPage() {
                     </div>
                 </div>
 
+                {importing && (
+                    <div className="si-import-progress" role="status" aria-live="polite">
+                        <div className="si-import-progress-header">
+                            <div className="db-spinner" style={{ width: "16px", height: "16px", borderWidth: "2px" }} />
+                            <span>{importStatus || "Importing…"}</span>
+                            <span className="si-import-progress-pct">{importProgress}%</span>
+                        </div>
+                        <div className="si-import-progress-track">
+                            <div
+                                className="si-import-progress-bar"
+                                style={{ width: `${importProgress}%` }}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {importMsg && !importing && (
+                    <div className={`si-import-msg ${importError ? "si-import-msg-error" : ""}`}>
+                        {importMsg}
+                    </div>
+                )}
+
                 {error && <div className="si-error">{error}</div>}
 
                 <div className="db-table-wrap">
@@ -193,19 +367,20 @@ export default function StockItemsPage() {
                                 <th style={{ width: '100px', textAlign: 'center' }}>Status</th>
                                 <th style={{ width: '100px', textAlign: 'right' }}>Qty Sold</th>
                                 <th style={{ width: '120px', textAlign: 'right' }}>Total Sales</th>
+                                <th style={{ width: '100px', textAlign: 'center' }}>Dimensions</th>
                                 <th style={{ width: '120px', textAlign: 'center' }}>Action</th>
                             </tr>
                         </thead>
                         <tbody>
                             {loading && items.length === 0 ? (
-                                <tr><td colSpan={10} className="si-loading-cell">
+                                <tr><td colSpan={11} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span>Fetching items...</span>
                                     </div>
                                 </td></tr>
                             ) : items.length === 0 ? (
-                                <tr><td colSpan={10} className="si-empty-cell">No items found matching your search.</td></tr>
+                                <tr><td colSpan={11} className="si-empty-cell">No items found matching your search.</td></tr>
                             ) : items.map(item => (
                                 <tr
                                     key={item.inventoryId}
@@ -239,7 +414,14 @@ export default function StockItemsPage() {
                                     <td className="db-num" style={{ fontWeight: '500' }}>{Number(item.totalQtySold) > 0 ? Number(item.totalQtySold).toLocaleString() : "—"}</td>
                                     <td className="db-num" style={{ color: 'var(--accent-primary)' }}>{Number(item.totalSales) > 0 ? `₱${Number(item.totalSales).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}</td>
                                     <td style={{ textAlign: 'center' }}>
-                                        <button className="si-view-btn">View Details</button>
+                                        {item.hasDimensions ? (
+                                            <span className="si-dim-badge">Set</span>
+                                        ) : (
+                                            <span className="si-dim-badge empty">—</span>
+                                        )}
+                                    </td>
+                                    <td style={{ textAlign: 'center' }}>
+                                        <button type="button" className="si-view-btn" onClick={(e) => { e.stopPropagation(); setSelectedId(item.inventoryId); }}>View Details</button>
                                     </td>
                                 </tr>
                             ))}

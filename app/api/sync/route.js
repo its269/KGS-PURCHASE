@@ -1,11 +1,27 @@
-import { AcumaticaService } from "@/services/acumatica";
+import { AcumaticaService, extractStockItemCatalog, extractWarehouseLevels } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
-import { getSessionFromRequest } from "@/lib/session-store";
+import { getSessionFromRequest, getSessionIdFromRequest, getCompanyCredential } from "@/lib/session-store";
+import { COMPANIES, getAcumaticaCompanyName, splitLevelsByCompany } from "@/lib/companies";
 import mysql from "mysql2/promise";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+async function systemLoginForCompany(acumaticaCompany) {
+    const loginRes = await fetch(`${process.env.ACUMATICA_BASE_URL}/entity/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: process.env.ACUMATICA_USERNAME || process.env.ACU_USERNAME,
+            password: process.env.ACUMATICA_PASSWORD || process.env.ACU_PASSWORD,
+            company: acumaticaCompany,
+        }),
+    });
+    if (!loginRes.ok) throw new Error(`Acumatica login failed for ${acumaticaCompany}: ${loginRes.status}`);
+    const setCookies = loginRes.headers.getSetCookie();
+    return setCookies.map((c) => c.split(";")[0]).join("; ");
+}
 
 /**
  * BFF API Route for Data Synchronization
@@ -17,6 +33,7 @@ export async function POST(request) {
     const signal = request.signal;
 
     const cookie = getSessionFromRequest(request);
+    const sessionId = getSessionIdFromRequest(request);
     const syncSecret = request.headers.get("x-sync-secret");
     const isSecretValid = process.env.SYNC_SECRET && syncSecret === process.env.SYNC_SECRET;
 
@@ -192,7 +209,8 @@ export async function POST(request) {
             { name: "base_unit", def: "VARCHAR(50) NULL" },
             { name: "item_class", def: "VARCHAR(100) NULL" },
             { name: "default_price", def: "DECIMAL(18, 4) DEFAULT 0" },
-            { name: "inventory_name", def: "VARCHAR(255) NULL" }
+            { name: "inventory_name", def: "VARCHAR(255) NULL" },
+            { name: "company_id", def: "VARCHAR(50) NOT NULL DEFAULT 'main'" },
         ];
 
         for (const c of cols) {
@@ -204,6 +222,36 @@ export async function POST(request) {
             if (row.cnt === 0) {
                 await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD COLUMN \`${c.name}\` ${c.def}`);
             }
+        }
+
+        await conn.query(
+            `UPDATE \`${inventoryDb}\`.\`inventory_items\` SET company_id = 'main' WHERE company_id IS NULL OR TRIM(company_id) = ''`
+        );
+
+        const [[pkCheck]] = await conn.query(
+            `SELECT COUNT(*) as cnt FROM information_schema.KEY_COLUMN_USAGE
+             WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND CONSTRAINT_NAME='PRIMARY' AND COLUMN_NAME='company_id'`,
+            [inventoryDb]
+        );
+        if (pkCheck.cnt === 0) {
+            try {
+                await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP PRIMARY KEY`);
+                await conn.query(
+                    `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD PRIMARY KEY (inventory_id, default_warehouse, company_id)`
+                );
+                console.log(">>> [Sync API] Updated inventory_items primary key to include company_id.");
+            } catch (pkErr) {
+                console.warn(">>> [Sync API] PK migration skipped:", pkErr.message);
+            }
+        }
+
+        try {
+            const cleaned = await MySqlService.cleanupMisclassifiedEcomBranches();
+            if (cleaned > 0) {
+                console.log(`>>> [Sync API] Removed ${cleaned} misclassified ecommerce branch rows from main company.`);
+            }
+        } catch (cleanErr) {
+            console.warn(">>> [Sync API] Ecommerce cleanup skipped:", cleanErr.message);
         }
 
         await conn.end();
@@ -321,103 +369,119 @@ export async function POST(request) {
                     }
                 }
 
-                // 2. INVENTORY
+                // 2. INVENTORY — one KGSC fetch, split stock into main vs ecommerce (ECOMMERCE branch)
                 if (options.inventory) {
-                    const filterArr = [];
-                    if (isDelta && lastInvSync) {
-                        filterArr.push(`LastModified gt datetimeoffset'${lastInvSync}'`);
-                        send({ section: "Inventory", details: `Incremental Sync: Fetching changes since ${lastInvSync}...`, progress: 10 });
+                    let invCookie = null;
+                    try {
+                        invCookie = isSecretValid
+                            ? await systemLoginForCompany(getAcumaticaCompanyName("main"))
+                            : (getCompanyCredential(sessionId, "main") || effectiveCookie);
+                    } catch (loginErr) {
+                        console.error(">>> [Sync API] Inventory login error:", loginErr.message);
+                    }
+
+                    if (!invCookie || invCookie === "__bypass__") {
+                        console.warn(">>> [Sync API] Skipping inventory — no credential");
                     } else {
-                        send({ section: "Inventory", details: "Full Daily Refresh: Scanning all items...", progress: 10 });
-                    }
-
-                    const filterStr = filterArr.length > 0 ? `&$filter=${filterArr.join(" and ")}` : "";
-                    let skip = 0, totalSynced = 0, top = 50;
-                    
-                    while (!signal.aborted) {
-                        let items = [];
-                        try {
-                            const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$top=${top}&$skip=${skip}${filterStr}`;
-                            console.log(`>>> [Sync API] Fetching StockItems: skip=${skip}`);
-                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
-                            const data = await res.json();
-                            items = data.value || (Array.isArray(data) ? data : []);
-                        } catch (fetchErr) {
-                            console.error(`>>> [Sync API] Inventory Fetch Error at skip ${skip}:`, fetchErr.message);
-                            send({ section: "Inventory", details: `Error fetching batch at ${skip}: ${fetchErr.message}. Retrying...`, progress: 10 });
-                            // Optional: break or continue. Let's try to break to avoid infinite loop on persistent error.
-                            throw fetchErr; 
+                        const filterArr = [];
+                        if (isDelta && lastInvSync) {
+                            filterArr.push(`LastModified gt datetimeoffset'${lastInvSync}'`);
+                            send({ section: "Inventory", details: `Incremental sync since ${lastInvSync}...`, progress: 10 });
+                        } else {
+                            send({ section: "Inventory", details: "Full refresh: clearing stale stock (KGSC + Ecommerce)...", progress: 8 });
+                            try {
+                                await MySqlService.purgeInventoryLevels("main");
+                                await MySqlService.purgeInventoryLevels("ecommerce");
+                            } catch (purgeErr) {
+                                console.error(">>> [Sync API] Purge error:", purgeErr.message);
+                            }
+                            send({ section: "Inventory", details: "Scanning all items from KGSC...", progress: 10 });
                         }
 
-                        if (items.length === 0) break;
+                        const filterStr = filterArr.length > 0 ? `&$filter=${filterArr.join(" and ")}` : "";
+                        let skip = 0;
+                        let totalSynced = 0;
+                        const top = 50;
 
-                        const levels = [];
-                        const catalogs = [];
-                        for (const item of items) {
+                        while (!signal.aborted) {
+                            let items = [];
                             try {
-                                const invId = String(getF(item, "InventoryID")).trim();
-                                if (!invId) continue;
-                                const desc = String(getF(item, "Description")).trim();
-                                const itemClass = String(getF(item, "ItemClass")).trim();
-                                const price = parseFloat(getF(item, "DefaultPrice") || 0);
-                                const status = String(getF(item, "ItemStatus") || "Active");
-                                const uom = String(getF(item, "BaseUnit") || "");
-                                const itemType = String(getF(item, "ItemType") || "");
-                                const postingClass = String(getF(item, "PostingClass") || "");
+                                const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$top=${top}&$skip=${skip}${filterStr}`;
+                                const res = await AcumaticaService.fetchWithRetry(url, invCookie);
+                                const data = await res.json();
+                                items = data.value || (Array.isArray(data) ? data : []);
+                            } catch (fetchErr) {
+                                console.error(`>>> [Sync API] Inventory Fetch Error at skip ${skip}:`, fetchErr.message);
+                                throw fetchErr;
+                            }
 
-                                catalogs.push({
-                                    inventory_id: invId, description: desc, item_class: itemClass,
-                                    default_price: price,
-                                    item_status: status,
-                                    base_unit: uom,
-                                    item_type: itemType,
-                                    posting_class: postingClass
-                                });
+                            if (items.length === 0) break;
 
-                                let wds = item.WarehouseDetails || [];
-                                if (wds && !Array.isArray(wds) && wds.value) wds = wds.value;
-                                if (!Array.isArray(wds)) wds = [];
-
-                                if (wds.length > 0) {
-                                    for (const wh of wds) {
-                                        const whId = String(getAny(wh, "WarehouseID", "SiteID")).trim();
-                                        if (whId) levels.push({
-                                            inventory_id: invId, branch_id: whId, site_id: whId,
-                                            on_hand: Number(getAny(wh, "QtyOnHand") || 0),
-                                            available: Number(getAny(wh, "QtyAvailable") || 0),
-                                            description: desc, 
-                                            item_class: itemClass,
-                                            default_price: price,
-                                            item_status: status,
-                                            base_unit: uom,
-                                            item_type: itemType,
-                                            posting_class: postingClass
-                                        });
-                                    }
+                            const allLevels = [];
+                            const catalogs = [];
+                            const batchItemIds = [];
+                            for (const item of items) {
+                                try {
+                                    const catalog = extractStockItemCatalog(item);
+                                    if (!catalog) continue;
+                                    batchItemIds.push(catalog.inventory_id);
+                                    catalogs.push({
+                                        inventory_id: catalog.inventory_id,
+                                        description: catalog.description,
+                                        item_class: catalog.item_class,
+                                        default_price: catalog.default_price,
+                                        item_status: catalog.item_status,
+                                        base_unit: catalog.base_unit,
+                                        item_type: catalog.item_type,
+                                        posting_class: catalog.posting_class,
+                                    });
+                                    const catalogFields = {
+                                        description: catalog.description,
+                                        item_class: catalog.item_class,
+                                        default_price: catalog.default_price,
+                                        item_status: catalog.item_status,
+                                        base_unit: catalog.base_unit,
+                                        item_type: catalog.item_type,
+                                        posting_class: catalog.posting_class,
+                                    };
+                                    allLevels.push(...extractWarehouseLevels(item, catalogFields));
+                                } catch (itemErr) {
+                                    console.error(`>>> [Sync API] Item Processing Error:`, itemErr);
                                 }
-                            } catch (itemErr) {
-                                console.error(`>>> [Sync API] Item Processing Error:`, itemErr);
                             }
+
+                            const { main: mainLevels, ecommerce: ecomLevels } = splitLevelsByCompany(allLevels);
+
+                            if (catalogs.length > 0) {
+                                if (isDelta && batchItemIds.length > 0) {
+                                    await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "main");
+                                    await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "ecommerce");
+                                }
+                                await MySqlService.upsertInventoryItems(catalogs, "main");
+                                if (mainLevels.length) await MySqlService.upsertInventoryLevels(mainLevels, "main");
+                                if (ecomLevels.length) {
+                                    await MySqlService.upsertInventoryItems(catalogs, "ecommerce");
+                                    await MySqlService.upsertInventoryLevels(ecomLevels, "ecommerce");
+                                }
+                            }
+
+                            totalSynced += items.length;
+                            skip += items.length;
+                            const invProgress = isDelta
+                                ? Math.min(99, Math.floor(totalSynced / 5))
+                                : Math.min(99, Math.floor(totalSynced / 30));
+                            send({
+                                section: "Inventory",
+                                details: `Processed ${totalSynced} items (KGSC + Ecommerce split)...`,
+                                progress: Math.max(10, invProgress),
+                                count: totalSynced,
+                            });
+                            if (items.length < top) break;
                         }
 
-                        if (catalogs.length > 0) {
-                            try {
-                                console.log(`>>> [Sync API] Upserting ${catalogs.length} items and ${levels.length} levels to MySQL...`);
-                                await MySqlService.upsertInventoryItems(catalogs);
-                                await MySqlService.upsertInventoryLevels(levels);
-                            } catch (dbErr) {
-                                console.error(`>>> [Sync API] Database Upsert Error:`, dbErr.message);
-                                throw dbErr;
-                            }
-                        }
-                        totalSynced += items.length; skip += items.length;
-                        const invProgress = isDelta ? Math.min(99, Math.floor(totalSynced / 5)) : Math.min(99, Math.floor(totalSynced / 30));
-                        send({ section: "Inventory", details: `Processed ${totalSynced} items...`, progress: Math.max(10, invProgress), count: totalSynced });
-                        if (items.length < top) break;
+                        await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced);
+                        send({ section: "Inventory", status: "done", details: "Inventory sync complete (main + ecommerce).", progress: 100 });
                     }
-                    console.log(`>>> [Sync API] Inventory sync complete. Total: ${totalSynced}`);
-                    await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced);
-                    send({ section: "Inventory", status: "done", details: `Inventory sync complete.`, progress: 100 });
                 }
 
                 // 3. SALES
@@ -573,24 +637,28 @@ export async function POST(request) {
                         const data = await res.json();
                         const items = data.value || [];
                         const levels = [];
+                        const batchItemIds = [];
                         for (const item of items) {
-                            const invId = String(getF(item, "InventoryID")).trim();
-                            let wds = item.WarehouseDetails || [];
-                            if (wds.value) wds = wds.value;
-                            if (Array.isArray(wds)) {
-                                for (const wh of wds) {
-                                    const whId = String(getAny(wh, "WarehouseID", "SiteID")).trim();
-                                    if (whId) levels.push({
-                                        inventory_id: invId, branch_id: whId, site_id: whId,
-                                        on_hand: Number(getAny(wh, "QtyOnHand") || 0),
-                                        available: Number(getAny(wh, "QtyAvailable") || 0),
-                                        description: String(getF(item, "Description")),
-                                        item_class: String(getF(item, "ItemClass"))
-                                    });
-                                }
-                            }
+                            const catalog = extractStockItemCatalog(item);
+                            if (!catalog) continue;
+                            batchItemIds.push(catalog.inventory_id);
+                            levels.push(...extractWarehouseLevels(item, {
+                                description: catalog.description,
+                                item_class: catalog.item_class,
+                                default_price: catalog.default_price,
+                                item_status: catalog.item_status,
+                                base_unit: catalog.base_unit,
+                                item_type: catalog.item_type,
+                                posting_class: catalog.posting_class,
+                            }));
                         }
-                        if (levels.length > 0) await MySqlService.upsertInventoryLevels(levels);
+                        const { main: mainLevels, ecommerce: ecomLevels } = splitLevelsByCompany(levels);
+                        if (batchItemIds.length > 0) {
+                            await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "main");
+                            await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "ecommerce");
+                        }
+                        if (mainLevels.length > 0) await MySqlService.upsertInventoryLevels(mainLevels, "main");
+                        if (ecomLevels.length > 0) await MySqlService.upsertInventoryLevels(ecomLevels, "ecommerce");
                     }
                     await MySqlService.logSyncEvent(options.mode, "Smart Delta", "completed", idList.length);
                     send({ section: "Inventory", status: "done", details: "Stock refresh complete.", progress: 100 });

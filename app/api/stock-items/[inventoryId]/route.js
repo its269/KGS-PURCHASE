@@ -1,8 +1,8 @@
 import { MySqlService } from "@/services/mysql";
-import { AcumaticaService } from "@/services/acumatica";
-import { getSessionFromRequest } from "@/lib/session-store";
+import { AcumaticaService, extractWarehouseLevels } from "@/services/acumatica";
+import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
+import { isEcomBranchAlias } from "@/lib/companies";
 import { NextResponse } from "next/server";
-
 const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
 function getF(obj, key) {
@@ -22,19 +22,36 @@ export async function GET(request, { params }) {
     try {
         const { inventoryId: rawId } = await params;
         const inventoryId = decodeURIComponent(rawId);
+        const companyId = getActiveCompanyFromRequest(request) || "main";
 
         // --- Try MySQL first ---
-        console.log(`[Stock Item Detail API] Fetching from MySQL (db_purchase) for ${inventoryId}`);
-        const mysqlDetail = await MySqlService.getStockItemDetail(inventoryId);
-        
+        console.log(`[Stock Item Detail API] MySQL — ${inventoryId} (${companyId})`);
+        const mysqlDetail = await MySqlService.getStockItemDetail(inventoryId, companyId);        
         // Fetch annotations for this inventory item
         const annotations = await MySqlService.getAnnotations("inventory");
         const itemAnnotations = annotations[inventoryId] || {};
+        let dimensions = null;
+        try {
+            dimensions = await MySqlService.getItemDimensions(inventoryId);
+        } catch (dimErr) {
+            console.error("[Stock Item Detail API] Dimensions load skipped:", dimErr.message);
+        }
         
-        if (mysqlDetail && mysqlDetail.branches && mysqlDetail.branches.length > 0) {
+        if (mysqlDetail) {
+            if (mysqlDetail.branches) {
+                mysqlDetail.branches = mysqlDetail.branches.filter((b) =>
+                    companyId === "ecommerce"
+                        ? isEcomBranchAlias(b.branchId)
+                        : !isEcomBranchAlias(b.branchId)
+                );
+                mysqlDetail.totalOnHand = mysqlDetail.branches.reduce((s, b) => s + b.onHand, 0);
+                mysqlDetail.totalAvailable = mysqlDetail.branches.reduce((s, b) => s + b.available, 0);
+            }
             return NextResponse.json({ 
                 ...mysqlDetail, 
                 annotations: itemAnnotations,
+                dimensions,
+                companyId,
                 source: "mysql" 
             });
         }
@@ -81,16 +98,23 @@ export async function GET(request, { params }) {
         const rawWds = item.WarehouseDetails || [];
         const wds = Array.isArray(rawWds) ? rawWds : (rawWds.value || []);
         
-        const branches = wds
-            .map(wh => ({
-                branchId: String(getF(wh, "WarehouseID") || getF(wh, "SiteID")).trim(),
-                siteId: String(getF(wh, "WarehouseID") || getF(wh, "SiteID")).trim(),
-                onHand: Number(getF(wh, "QtyOnHand") || 0),
-                available: Number(getF(wh, "QtyAvailable") || 0),
-                updatedAt: new Date().toISOString(),
-            }))
-            .filter(b => b.branchId);
+        const levels = extractWarehouseLevels(item, {
+            description: String(getF(item, "Description")).trim(),
+            item_class: String(getF(item, "ItemClass")).trim(),
+            default_price: Number(getF(item, "DefaultPrice") || getF(item, "ListPrice") || 0),
+            item_status: String(getF(item, "ItemStatus")).trim(),
+            base_unit: String(getF(item, "BaseUnit")).trim(),
+        });
 
+        const branches = levels
+            .filter((l) => !isEcomBranchAlias(l.branch_id) || companyId === "ecommerce")
+            .map((l) => ({
+            branchId: l.branch_id,
+            siteId: l.site_id,
+            onHand: l.on_hand,
+            available: l.available,
+            updatedAt: new Date().toISOString(),
+        }));
         const totalOnHand = branches.reduce((s, b) => s + b.onHand, 0);
         const totalAvailable = branches.reduce((s, b) => s + b.available, 0);
 
@@ -104,27 +128,17 @@ export async function GET(request, { params }) {
             lastSync: new Date().toISOString(),
             totalOnHand,
             totalAvailable,
+            companyId,
             branches,
             annotations: itemAnnotations,
+            dimensions: await MySqlService.getItemDimensions(inventoryId),
             source: "acumatica",
         };
 
         // Async upsert to MySQL so next time it's cached
         try {
-            const levels = branches.map(b => ({
-                inventory_id: inventoryId,
-                branch_id: b.branchId,
-                site_id: b.siteId,
-                on_hand: b.onHand,
-                available: b.available,
-                description: result.description,
-                item_class: result.itemClass,
-                default_price: result.unitPrice,
-                item_status: result.itemStatus,
-                base_unit: result.baseUnit,
-            }));
-            await MySqlService.upsertInventoryLevels(levels);
-        } catch (dbErr) {
+            await MySqlService.deleteInventoryLevelsForItems([inventoryId], companyId);
+            await MySqlService.upsertInventoryLevels(levels, companyId);        } catch (dbErr) {
             console.error("[Stock Item Detail API] Background upsert failed:", dbErr.message);
         }
 

@@ -216,7 +216,10 @@ export default function SyncingClient() {
                             <div className="qs-card-icon" style={{ color: 'var(--accent-secondary)' }}><IconSync /></div>
                             <div className="qs-card-info">
                                 <span className="qs-card-title" style={{ fontSize: '1.1rem', color: 'var(--accent-secondary)' }}>Full Daily Refresh</span>
-                                <span className="qs-card-desc">Sync all 3,000+ items and full sales history. Use for initial setup or end-of-day reporting.</span>
+                                <span className="qs-card-desc">
+                                    Full inventory &amp; stock sync from Acumatica — all 3,000+ items, branch stock levels, and sales history.
+                                    Use this to fix stock accuracy or for end-of-day reporting.
+                                </span>
                             </div>
                         </button>
                     </div>

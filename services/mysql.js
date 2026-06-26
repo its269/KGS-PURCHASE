@@ -1,4 +1,6 @@
 import mysql from "mysql2/promise";
+import { mergeDimensionsFillEmpty, hasAnyDimensionValue } from "@/lib/item-dimensions.js";
+import { sqlExcludeEcomBranches, ECOM_BRANCH_ALIASES, isEcomBranchAlias, sqlOnlyEcomBranches, resolveCompanyIdForBranch } from "@/lib/companies.js";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -432,19 +434,30 @@ export const MySqlService = {
     /**
      * Fetch inventory with pagination, search, and branch filtering (for Dashboard)
      */
-    async getInventory({ page = 1, pageSize = 50, search = "", branch = "", filter = "" }) {
+    async getInventory({ page = 1, pageSize = 50, search = "", branch = "", filter = "", companyId = "main" }) {
         const offset = (page - 1) * pageSize;
         const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+        const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
 
         try {
-            let whereClauses = ["i.default_warehouse IS NOT NULL"];
-            let params = [];
+            let whereClauses = ["i.default_warehouse IS NOT NULL", "i.company_id = ?"];
+            let params = [effectiveCompanyId];
 
             if (branch) {
                 whereClauses.push("i.branch_id = ?");
                 params.push(branch);
             } else {
                 whereClauses.push("i.default_warehouse != '__catalog__'");
+            }
+
+            if (effectiveCompanyId === "main") {
+                const ecomEx = sqlExcludeEcomBranches("i");
+                whereClauses.push(ecomEx.clause);
+                params.push(...ecomEx.params);
+            } else if (effectiveCompanyId === "ecommerce") {
+                const ecomOnly = sqlOnlyEcomBranches("i");
+                whereClauses.push(ecomOnly.clause);
+                params.push(...ecomOnly.params);
             }
 
             if (search) {
@@ -529,15 +542,26 @@ export const MySqlService = {
     /**
      * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
-    async getGlobalStats(branch = "", search = "") {
+    async getGlobalStats(branch = "", search = "", companyId = "main") {
         try {
             const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
-            let whereClauses = ["i.default_warehouse IS NOT NULL", "i.default_warehouse != '__catalog__'"];
-            let params = [];
+            const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
+            let whereClauses = ["i.default_warehouse IS NOT NULL", "i.default_warehouse != '__catalog__'", "i.company_id = ?"];
+            let params = [effectiveCompanyId];
 
             if (branch) {
                 whereClauses.push("i.branch_id = ?");
                 params.push(branch);
+            }
+
+            if (effectiveCompanyId === "main") {
+                const ecomEx = sqlExcludeEcomBranches("i");
+                whereClauses.push(ecomEx.clause);
+                params.push(...ecomEx.params);
+            } else if (effectiveCompanyId === "ecommerce") {
+                const ecomOnly = sqlOnlyEcomBranches("i");
+                whereClauses.push(ecomOnly.clause);
+                params.push(...ecomOnly.params);
             }
 
             if (search) {
@@ -594,22 +618,37 @@ export const MySqlService = {
      * Fetch stock items from MySQL database (one row per unique inventory_id)
      * Enriched with total sales and quantity sold.
      */
-    async getStockItems({ page = 1, pageSize = 50, search = "", branch = "" } = {}) {
+    async getStockItems({ page = 1, pageSize = 50, search = "", branch = "", companyId = "main" } = {}) {
         const offset = (page - 1) * pageSize;
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
+        const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
 
         try {
-            const whereParts = [];
-            const params = [];
+            const whereParts = ["i.company_id = ?"];
+            const params = [effectiveCompanyId];
 
             if (search) {
                 whereParts.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`);
             }
             if (branch && branch !== "All Branches") {
-                whereParts.push("i.default_warehouse = ?");
+                whereParts.push("i.default_warehouse != '__catalog__'");
+                whereParts.push("i.branch_id IS NOT NULL AND TRIM(i.branch_id) != ''");
+                whereParts.push("UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))");
                 params.push(branch);
+            } else {
+                whereParts.push("i.default_warehouse != '__catalog__'");
+            }
+
+            if (effectiveCompanyId === "main") {
+                const ecomEx = sqlExcludeEcomBranches("i");
+                whereParts.push(ecomEx.clause);
+                params.push(...ecomEx.params);
+            } else if (effectiveCompanyId === "ecommerce") {
+                const ecomOnly = sqlOnlyEcomBranches("i");
+                whereParts.push(ecomOnly.clause);
+                params.push(...ecomOnly.params);
             }
 
             const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
@@ -656,8 +695,14 @@ export const MySqlService = {
                 };
             });
 
+            const dimSet = await this.getDimensionIdSet(enriched.map((r) => r.inventoryId));
+            const withDims = enriched.map((r) => ({
+                ...r,
+                hasDimensions: dimSet.has((r.inventoryId || "").toUpperCase().trim()),
+            }));
+
             return {
-                items: enriched,
+                items: withDims,
                 totalCount: total,
                 totalStock: Number(overallStock) || 0
             };
@@ -668,9 +713,52 @@ export const MySqlService = {
     },
 
     /**
+     * Branch-accurate stock + sales for replenishment analysis.
+     * Uses branch_id (site/branch location), not default_warehouse (physical warehouse).
+     */
+    async getReplenishmentItems({ branch = "MAIN" } = {}) {
+        try {
+            const salesMap = await this.getPeriodicSalesSummary({ branch });
+
+            const [rows] = await pool.query(
+                `SELECT 
+                    TRIM(i.inventory_id) as inventoryId,
+                    MAX(i.inventory_name) as description,
+                    MAX(i.item_status) as itemStatus,
+                    MAX(i.item_class) as itemClass,
+                    COALESCE(SUM(i.on_hand), 0) as totalOnHand,
+                    COALESCE(SUM(i.available), 0) as totalAvailable
+                 FROM inventory_items i
+                 WHERE i.default_warehouse != '__catalog__'
+                   AND i.branch_id IS NOT NULL
+                   AND TRIM(i.branch_id) != ''
+                   AND UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))
+                 GROUP BY TRIM(i.inventory_id)
+                 ORDER BY TRIM(i.inventory_id) ASC`,
+                [branch]
+            );
+
+            return rows.map((r) => {
+                const key = (r.inventoryId || "").toUpperCase().trim();
+                const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
+                return {
+                    ...r,
+                    totalOnHand: Number(r.totalOnHand) || 0,
+                    totalAvailable: Number(r.totalAvailable) || 0,
+                    totalQtySold: sales.qty_sold,
+                    totalSales: sales.total_sales,
+                };
+            });
+        } catch (err) {
+            console.error("[MySQL getReplenishmentItems Error]", err);
+            throw err;
+        }
+    },
+
+    /**
      * Fetch stock item detail from MySQL including all warehouse locations
      */
-    async getStockItemDetail(inventoryId) {
+    async getStockItemDetail(inventoryId, companyId = "main") {
         try {
             const [rows] = await pool.execute(
                 `SELECT 
@@ -687,11 +775,13 @@ export const MySqlService = {
                     site_id as siteId,
                     on_hand as onHand,
                     available as available,
-                    last_sync as lastSync
+                    last_sync as lastSync,
+                    company_id as companyId
                  FROM inventory_items 
                  WHERE TRIM(UPPER(inventory_id)) = TRIM(UPPER(?))
+                 AND company_id = ?
                  AND default_warehouse != '__catalog__'`,
-                [inventoryId]
+                [inventoryId, companyId]
             );
 
             if (rows.length === 0) return null;
@@ -706,7 +796,11 @@ export const MySqlService = {
                 onHand: Number(r.onHand) || 0,
                 available: Number(r.available) || 0,
                 updatedAt: r.lastSync
-            })).filter(b => b.branchId);
+            })).filter(b => b.branchId && (
+                companyId === "ecommerce"
+                    ? isEcomBranchAlias(b.branchId)
+                    : !isEcomBranchAlias(b.branchId)
+            ));
 
             const totalOnHand = branches.reduce((sum, b) => sum + b.onHand, 0);
             const totalAvailable = branches.reduce((sum, b) => sum + b.available, 0);
@@ -721,6 +815,7 @@ export const MySqlService = {
                 type: first.type || "—",
                 postingClass: first.postingClass || "—",
                 defaultWarehouse: first.branch || "—",
+                companyId: first.companyId || companyId,
                 totalOnHand,
                 totalAvailable,
                 lastSync: first.lastSync,
@@ -735,11 +830,29 @@ export const MySqlService = {
     /**
      * Fetch unique branches from MySQL
      */
-    async getBranches() {
+    async getBranches(companyId = "main") {
         try {
-            const [rows] = await pool.execute(
-                `SELECT DISTINCT branch_id FROM inventory_items WHERE branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__' ORDER BY branch_id ASC`
-            );
+            let query;
+            let params;
+
+            if (companyId === "ecommerce") {
+                const ecomOnly = sqlOnlyEcomBranches("inventory_items");
+                query = `SELECT DISTINCT branch_id FROM inventory_items
+                         WHERE company_id = 'ecommerce'
+                           AND branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__'
+                           AND ${ecomOnly.clause}
+                         ORDER BY branch_id ASC`;
+                params = [...ecomOnly.params];
+            } else {
+                // Main company branch picker includes ECOMMERCE alongside other branches.
+                query = `SELECT DISTINCT branch_id FROM inventory_items
+                         WHERE company_id IN ('main', 'ecommerce')
+                           AND branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__'
+                         ORDER BY branch_id ASC`;
+                params = [];
+            }
+
+            const [rows] = await pool.execute(query, params);
 
             return rows.map(r => ({
                 SiteID: r.branch_id,
@@ -748,6 +861,24 @@ export const MySqlService = {
         } catch (err) {
             console.error("[MySQL getBranches Error]", err);
             return [];
+        }
+    },
+
+    /** Move ecommerce branch rows from main company into ecommerce company bucket. */
+    async cleanupMisclassifiedEcomBranches() {
+        try {
+            const branches = [...ECOM_BRANCH_ALIASES];
+            const [result] = await pool.query(
+                `UPDATE inventory_items SET company_id = 'ecommerce'
+                 WHERE company_id = 'main'
+                   AND default_warehouse != '__catalog__'
+                   AND UPPER(TRIM(branch_id)) IN (${branches.map(() => "?").join(", ")})`,
+                branches
+            );
+            return result.affectedRows || 0;
+        } catch (err) {
+            console.error("[MySQL cleanupMisclassifiedEcomBranches Error]", err);
+            return 0;
         }
     },
 
@@ -817,7 +948,7 @@ export const MySqlService = {
     /**
      * Bulk-update catalog fields on existing inventory_items rows.
      */
-    async upsertInventoryItems(items) {
+    async upsertInventoryItems(items, companyId = "main") {
         if (!items.length) return;
         const CHUNK = 200;
         const now = new Date();
@@ -827,9 +958,10 @@ export const MySqlService = {
             await connection.beginTransaction();
             for (let i = 0; i < items.length; i += CHUNK) {
                 const chunk = items.slice(i, i + CHUNK);
-                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?)').join(',');
+                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?)').join(',');
                 const values = chunk.flatMap(item => [
                     String(item.inventory_id || "").trim(),
+                    companyId,
                     '__catalog__',
                     item.description,
                     item.item_class,
@@ -842,7 +974,7 @@ export const MySqlService = {
                 ]);
                 await connection.query(
                     `INSERT INTO inventory_items
-                        (inventory_id, default_warehouse, inventory_name, item_class,
+                        (inventory_id, company_id, default_warehouse, inventory_name, item_class,
                         default_price, item_status, base_unit, type, posting_class, last_sync)
                     VALUES ${placeholders}
                     ON DUPLICATE KEY UPDATE
@@ -870,7 +1002,7 @@ export const MySqlService = {
     /**
      * Bulk upsert inventory levels.
      */
-    async upsertInventoryLevels(levels) {
+    async upsertInventoryLevels(levels, companyId = "main") {
         if (!levels.length) return;
         const CHUNK = 200;
         const now = new Date();
@@ -880,9 +1012,10 @@ export const MySqlService = {
             await connection.beginTransaction();
             for (let i = 0; i < levels.length; i += CHUNK) {
                 const chunk = levels.slice(i, i + CHUNK);
-                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
                 const values = chunk.flatMap(l => [
                     String(l.inventory_id || "").trim(),
+                    companyId,
                     String(l.branch_id || "").trim(),
                     l.description || null,
                     l.item_class || null,
@@ -899,7 +1032,7 @@ export const MySqlService = {
                 ]);
                 await connection.query(
                     `INSERT INTO inventory_items
-                        (inventory_id, default_warehouse, inventory_name, item_class,
+                        (inventory_id, company_id, default_warehouse, inventory_name, item_class,
                         default_price, item_status, base_unit, type, posting_class,
                         branch_id, site_id, on_hand, available, last_sync)
                     VALUES ${placeholders}
@@ -926,6 +1059,41 @@ export const MySqlService = {
             throw err;
         } finally {
             connection.release();
+        }
+    },
+
+    /** Remove all synced stock-level rows (keeps catalog rows). */
+    async purgeInventoryLevels(companyId = null) {
+        try {
+            const sql = companyId
+                ? `DELETE FROM inventory_items WHERE default_warehouse != '__catalog__' AND company_id = ?`
+                : `DELETE FROM inventory_items WHERE default_warehouse != '__catalog__'`;
+            const params = companyId ? [companyId] : [];
+            const [result] = await pool.query(sql, params);
+            return result.affectedRows || 0;
+        } catch (err) {
+            console.error("[MySQL purgeInventoryLevels Error]", err);
+            throw err;
+        }
+    },
+
+    /** Remove stock rows for specific items before re-importing from Acumatica. */
+    async deleteInventoryLevelsForItems(itemIds, companyId = "main") {
+        const ids = [...new Set(itemIds.map((id) => String(id || "").trim()).filter(Boolean))];
+        if (!ids.length) return 0;
+        try {
+            const placeholders = ids.map(() => "?").join(",");
+            const [result] = await pool.query(
+                `DELETE FROM inventory_items
+                 WHERE company_id = ?
+                   AND default_warehouse != '__catalog__'
+                   AND TRIM(inventory_id) IN (${placeholders})`,
+                [companyId, ...ids]
+            );
+            return result.affectedRows || 0;
+        } catch (err) {
+            console.error("[MySQL deleteInventoryLevelsForItems Error]", err);
+            throw err;
         }
     },
 
@@ -1093,6 +1261,132 @@ export const MySqlService = {
             console.error("[MySQL upsertAnnotation Error]", err);
             return false;
         }
+    },
+
+    async ensureItemDimensionsTable() {
+        try {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS item_dimensions (
+                    inventory_id VARCHAR(100) NOT NULL,
+                    pcs_per_box DECIMAL(18,4) NULL,
+                    length_m DECIMAL(18,6) NULL,
+                    height_m DECIMAL(18,6) NULL,
+                    width_m DECIMAL(18,6) NULL,
+                    weight_kg DECIMAL(18,4) NULL,
+                    cbm DECIMAL(18,8) NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (inventory_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+        } catch (err) {
+            console.error("[MySQL ensureItemDimensionsTable Error]", err);
+            throw err;
+        }
+    },
+
+    async getItemDimensions(inventoryId) {
+        await this.ensureItemDimensionsTable();
+        const [rows] = await pool.execute(
+            `SELECT inventory_id, pcs_per_box, length_m, height_m, width_m, weight_kg, cbm, updated_at
+             FROM item_dimensions WHERE TRIM(UPPER(inventory_id)) = TRIM(UPPER(?))`,
+            [inventoryId]
+        );
+        if (!rows.length) return null;
+        const r = rows[0];
+        return {
+            inventoryId: r.inventory_id,
+            pcs_per_box: r.pcs_per_box != null ? Number(r.pcs_per_box) : null,
+            length_m: r.length_m != null ? Number(r.length_m) : null,
+            height_m: r.height_m != null ? Number(r.height_m) : null,
+            width_m: r.width_m != null ? Number(r.width_m) : null,
+            weight_kg: r.weight_kg != null ? Number(r.weight_kg) : null,
+            cbm: r.cbm != null ? Number(r.cbm) : null,
+            updatedAt: r.updated_at,
+        };
+    },
+
+    async upsertItemDimensions(inventoryId, data) {
+        await this.ensureItemDimensionsTable();
+        await pool.execute(
+            `INSERT INTO item_dimensions
+                (inventory_id, pcs_per_box, length_m, height_m, width_m, weight_kg, cbm)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                pcs_per_box = VALUES(pcs_per_box),
+                length_m = VALUES(length_m),
+                height_m = VALUES(height_m),
+                width_m = VALUES(width_m),
+                weight_kg = VALUES(weight_kg),
+                cbm = VALUES(cbm)`,
+            [
+                String(inventoryId).trim(),
+                data.pcs_per_box ?? null,
+                data.length_m ?? null,
+                data.height_m ?? null,
+                data.width_m ?? null,
+                data.weight_kg ?? null,
+                data.cbm ?? null,
+            ]
+        );
+        return this.getItemDimensions(inventoryId);
+    },
+
+    async getDimensionIdSet(inventoryIds = []) {
+        await this.ensureItemDimensionsTable();
+        const ids = [...new Set(inventoryIds.map((id) => String(id || "").trim()).filter(Boolean))];
+        const set = new Set();
+        if (!ids.length) return set;
+        const placeholders = ids.map(() => "?").join(",");
+        const [rows] = await pool.query(
+            `SELECT UPPER(TRIM(inventory_id)) AS id FROM item_dimensions
+             WHERE TRIM(inventory_id) IN (${placeholders})
+               AND (
+                 pcs_per_box IS NOT NULL OR length_m IS NOT NULL OR height_m IS NOT NULL
+                 OR width_m IS NOT NULL OR weight_kg IS NOT NULL OR cbm IS NOT NULL
+               )`,
+            ids
+        );
+        for (const r of rows) set.add(r.id);
+        return set;
+    },
+
+    async inventoryIdExists(inventoryId) {
+        const [[row]] = await pool.query(
+            `SELECT 1 FROM inventory_items WHERE TRIM(UPPER(inventory_id)) = TRIM(UPPER(?)) LIMIT 1`,
+            [inventoryId]
+        );
+        return !!row;
+    },
+
+    async importItemDimensions(rows, { fillEmpty = true } = {}) {
+        await this.ensureItemDimensionsTable();
+        let imported = 0;
+        let skipped = 0;
+        const skippedIds = [];
+
+        for (const row of rows) {
+            const id = String(row.inventory_id || "").trim();
+            if (!id) continue;
+            if (!hasAnyDimensionValue(row)) continue;
+
+            const exists = await this.inventoryIdExists(id);
+            if (!exists) {
+                skipped++;
+                if (skippedIds.length < 50) skippedIds.push(id);
+                continue;
+            }
+
+            if (fillEmpty) {
+                const existing = await this.getItemDimensions(id);
+                const merged = mergeDimensionsFillEmpty(existing, { ...row, inventory_id: id });
+                await this.upsertItemDimensions(id, merged);
+            } else {
+                await this.upsertItemDimensions(id, row);
+            }
+            imported++;
+        }
+
+        return { imported, skipped, skippedIds };
     },
 
     /**

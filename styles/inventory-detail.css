@@ -23,7 +23,7 @@
 .idm-modal {
     background: var(--bg-surface);
     width: 100%;
-    max-width: 680px;
+    max-width: 720px;
     max-height: 90vh;
     border-radius: var(--radius-xl);
     border: 1px solid var(--border-medium);
@@ -332,6 +332,63 @@
     to { transform: rotate(360deg); }
 }
 
+.idm-dim-hint {
+    margin: -0.25rem 0 0.85rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.idm-dim-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+}
+
+.idm-dim-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.idm-dim-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+
+.idm-dim-input {
+    width: 100%;
+    height: 36px;
+    padding: 0 0.65rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-light);
+    background: var(--bg-main);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.idm-dim-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.idm-dim-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 0.85rem;
+}
+
+.idm-dim-saved {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--status-success);
+}
+
 @media (max-width: 768px) {
     .idm-modal {
         width: 100vw;
@@ -342,6 +399,10 @@
     
     .idm-grid {
         grid-template-columns: 1fr;
+    }
+
+    .idm-dim-grid {
+        grid-template-columns: 1fr 1fr;
     }
     
     .idm-content {

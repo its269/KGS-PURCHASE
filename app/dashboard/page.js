@@ -145,7 +145,11 @@ export default function DashboardPage() {
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [loading, setLoading] = useState(true);
     const [showQuickSync, setShowQuickSync] = useState(false);
-    const [activeFilter, setActiveFilter] = useState(null); // null, 'low_stock', 'out_of_stock'
+    const [activeFilter, setActiveFilter] = useState(null);
+    const [companyLabel, setCompanyLabel] = useState("KGSC");
+
+    const inventoryCachePrefix = () =>
+        `inventory_${localStorage.getItem("activeCompanyId") || "main"}_`;
 
     // Hydration fix & Initial Restoration
     useEffect(() => {
@@ -169,7 +173,7 @@ export default function DashboardPage() {
                 stats: "true",
                 source: "mysql"
             });
-            const cached = DataCache.get(`inventory_${params.toString()}`);
+            const cached = DataCache.get(`${inventoryCachePrefix()}${params.toString()}`);
             if (cached) {
                 setAllInventory(cached.data || []);
                 setTotalCount(cached.totalCount || 0);
@@ -177,6 +181,29 @@ export default function DashboardPage() {
                 if (cached.globalStats) setGlobalStats(cached.globalStats);
             }
         });
+    }, []);
+
+    useEffect(() => {
+        const loadCompany = () => {
+            fetchWithAuth("/api/company")
+                .then((res) => (res.ok ? res.json() : null))
+                .then((data) => {
+                    if (!data) return;
+                    const active = data.companies?.find((c) => c.id === data.activeCompanyId);
+                    setCompanyLabel(active?.label || "KGSC");
+                })
+                .catch(() => {});
+        };
+        loadCompany();
+        const onCompanyChange = () => {
+            setPage(1);
+            setAllInventory([]);
+            DataCache.clear();
+            loadCompany();
+            setSelectedBranch("");
+        };
+        window.addEventListener("company-changed", onCompanyChange);
+        return () => window.removeEventListener("company-changed", onCompanyChange);
     }, []);
 
     // Save filters to localStorage
@@ -193,7 +220,8 @@ export default function DashboardPage() {
     /* ── Init Data ────────────────────────────────────────── */
     useEffect(() => {
         const fetchBranches = async () => {
-            const cacheKey = "branches";
+            const companyKey = localStorage.getItem("activeCompanyId") || "main";
+            const cacheKey = `branches_${companyKey}`;
             const cached = DataCache.get(cacheKey);
             // Guard: only use cache if it's already the {id,name} format
             if (cached && Array.isArray(cached) && cached.length > 0 && typeof cached[0] === "object" && cached[0].id) {
@@ -221,7 +249,7 @@ export default function DashboardPage() {
                     setBranchOptions(options);
                     DataCache.set(cacheKey, options);
 
-                    if (!selectedBranch) {
+                    if (!selectedBranch || !options.some((b) => b.id === selectedBranch)) {
                         const main = options.find(b => b.id.toUpperCase() === "MAIN") || options.find(b => b.id.toUpperCase().includes("MAIN"));
                         if (main) setSelectedBranch(main.id);
                     }
@@ -229,6 +257,10 @@ export default function DashboardPage() {
             } catch (err) { console.error("Branch fetch error", err); }
         };
         fetchBranches();
+
+        const onCompanyChange = () => fetchBranches();
+        window.addEventListener("company-changed", onCompanyChange);
+        return () => window.removeEventListener("company-changed", onCompanyChange);
     }, []);
 
     /* ── Fetch Data ───────────────────────────────────────── */
@@ -236,7 +268,7 @@ export default function DashboardPage() {
         if (!isBackground) setLoading(true);
         try {
             const dataParams = new URLSearchParams({ page: String(page), pageSize: String(ROWS_PER_PAGE), search: debouncedSearch, branch: selectedBranch, count: "true", stats: "true", source: "mysql" });
-            const cacheKey = `inventory_${dataParams.toString()}`;
+            const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
 
             const res = await fetchWithAuth(`/api/inventory?${dataParams.toString()}`);
             if (res.ok) {
@@ -265,7 +297,7 @@ export default function DashboardPage() {
 
     useEffect(() => {
         const dataParams = new URLSearchParams({ page: String(page), pageSize: String(ROWS_PER_PAGE), search: debouncedSearch, branch: selectedBranch, count: "true", stats: "true", source: "mysql" });
-        const cacheKey = `inventory_${dataParams.toString()}`;
+        const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
 
         const cached = DataCache.get(cacheKey);
         if (cached) {
@@ -294,6 +326,7 @@ export default function DashboardPage() {
                 <div className="db-page-title">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <h1>Inventory Dashboard</h1>
+                        <span className="db-company-badge">{companyLabel}</span>
                         <span className={`db-data-source ${dataSource === "mysql" ? "db-data-source-live" : "db-data-source-fallback"}`} suppressHydrationWarning>
                             {dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}
                         </span>

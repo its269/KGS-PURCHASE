@@ -1,6 +1,6 @@
 import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
-import { getSessionFromRequest } from "@/lib/session-store";
+import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
 
 export const runtime = "nodejs";
 
@@ -18,15 +18,16 @@ export async function GET(request) {
         const branch = searchParams.get("branch") || "";
         const stats = searchParams.get("stats") === "true";
         const count = searchParams.get("count") === "true";
-        const source = searchParams.get("source") || "mysql"; // Default to mysql for speed
+        const source = searchParams.get("source") || "mysql";
         const filter = searchParams.get("filter") || "";
+        const companyId = getActiveCompanyFromRequest(request) || "main";
 
         let result;
 
         if (source === "mysql") {
-            console.log("[BFF] Fetching from MySQL...");
+            console.log(`[BFF] Fetching from MySQL (company: ${companyId})...`);
             try {
-                const inventory = await MySqlService.getInventory({ page, pageSize, search, branch, filter });
+                const inventory = await MySqlService.getInventory({ page, pageSize, search, branch, filter, companyId });
 
                 // If MySQL is empty for this query, fall back to Acumatica for a live check
                 if (inventory.data.length === 0) {
@@ -36,7 +37,7 @@ export async function GET(request) {
 
                 let globalStats = { totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 };
                 if (stats) {
-                    globalStats = await MySqlService.getGlobalStats(branch, search);
+                    globalStats = await MySqlService.getGlobalStats(branch, search, companyId);
                 }
 
                 // Merge periodic sales summary (qty_sold, total_sales) per inventory item
@@ -55,7 +56,8 @@ export async function GET(request) {
                     ...inventory,
                     data: enriched,
                     globalStats,
-                    source: "mysql"
+                    source: "mysql",
+                    companyId,
                 };
             } catch (mError) {
                 console.error("[MySQL Inventory Error]", mError.message);
