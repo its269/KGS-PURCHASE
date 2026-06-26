@@ -18,6 +18,19 @@ if (Test-Path $repoPath) {
     } else {
         Write-Warning "No .next\BUILD_ID — app may not be built yet."
     }
+
+    Write-Host ""
+    Write-Host "Environment (.env):"
+    if (Test-Path ".env") {
+        try {
+            & .\scripts\check-production-env.ps1
+        } catch {
+            Write-Warning $_.Exception.Message
+        }
+    } else {
+        Write-Host "FAIL .env file missing — login will not work" -ForegroundColor Red
+    }
+
     Pop-Location
 } else {
     Write-Warning "Repo not found at $repoPath"

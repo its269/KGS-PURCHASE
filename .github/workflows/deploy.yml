@@ -21,6 +21,12 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
+      - name: Verify production .env
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\check-production-env.ps1
+
       - name: Stop app and backup current production build
         shell: powershell
         run: |
