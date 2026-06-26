@@ -1,6 +1,15 @@
 import mysql from "mysql2/promise";
 import { mergeDimensionsFillEmpty, hasAnyDimensionValue } from "@/lib/item-dimensions.js";
-import { sqlExcludeEcomBranches, ECOM_BRANCH_ALIASES, isEcomBranchAlias, sqlOnlyEcomBranches, resolveCompanyIdForBranch } from "@/lib/companies.js";
+import {
+    sqlExcludeEcomBranches,
+    ECOM_BRANCH_ALIASES,
+    isEcomBranchAlias,
+    isExcludedBranchAlias,
+    sqlOnlyEcomBranches,
+    sqlExcludeBranches,
+    sqlExcludeSalesBranches,
+    resolveCompanyIdForBranch,
+} from "@/lib/companies.js";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -439,9 +448,17 @@ export const MySqlService = {
         const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
         const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
 
+        if (branch && isExcludedBranchAlias(branch)) {
+            return { data: [], totalCount: 0, hasMore: false };
+        }
+
         try {
             let whereClauses = ["i.default_warehouse IS NOT NULL", "i.company_id = ?"];
             let params = [effectiveCompanyId];
+
+            const branchEx = sqlExcludeBranches("i");
+            whereClauses.push(branchEx.clause);
+            params.push(...branchEx.params);
 
             if (branch) {
                 whereClauses.push("i.branch_id = ?");
@@ -480,6 +497,9 @@ export const MySqlService = {
             const limitInt = parseInt(pageSize, 10);
             const offsetInt = parseInt(offset, 10);
 
+            const salesEx = sqlExcludeSalesBranches("branch_name");
+            const salesParams = [...salesEx.params];
+
             const query = `
                 SELECT 
                     i.inventory_id as InventoryID, 
@@ -495,13 +515,14 @@ export const MySqlService = {
                  LEFT JOIN (
                     SELECT inventory_id, SUM(qty) as total_qty 
                     FROM \`${purchaseDb}\`.product_periodic_sales 
+                    WHERE ${salesEx.clause}
                     GROUP BY inventory_id
                  ) s ON i.inventory_id = s.inventory_id
                  ${wherePart} 
                  ORDER BY i.inventory_id ASC 
                  LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
-            const [rows] = await pool.query(query, params);
+            const [rows] = await pool.query(query, [...salesParams, ...params]);
 
             const [[{ total }]] = await pool.query(
                 `SELECT COUNT(*) as total 
@@ -509,10 +530,11 @@ export const MySqlService = {
                  LEFT JOIN (
                     SELECT inventory_id, SUM(qty) as total_qty 
                     FROM \`${purchaseDb}\`.product_periodic_sales 
+                    WHERE ${salesEx.clause}
                     GROUP BY inventory_id
                  ) s ON i.inventory_id = s.inventory_id
                  ${wherePart}`,
-                params
+                [...salesParams, ...params]
             );
 
             // Transform rows to match the BFF structure (objects with .value)
@@ -546,8 +568,27 @@ export const MySqlService = {
         try {
             const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
             const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
+
+            if (branch && isExcludedBranchAlias(branch)) {
+                return {
+                    totalStock: 0,
+                    totalValue: 0,
+                    lowStock: 0,
+                    totalLowStock: 0,
+                    outOfStock: 0,
+                    deadStock: 0,
+                    overstock: 0,
+                    count: 0,
+                    lastSync: null,
+                };
+            }
+
             let whereClauses = ["i.default_warehouse IS NOT NULL", "i.default_warehouse != '__catalog__'", "i.company_id = ?"];
             let params = [effectiveCompanyId];
+
+            const branchEx = sqlExcludeBranches("i");
+            whereClauses.push(branchEx.clause);
+            params.push(...branchEx.params);
 
             if (branch) {
                 whereClauses.push("i.branch_id = ?");
@@ -571,6 +612,9 @@ export const MySqlService = {
 
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
 
+            const salesEx = sqlExcludeSalesBranches("branch_name");
+            const salesParams = [...salesEx.params];
+
             const query = `
                 SELECT
                     COUNT(DISTINCT i.inventory_id) as totalProducts,
@@ -591,11 +635,12 @@ export const MySqlService = {
                  LEFT JOIN (
                     SELECT inventory_id, SUM(qty) as total_qty 
                     FROM \`${purchaseDb}\`.product_periodic_sales 
+                    WHERE ${salesEx.clause}
                     GROUP BY inventory_id
                  ) s ON i.inventory_id = s.inventory_id
                  ${wherePart}`;
 
-            const [[stats]] = await pool.query(query, params);
+            const [[stats]] = await pool.query(query, [...salesParams, ...params]);
 
             return {
                 totalStock: Number(stats.totalStock) || 0,
@@ -624,9 +669,17 @@ export const MySqlService = {
         const offsetInt = parseInt(offset, 10);
         const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
 
+        if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
+            return { items: [], totalCount: 0, totalStock: 0 };
+        }
+
         try {
             const whereParts = ["i.company_id = ?"];
             const params = [effectiveCompanyId];
+
+            const branchEx = sqlExcludeBranches("i");
+            whereParts.push(branchEx.clause);
+            params.push(...branchEx.params);
 
             if (search) {
                 whereParts.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
@@ -717,6 +770,10 @@ export const MySqlService = {
      * Uses branch_id (site/branch location), not default_warehouse (physical warehouse).
      */
     async getReplenishmentItems({ branch = "MAIN" } = {}) {
+        if (isExcludedBranchAlias(branch)) {
+            return [];
+        }
+
         try {
             const salesMap = await this.getPeriodicSalesSummary({ branch });
 
@@ -796,7 +853,7 @@ export const MySqlService = {
                 onHand: Number(r.onHand) || 0,
                 available: Number(r.available) || 0,
                 updatedAt: r.lastSync
-            })).filter(b => b.branchId && (
+            })).filter(b => b.branchId && !isExcludedBranchAlias(b.branchId) && (
                 companyId === "ecommerce"
                     ? isEcomBranchAlias(b.branchId)
                     : !isEcomBranchAlias(b.branchId)
@@ -832,6 +889,7 @@ export const MySqlService = {
      */
     async getBranches(companyId = "main") {
         try {
+            const branchEx = sqlExcludeBranches("inventory_items");
             let query;
             let params;
 
@@ -841,15 +899,16 @@ export const MySqlService = {
                          WHERE company_id = 'ecommerce'
                            AND branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__'
                            AND ${ecomOnly.clause}
+                           AND ${branchEx.clause}
                          ORDER BY branch_id ASC`;
-                params = [...ecomOnly.params];
+                params = [...ecomOnly.params, ...branchEx.params];
             } else {
-                // Main company branch picker includes ECOMMERCE alongside other branches.
                 query = `SELECT DISTINCT branch_id FROM inventory_items
                          WHERE company_id IN ('main', 'ecommerce')
                            AND branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__'
+                           AND ${branchEx.clause}
                          ORDER BY branch_id ASC`;
-                params = [];
+                params = [...branchEx.params];
             }
 
             const [rows] = await pool.execute(query, params);
@@ -1429,6 +1488,10 @@ export const MySqlService = {
             console.log(`[MySQL getSalesAnalysis] Params: branch="${branch}", periodsCount=${periods.length}`);
             if (periods.length === 0) return { data: [], metrics: {} };
 
+            if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
+                return { data: [], metrics: { totalRevenue: 0, totalQtySold: 0, uniqueProducts: 0 } };
+            }
+
             // periods = [{ start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', key: 'P1' }, ...]
             const allDates = periods.flatMap(p => [p.start, p.end]);
             const overallStart = allDates.reduce((a, b) => a < b ? a : b);
@@ -1436,6 +1499,10 @@ export const MySqlService = {
 
             const whereClauses = ["s.document_date >= ?", "s.document_date <= ?"];
             const params = [overallStart, overallEnd];
+
+            const salesEx = sqlExcludeSalesBranches("branch_name", "s");
+            whereClauses.push(salesEx.clause);
+            params.push(...salesEx.params);
 
             if (branch && branch !== "All Branches") {
                 whereClauses.push("TRIM(UPPER(s.branch_name)) = TRIM(UPPER(?))");
@@ -1515,8 +1582,16 @@ export const MySqlService = {
      */
     async getPeriodicSalesSummary({ branch = "", search = "" } = {}) {
         try {
+            if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
+                return new Map();
+            }
+
             const whereClauses = [];
             const params = [];
+
+            const salesEx = sqlExcludeSalesBranches("branch_name");
+            whereClauses.push(salesEx.clause);
+            params.push(...salesEx.params);
 
             if (branch && branch !== "All Branches") {
                 // Dashboard passes Branch ID (e.g. MAIN)

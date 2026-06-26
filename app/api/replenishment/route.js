@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/session-store";
+import { isExcludedBranchAlias } from "@/lib/companies";
 import { MySqlService } from "@/services/mysql";
 import {
     buildReplenishmentInsight,
@@ -101,6 +102,14 @@ export async function GET(request) {
 
     const { searchParams } = new URL(request.url);
     const branch = searchParams.get("branch") || "MAIN";
+
+    if (isExcludedBranchAlias(branch)) {
+        return NextResponse.json({
+            recommendations: [],
+            brief: { headline: "Branch not available", detail: "This location is excluded from replenishment planning." },
+            meta: { branch, targetDaysOfCover: TARGET_DAYS_OF_COVER, excluded: true },
+        });
+    }
 
     try {
         const items = await MySqlService.getReplenishmentItems({ branch });

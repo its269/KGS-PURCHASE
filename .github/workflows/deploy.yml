@@ -9,7 +9,8 @@ on:
 jobs:
   deploy:
     name: Build & Deploy
-    runs-on: self-hosted
+    # Requires kgs-purchase-runner on this server — see scripts/register-self-hosted-runner.ps1
+    runs-on: [self-hosted, windows]
     timeout-minutes: 90
 
     steps:

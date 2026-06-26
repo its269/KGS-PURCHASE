@@ -1,7 +1,7 @@
 import { MySqlService } from "@/services/mysql";
 import { AcumaticaService, extractWarehouseLevels } from "@/services/acumatica";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
-import { isEcomBranchAlias } from "@/lib/companies";
+import { isEcomBranchAlias, isExcludedBranchAlias } from "@/lib/companies";
 import { NextResponse } from "next/server";
 const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
@@ -40,9 +40,10 @@ export async function GET(request, { params }) {
         if (mysqlDetail) {
             if (mysqlDetail.branches) {
                 mysqlDetail.branches = mysqlDetail.branches.filter((b) =>
-                    companyId === "ecommerce"
+                    !isExcludedBranchAlias(b.branchId) &&
+                    (companyId === "ecommerce"
                         ? isEcomBranchAlias(b.branchId)
-                        : !isEcomBranchAlias(b.branchId)
+                        : !isEcomBranchAlias(b.branchId))
                 );
                 mysqlDetail.totalOnHand = mysqlDetail.branches.reduce((s, b) => s + b.onHand, 0);
                 mysqlDetail.totalAvailable = mysqlDetail.branches.reduce((s, b) => s + b.available, 0);
@@ -107,6 +108,7 @@ export async function GET(request, { params }) {
         });
 
         const branches = levels
+            .filter((l) => !isExcludedBranchAlias(l.branch_id))
             .filter((l) => !isEcomBranchAlias(l.branch_id) || companyId === "ecommerce")
             .map((l) => ({
             branchId: l.branch_id,

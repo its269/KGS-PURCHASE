@@ -2,6 +2,7 @@ import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
+import { filterBranchList } from "@/lib/companies";
 
 export async function GET(request) {
     try {
@@ -13,7 +14,7 @@ export async function GET(request) {
             try {
                 const branches = await MySqlService.getBranches(companyId);
                 if (branches.length > 0) {
-                    return NextResponse.json(branches);
+                    return NextResponse.json(filterBranchList(branches));
                 }
                 console.log("[Branches API] MySQL returned 0 branches, falling back to Acumatica...");
             } catch (mError) {
@@ -32,7 +33,7 @@ export async function GET(request) {
         }
 
         const branches = await AcumaticaService.getBranches(cookie);
-        return NextResponse.json(branches);
+        return NextResponse.json(filterBranchList(branches));
     } catch (err) {
         console.error("[BFF Branches Error]", err);
         if (err.message === "Unauthorized") return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
