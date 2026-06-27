@@ -1,4 +1,9 @@
 import { MySqlService } from "@/services/mysql";
+import { SALES_LOOKBACK_DAYS } from "@/lib/sales-velocity";
+import {
+    aggregateBranchSales,
+    invoicesToPeriodicSalesRows,
+} from "@/lib/acumatica-sales-aggregate";
 const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
 // Bypasses 'CERT_HAS_EXPIRED' error for Acumatica connections
@@ -72,6 +77,8 @@ export function extractWarehouseLevels(item, catalogFields = {}) {
             on_hand: onHandVal,
             available: Number.isNaN(available) ? onHandVal : available,
             ...catalogFields,
+            item_type: catalogFields.item_type || getF(item, "ItemType") || "",
+            posting_class: catalogFields.posting_class || getF(item, "PostingClass") || "",
         });
     }
     return levels;
@@ -326,7 +333,79 @@ export const AcumaticaService = {
         return {
             data: flattened,
             totalCount: totalCount,
-            hasMore: items.length === pageSize
+            hasMore: items.length === pageSize,
+            globalStats: includeStats
+                ? await this.computeInventoryStats({ cookie, branch, search })
+                : undefined,
+        };
+    },
+
+    /**
+     * Aggregate on-hand totals from Acumatica when MySQL warehouse rows are missing.
+     */
+    async computeInventoryStats({ cookie, branch = "", search = "" }) {
+        const searchUpper = search.trim().toUpperCase();
+        let skip = 0;
+        const pageSize = 100;
+        let totalStock = 0;
+        let totalValue = 0;
+        let lowStock = 0;
+        let totalLowStock = 0;
+        let outOfStock = 0;
+        const productIds = new Set();
+
+        while (true) {
+            let filterArr = [];
+            if (search) {
+                const s = search.replace(/'/g, "''");
+                filterArr.push(`substringof('${s}', InventoryID)`);
+            }
+            let queryParams = [`$expand=WarehouseDetails`, `$top=${pageSize}`, `$skip=${skip}`];
+            if (filterArr.length > 0) {
+                queryParams.push(`$filter=${encodeURIComponent(filterArr.join(" and "))}`);
+            }
+            const url = `${ACU_BASE}/StockItem?${queryParams.join("&")}`;
+            const res = await this.fetchWithRetry(url, cookie);
+            const items = (await res.json()).value || [];
+            if (!items.length) break;
+
+            for (const item of items) {
+                const invId = String(getF(item, "InventoryID")).trim();
+                if (!invId) continue;
+                if (searchUpper && !invId.toUpperCase().includes(searchUpper) &&
+                    !String(getF(item, "Description")).toUpperCase().includes(searchUpper)) {
+                    continue;
+                }
+                const price = parseFloat(getF(item, "DefaultPrice") || 0);
+                const levels = extractWarehouseLevels(item, {});
+                for (const l of levels) {
+                    if (branch && l.branch_id.toUpperCase() !== branch.toUpperCase()) continue;
+                    productIds.add(invId);
+                    const oh = Number(l.on_hand) || 0;
+                    totalStock += oh;
+                    totalValue += oh * price;
+                    if (oh <= 0) outOfStock += 1;
+                    else if (oh < 10) {
+                        lowStock += 1;
+                        totalLowStock += oh;
+                    }
+                }
+            }
+
+            if (items.length < pageSize) break;
+            skip += pageSize;
+        }
+
+        return {
+            totalStock,
+            totalValue,
+            lowStock,
+            totalLowStock,
+            outOfStock,
+            deadStock: 0,
+            overstock: 0,
+            count: productIds.size,
+            lastSync: new Date().toISOString(),
         };
     },
 
@@ -342,6 +421,111 @@ export const AcumaticaService = {
         const res = await this.fetchWithRetry(url, cookie);
         const data = await res.json();
         return data.value || [];
+    },
+
+    /**
+     * Paginate an Acumatica sales document entity for a date range.
+     */
+    async fetchSalesDocuments({ cookie, entity, startDate, endDate, extraFilter = "" }) {
+        const filterParts = [
+            `Date ge datetimeoffset'${startDate}T00:00:00Z'`,
+            `Date le datetimeoffset'${endDate}T23:59:59Z'`,
+        ];
+        if (extraFilter) filterParts.push(extraFilter);
+
+        const encoded = encodeURIComponent(filterParts.join(" and "));
+        const pageSize = 100;
+        const all = [];
+        let skip = 0;
+
+        while (true) {
+            const url = `${ACU_BASE}/${entity}?$expand=Details&$top=${pageSize}&$skip=${skip}&$filter=${encoded}&$orderby=Date desc`;
+            const res = await this.fetchWithRetry(url, cookie);
+            const data = await res.json();
+            const batch = data.value || (Array.isArray(data) ? data : []);
+            all.push(...batch);
+            if (batch.length < pageSize) break;
+            skip += pageSize;
+        }
+        return all;
+    },
+
+    /**
+     * Net 90-day sales by inventory ID for one branch — matches Acumatica Sales Invoice lines.
+     */
+    async fetchBranchSalesSummary({ cookie, branch, lookbackDays = SALES_LOOKBACK_DAYS }) {
+        const end = new Date();
+        const start = new Date(end);
+        start.setDate(end.getDate() - (Number(lookbackDays) || SALES_LOOKBACK_DAYS) + 1);
+        const startDate = toISODate(start);
+        const endDate = toISODate(end);
+
+        const [salesInvoices, creditMemos, debitMemos] = await Promise.all([
+            this.fetchSalesDocuments({ cookie, entity: "SalesInvoice", startDate, endDate }),
+            this.fetchSalesDocuments({
+                cookie,
+                entity: "Invoice",
+                startDate,
+                endDate,
+                extraFilter: "Type eq 'Credit Memo'",
+            }),
+            this.fetchSalesDocuments({
+                cookie,
+                entity: "Invoice",
+                startDate,
+                endDate,
+                extraFilter: "Type eq 'Debit Memo'",
+            }),
+        ]);
+
+        return aggregateBranchSales([...salesInvoices, ...creditMemos, ...debitMemos], {
+            branch,
+            startDate,
+            endDate,
+        });
+    },
+
+    /**
+     * Pull sales documents from Acumatica for MySQL sync (SalesInvoice + AR memos).
+     */
+    async fetchPeriodicSalesForSync({ cookie, startDate, endDate, lastModifiedAfter = null }) {
+        let dateFilter = `Date ge datetimeoffset'${startDate}T00:00:00Z' and Date le datetimeoffset'${endDate}T23:59:59Z'`;
+        if (lastModifiedAfter) {
+            dateFilter = `LastModifiedDateTime gt datetimeoffset'${lastModifiedAfter}'`;
+        }
+
+        const fetchEntity = async (entity, extraFilter) => {
+            const filterParts = [dateFilter];
+            if (extraFilter) filterParts.push(extraFilter);
+
+            const encoded = encodeURIComponent(filterParts.join(" and "));
+            const pageSize = 50;
+            const all = [];
+            let skip = 0;
+            while (true) {
+                const url = `${ACU_BASE}/${entity}?$expand=Details&$top=${pageSize}&$skip=${skip}&$filter=${encoded}&$orderby=${encodeURIComponent("Date desc")}`;
+                const res = await this.fetchWithRetry(url, cookie);
+                const data = await res.json();
+                const batch = data.value || [];
+                all.push(...batch);
+                if (batch.length < pageSize) break;
+                skip += pageSize;
+            }
+            return all;
+        };
+
+        const [salesInvoices, creditMemos, debitMemos] = await Promise.all([
+            fetchEntity("SalesInvoice"),
+            fetchEntity("Invoice", "Type eq 'Credit Memo'"),
+            fetchEntity("Invoice", "Type eq 'Debit Memo'"),
+        ]);
+
+        const rows = [
+            ...invoicesToPeriodicSalesRows(salesInvoices, { idPrefix: "SI", defaultOrderType: "Invoice" }),
+            ...invoicesToPeriodicSalesRows(creditMemos, { idPrefix: "CM", defaultOrderType: "Credit Memo" }),
+            ...invoicesToPeriodicSalesRows(debitMemos, { idPrefix: "DM", defaultOrderType: "Debit Memo" }),
+        ];
+        return rows;
     },
 
     /** ── VENDORS ── */

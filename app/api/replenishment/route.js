@@ -8,6 +8,7 @@ import {
     TARGET_DAYS_OF_COVER,
     SAFETY_BUFFER_DAYS,
 } from "@/lib/replenishment-insights";
+import { SALES_LOOKBACK_DAYS, averageDailySales } from "@/lib/sales-velocity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,7 +17,7 @@ function buildRecommendation(item, branch, vendorMap, leadTimeMap, recId) {
     const itemId = (item.inventoryId || "").toUpperCase().trim();
     const currentStock = Number(item.totalOnHand) || 0;
     const qtySold90 = Number(item.totalQtySold) || 0;
-    const ads = qtySold90 / 90;
+    const ads = averageDailySales(qtySold90, SALES_LOOKBACK_DAYS);
     const vendorId = vendorMap.get(itemId) || null;
     const leadTime = vendorId ? (leadTimeMap[vendorId]?.days || 0) : 0;
 
@@ -43,6 +44,7 @@ function buildRecommendation(item, branch, vendorMap, leadTimeMap, recId) {
             hasSalesHistory: true,
             qtySold90,
             targetStock,
+            salesScope: item.salesScope,
         });
 
         return {
@@ -52,34 +54,6 @@ function buildRecommendation(item, branch, vendorMap, leadTimeMap, recId) {
             currentStock,
             suggestedQty: suggestedQty || Math.ceil(ads * 14),
             priorityLevel: priority,
-            branchId: branch,
-            restockSource: aiInsights.restockSource,
-            generatedDate: new Date().toISOString(),
-            aiInsights,
-            stockSource: item.stockSource || "mysql",
-        };
-    }
-
-    if (currentStock < 5 && item.itemStatus === "Active") {
-        const aiInsights = buildReplenishmentInsight({
-            itemId: item.inventoryId,
-            description: item.description,
-            currentStock,
-            suggestedQty: 10,
-            priorityLevel: "Low",
-            branchId: branch,
-            hasSalesHistory: false,
-            qtySold90: 0,
-            targetStock: 0,
-        });
-
-        return {
-            recommendationId: `REC-${recId}`,
-            itemId: item.inventoryId,
-            description: item.description,
-            currentStock,
-            suggestedQty: 10,
-            priorityLevel: "Low",
             branchId: branch,
             restockSource: aiInsights.restockSource,
             generatedDate: new Date().toISOString(),
@@ -113,6 +87,8 @@ export async function GET(request) {
 
     try {
         const items = await MySqlService.getReplenishmentItems({ branch });
+        const salesSource = "mysql";
+
         const vendorMap = await MySqlService.getItemVendorMap();
         const leadTimeMap = await MySqlService.getVendorLeadTimes();
 
@@ -134,6 +110,8 @@ export async function GET(request) {
 
         const brief = buildBranchBrief(sorted, branch);
 
+        const isMainWarehouse = String(branch).trim().toUpperCase() === "MAIN";
+
         return NextResponse.json({
             recommendations: sorted,
             brief,
@@ -143,6 +121,9 @@ export async function GET(request) {
                 itemCount: sorted.length,
                 targetDaysOfCover: TARGET_DAYS_OF_COVER,
                 stockSource: "mysql",
+                salesSource,
+                salesScope: isMainWarehouse ? "network" : "branch",
+                salesLookbackDays: SALES_LOOKBACK_DAYS,
             },
         });
     } catch (err) {

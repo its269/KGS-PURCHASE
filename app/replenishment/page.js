@@ -420,16 +420,16 @@ export default function ReplenishmentPage() {
                                             <strong>{selectedBranch}</strong> — not today&apos;s sales alone.
                                         </p>
                                         <p className="repl-col-info-formula">
-                                            Sells / day = Units sold in the last 90 days at {selectedBranch} ÷ 90
+                                            Sells / day = Net units sold in the last 90 days at {selectedBranch} ÷ 90
                                         </p>
                                         <p><strong>Example</strong></p>
                                         <ul>
-                                            <li>6,381 units sold in 90 days at {selectedBranch}</li>
+                                            <li>6,381 net units sold in 90 days at {selectedBranch} (invoices minus returns)</li>
                                             <li>6,381 ÷ 90 = <strong>70.9 units per day</strong></li>
                                         </ul>
                                         <p>
-                                            Sales totals come from synced Acumatica invoice data (same source as{" "}
-                                            <strong>Last 3 Months Sales</strong>). Only sales recorded for the selected branch are counted.
+                                            Sales totals are fetched <strong>live from Acumatica</strong> (Sales Invoices for the last 90 days at {selectedBranch}; credit memos are subtracted).
+                                            Stock on hand comes from synced inventory.
                                         </p>
                                         <p className="repl-col-info-note">
                                             <strong>Days left</strong> uses this rate: Branch stock ÷ Sells / day (e.g. 462 ÷ 70.9 ≈ 6 days).
@@ -477,6 +477,9 @@ export default function ReplenishmentPage() {
                 {meta?.generatedAt && (
                     <p className="repl-footer">
                         Updated {new Date(meta.generatedAt).toLocaleString("en-PH")}
+                        {meta.salesSource === "acumatica" && " · Sales from Acumatica (live)"}
+                        {meta.salesSource === "mysql" && " · Sales from database cache"}
+                        {meta.salesScope === "network" && " · Velocity from all branches"}
                     </p>
                 )}
             </main>

@@ -10,6 +10,7 @@ import {
     sqlExcludeSalesBranches,
     resolveCompanyIdForBranch,
 } from "@/lib/companies.js";
+import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, netQtySold } from "@/lib/sales-velocity.js";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -38,6 +39,30 @@ const purchasePool = mysql.createPool({
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
 });
+
+async function countWarehouseRows(companyId = "main") {
+    const [[row]] = await pool.query(
+        `SELECT COUNT(*) AS c FROM inventory_items
+         WHERE company_id = ? AND default_warehouse != '__catalog__'`,
+        [companyId]
+    );
+    return Number(row?.c) || 0;
+}
+
+function salesLookbackSql(days = SALES_LOOKBACK_DAYS) {
+    const window = parseInt(days, 10) || SALES_LOOKBACK_DAYS;
+    return `document_date >= DATE_SUB(CURDATE(), INTERVAL ${window} DAY) AND document_date <= CURDATE()`;
+}
+
+function netSalesQtySubquery(purchaseDb, salesEx) {
+    return `(
+        SELECT inventory_id, SUM(${SQL_NET_QTY}) as total_qty
+        FROM \`${purchaseDb}\`.product_periodic_sales
+        WHERE ${salesEx.clause}
+          AND ${salesLookbackSql()}
+        GROUP BY inventory_id
+    )`;
+}
 
 export const MySqlService = {
     /**
@@ -512,12 +537,7 @@ export const MySqlService = {
                     i.default_price as DefaultPrice,
                     COALESCE(s.total_qty, 0) as QtySold
                  FROM inventory_items i
-                 LEFT JOIN (
-                    SELECT inventory_id, SUM(qty) as total_qty 
-                    FROM \`${purchaseDb}\`.product_periodic_sales 
-                    WHERE ${salesEx.clause}
-                    GROUP BY inventory_id
-                 ) s ON i.inventory_id = s.inventory_id
+                 LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx)} s ON i.inventory_id = s.inventory_id
                  ${wherePart} 
                  ORDER BY i.inventory_id ASC 
                  LIMIT ${limitInt} OFFSET ${offsetInt}`;
@@ -527,12 +547,7 @@ export const MySqlService = {
             const [[{ total }]] = await pool.query(
                 `SELECT COUNT(*) as total 
                  FROM inventory_items i 
-                 LEFT JOIN (
-                    SELECT inventory_id, SUM(qty) as total_qty 
-                    FROM \`${purchaseDb}\`.product_periodic_sales 
-                    WHERE ${salesEx.clause}
-                    GROUP BY inventory_id
-                 ) s ON i.inventory_id = s.inventory_id
+                 LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx)} s ON i.inventory_id = s.inventory_id
                  ${wherePart}`,
                 [...salesParams, ...params]
             );
@@ -550,6 +565,21 @@ export const MySqlService = {
                 QtySold: { value: item.QtySold }
             }));
 
+            if (total === 0 && !branch && !filter) {
+                const warehouseRows = await countWarehouseRows(effectiveCompanyId);
+                if (warehouseRows === 0) {
+                    const catalog = await this.getInventoryFromCatalog({
+                        page,
+                        pageSize,
+                        search,
+                        companyId: effectiveCompanyId,
+                        offset,
+                        purchaseDb,
+                    });
+                    if (catalog.totalCount > 0) return catalog;
+                }
+            }
+
             return {
                 data: transformed,
                 totalCount: total,
@@ -559,6 +589,68 @@ export const MySqlService = {
             console.error("[MySQL getInventory Error]", err);
             throw err;
         }
+    },
+
+    /**
+     * List products from catalog rows when warehouse levels have not been synced yet.
+     */
+    async getInventoryFromCatalog({ page, pageSize, search, companyId, offset, purchaseDb }) {
+        const limitInt = parseInt(pageSize, 10);
+        const offsetInt = parseInt(offset, 10);
+        const whereParts = ["i.company_id = ?", "i.default_warehouse = '__catalog__'"];
+        const params = [companyId];
+
+        if (search) {
+            whereParts.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
+            params.push(`%${search}%`, `%${search}%`);
+        }
+
+        const wherePart = `WHERE ${whereParts.join(" AND ")}`;
+        const salesEx = sqlExcludeSalesBranches("branch_name");
+        const salesParams = [...salesEx.params];
+        const db = purchaseDb || process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+
+        const query = `
+            SELECT
+                i.inventory_id as InventoryID,
+                i.inventory_name as Description,
+                i.item_class as ItemClass,
+                '' as Branch,
+                '' as SiteID,
+                0 as OnHand,
+                0 as Available,
+                i.default_price as DefaultPrice,
+                COALESCE(s.total_qty, 0) as QtySold
+             FROM inventory_items i
+             LEFT JOIN ${netSalesQtySubquery(db, salesEx)} s ON i.inventory_id = s.inventory_id
+             ${wherePart}
+             ORDER BY i.inventory_id ASC
+             LIMIT ${limitInt} OFFSET ${offsetInt}`;
+
+        const [rows] = await pool.query(query, [...salesParams, ...params]);
+        const [[{ total }]] = await pool.query(
+            `SELECT COUNT(*) as total FROM inventory_items i ${wherePart}`,
+            params
+        );
+
+        const transformed = rows.map((item) => ({
+            InventoryID: { value: item.InventoryID },
+            Description: { value: item.Description || "—" },
+            SiteID: { value: item.SiteID },
+            Branch: { value: item.Branch },
+            OnHand: { value: item.OnHand },
+            Available: { value: item.Available },
+            DefaultPrice: { value: item.DefaultPrice || 0 },
+            ItemClass: { value: item.ItemClass || "" },
+            QtySold: { value: item.QtySold },
+        }));
+
+        return {
+            data: transformed,
+            totalCount: total,
+            hasMore: total > offsetInt + pageSize,
+            dataMode: "catalog",
+        };
     },
 
     /**
@@ -632,15 +724,23 @@ export const MySqlService = {
                     
                     MAX(i.last_sync) as lastSync
                  FROM inventory_items i
-                 LEFT JOIN (
-                    SELECT inventory_id, SUM(qty) as total_qty 
-                    FROM \`${purchaseDb}\`.product_periodic_sales 
-                    WHERE ${salesEx.clause}
-                    GROUP BY inventory_id
-                 ) s ON i.inventory_id = s.inventory_id
+                 LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx)} s ON i.inventory_id = s.inventory_id
                  ${wherePart}`;
 
             const [[stats]] = await pool.query(query, [...salesParams, ...params]);
+
+            let totalProducts = Number(stats.totalProducts) || 0;
+            if (totalProducts === 0 && !branch) {
+                const warehouseRows = await countWarehouseRows(effectiveCompanyId);
+                if (warehouseRows === 0) {
+                    const [[cat]] = await pool.query(
+                        `SELECT COUNT(*) AS totalProducts FROM inventory_items
+                         WHERE company_id = ? AND default_warehouse = '__catalog__'`,
+                        [effectiveCompanyId]
+                    );
+                    totalProducts = Number(cat.totalProducts) || 0;
+                }
+            }
 
             return {
                 totalStock: Number(stats.totalStock) || 0,
@@ -650,8 +750,9 @@ export const MySqlService = {
                 outOfStock: Number(stats.outOfStockCount) || 0,
                 deadStock: Number(stats.deadStockCount) || 0,
                 overstock: Number(stats.overstockCount) || 0,
-                count: Number(stats.totalProducts) || 0,
-                lastSync: stats.lastSync
+                count: totalProducts,
+                lastSync: stats.lastSync || await this.getLastInventorySyncTime(),
+                dataMode: totalProducts > 0 && Number(stats.totalStock) === 0 ? "catalog" : "warehouse",
             };
         } catch (err) {
             console.error("[MySQL getGlobalStats Error]", err);
@@ -754,6 +855,20 @@ export const MySqlService = {
                 hasDimensions: dimSet.has((r.inventoryId || "").toUpperCase().trim()),
             }));
 
+            if (total === 0 && !branch) {
+                const warehouseRows = await countWarehouseRows(effectiveCompanyId);
+                if (warehouseRows === 0) {
+                    const catalog = await this.getStockItemsFromCatalog({
+                        page,
+                        pageSize,
+                        search,
+                        companyId: effectiveCompanyId,
+                        offset,
+                    });
+                    if (catalog.totalCount > 0) return catalog;
+                }
+            }
+
             return {
                 items: withDims,
                 totalCount: total,
@@ -766,6 +881,68 @@ export const MySqlService = {
     },
 
     /**
+     * Stock items masterlist from catalog when warehouse levels are not synced yet.
+     */
+    async getStockItemsFromCatalog({ page, pageSize, search, companyId, offset }) {
+        const limitInt = parseInt(pageSize, 10);
+        const offsetInt = parseInt(offset, 10);
+        const whereParts = ["i.company_id = ?", "i.default_warehouse = '__catalog__'"];
+        const params = [companyId];
+
+        if (search) {
+            whereParts.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
+            params.push(`%${search}%`, `%${search}%`);
+        }
+
+        const whereClause = `WHERE ${whereParts.join(" AND ")}`;
+        const query = `
+            SELECT
+                TRIM(i.inventory_id) as inventoryId,
+                i.inventory_name as description,
+                i.item_class as itemClass,
+                i.item_status as itemStatus,
+                i.base_unit as baseUnit,
+                i.default_price as price,
+                0 as totalOnHand,
+                '' as branches
+             FROM inventory_items i
+             ${whereClause}
+             ORDER BY i.inventory_id ASC
+             LIMIT ${limitInt} OFFSET ${offsetInt}`;
+
+        const [rows] = await pool.query(query, params);
+        const [[{ total }]] = await pool.query(
+            `SELECT COUNT(*) AS total FROM inventory_items i ${whereClause}`,
+            params
+        );
+
+        const salesMap = await this.getPeriodicSalesSummary({ search });
+        const enriched = rows.map((r) => {
+            const key = (r.inventoryId || "").toUpperCase().trim();
+            const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
+            return {
+                ...r,
+                totalOnHand: 0,
+                totalQtySold: sales.qty_sold,
+                totalSales: sales.total_sales,
+            };
+        });
+
+        const dimSet = await this.getDimensionIdSet(enriched.map((r) => r.inventoryId));
+        const withDims = enriched.map((r) => ({
+            ...r,
+            hasDimensions: dimSet.has((r.inventoryId || "").toUpperCase().trim()),
+        }));
+
+        return {
+            items: withDims,
+            totalCount: total,
+            totalStock: 0,
+            dataMode: "catalog",
+        };
+    },
+
+    /**
      * Branch-accurate stock + sales for replenishment analysis.
      * Uses branch_id (site/branch location), not default_warehouse (physical warehouse).
      */
@@ -775,10 +952,14 @@ export const MySqlService = {
         }
 
         try {
-            const salesMap = await this.getPeriodicSalesSummary({ branch });
+            // MAIN is the central warehouse — almost no direct branch sales; use network demand.
+            const isMainWarehouse = String(branch).trim().toUpperCase() === "MAIN";
+            const salesMap = await this.getPeriodicSalesSummary({
+                branch: isMainWarehouse ? "" : branch,
+            });
 
             const [rows] = await pool.query(
-                `SELECT 
+                `SELECT
                     TRIM(i.inventory_id) as inventoryId,
                     MAX(i.inventory_name) as description,
                     MAX(i.item_status) as itemStatus,
@@ -790,6 +971,7 @@ export const MySqlService = {
                    AND i.branch_id IS NOT NULL
                    AND TRIM(i.branch_id) != ''
                    AND UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))
+                   AND (i.item_status IS NULL OR UPPER(TRIM(i.item_status)) = 'ACTIVE')
                  GROUP BY TRIM(i.inventory_id)
                  ORDER BY TRIM(i.inventory_id) ASC`,
                 [branch]
@@ -804,6 +986,7 @@ export const MySqlService = {
                     totalAvailable: Number(r.totalAvailable) || 0,
                     totalQtySold: sales.qty_sold,
                     totalSales: sales.total_sales,
+                    salesScope: isMainWarehouse ? "network" : "branch",
                 };
             });
         } catch (err) {
@@ -1121,7 +1304,28 @@ export const MySqlService = {
         }
     },
 
-    /** Remove all synced stock-level rows (keeps catalog rows). */
+    /** Remove stock rows not refreshed during the current sync run. */
+    async deleteStaleInventoryLevels(syncStartedAt, companyId = "main") {
+        try {
+            const [result] = await pool.query(
+                `DELETE FROM inventory_items
+                 WHERE company_id = ?
+                   AND default_warehouse != '__catalog__'
+                   AND (last_sync IS NULL OR last_sync < ?)`,
+                [companyId, syncStartedAt]
+            );
+            return result.affectedRows || 0;
+        } catch (err) {
+            console.error("[MySQL deleteStaleInventoryLevels Error]", err);
+            throw err;
+        }
+    },
+
+    async countWarehouseRows(companyId = "main") {
+        return countWarehouseRows(companyId);
+    },
+
+    /** Remove all synced stock-level rows (keeps catalog rows). Used only for manual repair. */
     async purgeInventoryLevels(companyId = null) {
         try {
             const sql = companyId
@@ -1512,8 +1716,8 @@ export const MySqlService = {
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
 
             const periodCases = periods.map(p => 
-                `SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN s.qty ELSE 0 END) as qty_${p.key},
-                 SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN s.total_amount ELSE 0 END) as sales_${p.key}`
+                `SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN (${SQL_NET_QTY}) ELSE 0 END) as qty_${p.key},
+                 SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN (${SQL_NET_AMOUNT}) ELSE 0 END) as sales_${p.key}`
             ).join(",\n                    ");
 
             const query = `SELECT 
@@ -1549,8 +1753,8 @@ export const MySqlService = {
                 };
 
                 periods.forEach(p => {
-                    const q = Number(r[`qty_${p.key}`]) || 0;
-                    const s = Number(r[`sales_${p.key}`]) || 0;
+                    const q = netQtySold(r[`qty_${p.key}`]);
+                    const s = Math.max(0, Number(r[`sales_${p.key}`]) || 0);
                     item.monthlyData[p.key] = { qty: q, sales: s };
                     item.totalQty += q;
                     item.totalSales += s;
@@ -1580,13 +1784,13 @@ export const MySqlService = {
      * Returns Map<inventory_id_upper, { qty_sold, total_sales }>
      * Required by Dashboard Inventory API.
      */
-    async getPeriodicSalesSummary({ branch = "", search = "" } = {}) {
+    async getPeriodicSalesSummary({ branch = "", search = "", lookbackDays = SALES_LOOKBACK_DAYS } = {}) {
         try {
             if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
                 return new Map();
             }
 
-            const whereClauses = [];
+            const whereClauses = [salesLookbackSql(lookbackDays)];
             const params = [];
 
             const salesEx = sqlExcludeSalesBranches("branch_name");
@@ -1603,13 +1807,13 @@ export const MySqlService = {
                 params.push(`%${search}%`, `%${search}%`);
             }
 
-            const wherePart = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
+            const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
 
             const [rows] = await purchasePool.query(
                 `SELECT
                     UPPER(TRIM(inventory_id)) AS inventory_id,
-                    SUM(qty)          AS qty_sold,
-                    SUM(total_amount) AS total_sales
+                    SUM(${SQL_NET_QTY})          AS qty_sold,
+                    SUM(${SQL_NET_AMOUNT}) AS total_sales
                  FROM product_periodic_sales
                  ${wherePart}
                  GROUP BY UPPER(TRIM(inventory_id))`,
@@ -1620,8 +1824,8 @@ export const MySqlService = {
             for (const r of rows) {
                 if (r.inventory_id) {
                     map.set(r.inventory_id, {
-                        qty_sold: Number(r.qty_sold) || 0,
-                        total_sales: Number(r.total_sales) || 0,
+                        qty_sold: netQtySold(r.qty_sold),
+                        total_sales: Math.max(0, Number(r.total_sales) || 0),
                     });
                 }
             }

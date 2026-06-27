@@ -28,11 +28,54 @@ export async function GET(request) {
             console.log(`[BFF] Fetching from MySQL (company: ${companyId})...`);
             try {
                 const inventory = await MySqlService.getInventory({ page, pageSize, search, branch, filter, companyId });
+                const warehouseRows = await MySqlService.countWarehouseRows(companyId);
+                const isCatalogOnly = inventory.dataMode === "catalog" || warehouseRows === 0;
 
-                // If MySQL is empty for this query, fall back to Acumatica for a live check
                 if (inventory.data.length === 0) {
                     console.log("[BFF] MySQL returned 0 items for this query, falling back to Acumatica...");
                     throw new Error("EMPTY_MYSQL");
+                }
+
+                const cookie = getSessionFromRequest(request);
+
+                if (isCatalogOnly && cookie && cookie !== "__bypass__") {
+                    console.log(`[BFF] MySQL has catalog only (${warehouseRows} warehouse rows) — loading live stock from Acumatica`);
+                    const live = await AcumaticaService.getStockItems({
+                        page,
+                        pageSize,
+                        search,
+                        branch,
+                        cookie,
+                        includeStats: stats,
+                    });
+                    const salesMap = await MySqlService.getPeriodicSalesSummary({ branch, search });
+                    const enriched = live.data.map((item) => {
+                        const key = (item.InventoryID?.value || "").toUpperCase().trim();
+                        const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
+                        return {
+                            ...item,
+                            QtySold: { value: sales.qty_sold },
+                            TotalSales: { value: sales.total_sales },
+                        };
+                    });
+                    return Response.json({
+                        ...live,
+                        data: enriched,
+                        globalStats: live.globalStats || {
+                            totalStock: 0,
+                            totalValue: 0,
+                            lowStock: 0,
+                            totalLowStock: 0,
+                            outOfStock: 0,
+                            deadStock: 0,
+                            overstock: 0,
+                            lastSync: await MySqlService.getLastInventorySyncTime(),
+                        },
+                        source: "acumatica-live",
+                        companyId,
+                        page,
+                        pageSize,
+                    });
                 }
 
                 let globalStats = { totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 };
@@ -56,7 +99,7 @@ export async function GET(request) {
                     ...inventory,
                     data: enriched,
                     globalStats,
-                    source: "mysql",
+                    source: inventory.dataMode === "catalog" ? "mysql-catalog" : "mysql",
                     companyId,
                 };
             } catch (mError) {

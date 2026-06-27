@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { authenticateAllCompanies } from "@/lib/company-auth";
-import { setBypassSession } from "@/lib/session-store";
+import { setBypassSession, SESSION_COOKIE_MAX_AGE_SEC } from "@/lib/session-store";
 import { MySqlService } from "@/services/mysql";
 import { getCookiePath } from "@/lib/base-path";
 
@@ -57,7 +57,7 @@ export async function POST(request) {
             secure: process.env.NODE_ENV === "production",
             sameSite: "lax",
             path: getCookiePath(),
-            maxAge: 8 * 60 * 60, // 8 hours
+            maxAge: SESSION_COOKIE_MAX_AGE_SEC,
         });
 
         return response;

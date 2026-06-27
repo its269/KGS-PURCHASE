@@ -25,7 +25,8 @@ export async function GET(request) {
             throw new Error("EMPTY_MYSQL");
         }
 
-        return NextResponse.json({ ...result, source: "mysql", companyId });
+        const source = result.dataMode === "catalog" ? "mysql-catalog" : "mysql";
+        return NextResponse.json({ ...result, source, companyId });
     } catch (err) {
         console.error("[Stock Items API MySQL Error]", err.message);
 

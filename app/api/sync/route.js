@@ -1,7 +1,7 @@
 import { AcumaticaService, extractStockItemCatalog, extractWarehouseLevels } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
-import { getSessionFromRequest, getSessionIdFromRequest, getCompanyCredential } from "@/lib/session-store";
+import { getSessionFromRequest, getSessionIdFromRequest, getCompanyCredential, getSessionCookies } from "@/lib/session-store";
 import { COMPANIES, getAcumaticaCompanyName, splitLevelsByCompany } from "@/lib/companies";
 import mysql from "mysql2/promise";
 
@@ -225,8 +225,11 @@ export async function POST(request) {
         }
 
         await conn.query(
-            `UPDATE \`${inventoryDb}\`.\`inventory_items\` SET company_id = 'main' WHERE company_id IS NULL OR TRIM(company_id) = ''`
-        );
+            `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\`
+             MODIFY COLUMN \`type\` VARCHAR(50) NULL DEFAULT '',
+             MODIFY COLUMN \`base_unit\` VARCHAR(50) NULL DEFAULT '',
+             MODIFY COLUMN \`posting_class\` VARCHAR(100) NULL DEFAULT ''`
+        ).catch((e) => console.warn(">>> [Sync API] Column default migration:", e.message));
 
         const [[pkCheck]] = await conn.query(
             `SELECT COUNT(*) as cnt FROM information_schema.KEY_COLUMN_USAGE
@@ -375,7 +378,7 @@ export async function POST(request) {
                     try {
                         invCookie = isSecretValid
                             ? await systemLoginForCompany(getAcumaticaCompanyName("main"))
-                            : (getCompanyCredential(sessionId, "main") || effectiveCookie);
+                            : (getSessionCookies(sessionId, "main") || getCompanyCredential(sessionId, "main") || effectiveCookie);
                     } catch (loginErr) {
                         console.error(">>> [Sync API] Inventory login error:", loginErr.message);
                     }
@@ -383,24 +386,19 @@ export async function POST(request) {
                     if (!invCookie || invCookie === "__bypass__") {
                         console.warn(">>> [Sync API] Skipping inventory — no credential");
                     } else {
+                        const inventorySyncStartedAt = new Date();
                         const filterArr = [];
                         if (isDelta && lastInvSync) {
                             filterArr.push(`LastModified gt datetimeoffset'${lastInvSync}'`);
                             send({ section: "Inventory", details: `Incremental sync since ${lastInvSync}...`, progress: 10 });
                         } else {
-                            send({ section: "Inventory", details: "Full refresh: clearing stale stock (KGSC + Ecommerce)...", progress: 8 });
-                            try {
-                                await MySqlService.purgeInventoryLevels("main");
-                                await MySqlService.purgeInventoryLevels("ecommerce");
-                            } catch (purgeErr) {
-                                console.error(">>> [Sync API] Purge error:", purgeErr.message);
-                            }
-                            send({ section: "Inventory", details: "Scanning all items from KGSC...", progress: 10 });
+                            send({ section: "Inventory", details: "Full refresh: syncing stock from KGSC (existing data kept until complete)...", progress: 8 });
                         }
 
                         const filterStr = filterArr.length > 0 ? `&$filter=${filterArr.join(" and ")}` : "";
                         let skip = 0;
                         let totalSynced = 0;
+                        let totalLevelsSynced = 0;
                         const top = 50;
 
                         while (!signal.aborted) {
@@ -458,10 +456,14 @@ export async function POST(request) {
                                     await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "ecommerce");
                                 }
                                 await MySqlService.upsertInventoryItems(catalogs, "main");
-                                if (mainLevels.length) await MySqlService.upsertInventoryLevels(mainLevels, "main");
+                                if (mainLevels.length) {
+                                    await MySqlService.upsertInventoryLevels(mainLevels, "main");
+                                    totalLevelsSynced += mainLevels.length;
+                                }
                                 if (ecomLevels.length) {
                                     await MySqlService.upsertInventoryItems(catalogs, "ecommerce");
                                     await MySqlService.upsertInventoryLevels(ecomLevels, "ecommerce");
+                                    totalLevelsSynced += ecomLevels.length;
                                 }
                             }
 
@@ -472,96 +474,68 @@ export async function POST(request) {
                                 : Math.min(99, Math.floor(totalSynced / 30));
                             send({
                                 section: "Inventory",
-                                details: `Processed ${totalSynced} items (KGSC + Ecommerce split)...`,
+                                details: `Processed ${totalSynced} items (${totalLevelsSynced} stock rows)...`,
                                 progress: Math.max(10, invProgress),
                                 count: totalSynced,
                             });
                             if (items.length < top) break;
                         }
 
-                        await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced);
-                        send({ section: "Inventory", status: "done", details: "Inventory sync complete (main + ecommerce).", progress: 100 });
+                        if (!isDelta && !signal.aborted) {
+                            const removedMain = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "main");
+                            const removedEcom = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "ecommerce");
+                            console.log(`>>> [Sync API] Removed stale stock rows: main=${removedMain}, ecommerce=${removedEcom}`);
+                        }
+
+                        await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced, `${totalLevelsSynced} stock rows`);
+                        send({ section: "Inventory", status: "done", details: `Inventory sync complete (${totalLevelsSynced} stock rows).`, progress: 100 });
                     }
                 }
 
-                // 3. SALES
+                // 3. SALES (SalesInvoice + AR credit/debit memos, line-level branch)
                 const affectedInventoryIds = new Set();
                 if (options.sales) {
-                    const filterArr = [];
+                    const sStart = options.startDate || "2024-01-01";
+                    const sEnd = options.endDate || todayStr;
+
                     if (isDelta && lastSalesSync) {
-                        filterArr.push(`LastModifiedDateTime gt datetimeoffset'${lastSalesSync}'`);
                         send({ section: "Sales history", details: `Incremental Sync: Fetching changes since ${lastSalesSync}...`, progress: 10 });
                     } else {
-                        let sStart = options.startDate || "2024-01-01";
-                        filterArr.push(`Date ge datetimeoffset'${sStart}T00:00:00Z' and Date le datetimeoffset'${(options.endDate || todayStr)}T23:59:59Z'`);
-                        send({ section: "Sales history", details: `Full Sync: Range ${sStart} to ${options.endDate || todayStr}`, progress: 10 });
+                        send({ section: "Sales history", details: `Full Sync: SalesInvoice + memos (${sStart} to ${sEnd})`, progress: 10 });
                     }
 
-                    const filterStr = `$filter=${filterArr.join(" and ")}`;
-                    let sSkip = 0, sTotal = 0;
-                    while (!signal.aborted) {
-                        let invoices = [];
-                        try {
-                            const url = `${ACU_BASE}/Invoice?$expand=Details&$top=50&$skip=${sSkip}&${filterStr}`;
-                            console.log(`>>> [Sync API] Fetching Invoices: skip=${sSkip}`);
-                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
-                            const data = await res.json();
-                            invoices = data.value || [];
-                        } catch (salesFetchErr) {
-                            console.error(`>>> [Sync API] Sales Fetch Error at skip ${sSkip}:`, salesFetchErr.message);
-                            send({ section: "Sales history", details: `Error fetching batch at ${sSkip}: ${salesFetchErr.message}`, progress: 10 });
-                            throw salesFetchErr;
-                        }
+                    let sTotal = 0;
+                    try {
+                        const salesRows = await AcumaticaService.fetchPeriodicSalesForSync({
+                            cookie: effectiveCookie,
+                            startDate: sStart,
+                            endDate: sEnd,
+                            lastModifiedAfter: isDelta && lastSalesSync ? lastSalesSync : null,
+                        });
 
-                        if (invoices.length === 0) break;
-
-                        const salesRows = [];
-                        for (const inv of invoices) {
-                            try {
-                                const refNbr = getF(inv, "ReferenceNbr");
-                                const branchName = getF(inv, "Branch");
-                                const docDate = getF(inv, "Date");
-                                
-                                let details = inv.Details || inv.Transactions || [];
-                                if (details.value) details = details.value;
-                                if (!Array.isArray(details)) details = [];
-                                
-                                for (const line of details) {
-                                    const invId = getF(line, "InventoryID");
-                                    if (!invId) continue;
-                                    if (options.mode === "delta") affectedInventoryIds.add(invId);
-                                    salesRows.push({
-                                        id: `${refNbr}-${getF(line, "LineNbr")}`,
-                                        branch_name: branchName,
-                                        order_type: getF(inv, "Type"),
-                                        financial_period: getF(inv, "PostPeriod"),
-                                        document_date: docDate ? docDate.split('T')[0] : null,
-                                        description: getAny(line, "TransactionDescription", "Description"),
-                                        qty: parseFloat(getF(line, "Qty") || 0),
-                                        total_amount: parseFloat(getF(line, "Amount") || 0),
-                                        inventory_id: invId,
-                                        last_sync: new Date(),
-                                    });
-                                }
-                            } catch (lineErr) {
-                                console.error(`>>> [Sync API] Sales Line Processing Error:`, lineErr);
+                        if (options.mode === "delta") {
+                            for (const r of salesRows) {
+                                if (r.inventory_id) affectedInventoryIds.add(r.inventory_id);
                             }
                         }
-                        if (salesRows.length > 0) {
-                            try {
-                                await MySqlService.upsertPeriodicSales(salesRows);
-                            } catch (salesDbErr) {
-                                console.error(`>>> [Sync API] Sales DB Upsert Error:`, salesDbErr.message);
-                                throw salesDbErr;
-                            }
+
+                        const CHUNK = 400;
+                        for (let i = 0; i < salesRows.length; i += CHUNK) {
+                            if (signal.aborted) break;
+                            const chunk = salesRows.slice(i, i + CHUNK);
+                            await MySqlService.upsertPeriodicSales(chunk);
+                            sTotal += chunk.length;
+                            const salesProg = Math.min(95, 10 + Math.floor(sTotal / 20));
+                            send({ section: "Sales history", details: `Synced ${sTotal} line(s)...`, progress: salesProg, count: sTotal });
                         }
-                        sTotal += invoices.length; sSkip += invoices.length;
-                        const salesProg = Math.min(95, 10 + Math.floor(sTotal / 2));
-                        send({ section: "Sales history", details: `Synced ${sTotal} records...`, progress: salesProg, count: sTotal });
-                        if (invoices.length < 100) break;
+                    } catch (salesFetchErr) {
+                        console.error(`>>> [Sync API] Sales Fetch Error:`, salesFetchErr.message);
+                        send({ section: "Sales history", details: `Sales sync error: ${salesFetchErr.message}`, progress: 10 });
+                        throw salesFetchErr;
                     }
+
                     await MySqlService.logSyncEvent(options.mode, "Sales history", "completed", sTotal);
-                    send({ section: "Sales history", status: "done", details: "Sales sync complete.", progress: 100 });
+                    send({ section: "Sales history", status: "done", details: `Sales sync complete (${sTotal} lines).`, progress: 100 });
 
                     // 3.5 PURCHASE ORDERS (Incoming PO Details)
                     send({ section: "Incoming PO", details: "Updating purchase order details...", progress: 50 });

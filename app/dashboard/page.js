@@ -327,8 +327,16 @@ export default function DashboardPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <h1>Inventory Dashboard</h1>
                         <span className="db-company-badge">{companyLabel}</span>
-                        <span className={`db-data-source ${dataSource === "mysql" ? "db-data-source-live" : "db-data-source-fallback"}`} suppressHydrationWarning>
-                            {dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}
+                        <span className={`db-data-source ${dataSource === "mysql" || dataSource === "mysql-catalog" ? "db-data-source-live" : "db-data-source-fallback"}`} suppressHydrationWarning>
+                            {dataSource === "mysql"
+                                ? "Live from MySQL"
+                                : dataSource === "mysql-catalog"
+                                ? "MySQL catalog (run sync for stock)"
+                                : dataSource === "acumatica-live"
+                                ? "Live from ERP"
+                                : dataSource === "acumatica-fallback"
+                                ? "Fallback: Live ERP"
+                                : "Live from ERP"}
                         </span>
                     </div>
                     <p>Manage and monitor stock levels across all locations.</p>

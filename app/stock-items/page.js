@@ -235,7 +235,13 @@ export default function StockItemsPage() {
                         <h1>Stock Items Masterlist</h1>
                         <span className="si-company-badge">{companyLabel}</span>
                         <span className={`db-data-source ${dataSource.includes("acumatica") ? 'db-data-source-fallback' : 'db-data-source-live'}`} style={{ fontSize: '0.65rem', padding: '0.2rem 0.6rem' }}>
-                            {dataSource === "mysql" ? "Live from MySQL" : dataSource === "acumatica-fallback" ? "Fallback: Live ERP" : "Live from ERP"}
+                            {dataSource === "mysql"
+                                ? "Live from MySQL"
+                                : dataSource === "mysql-catalog"
+                                ? "MySQL catalog (run sync for stock)"
+                                : dataSource === "acumatica-fallback"
+                                ? "Fallback: Live ERP"
+                                : "Live from ERP"}
                         </span>
                     </div>
                     <p>View all products and their configurations. Click a row to see detailed branch availability.</p>

@@ -103,7 +103,7 @@ export async function GET(request) {
         const overallStart = periods[2].start;
         const overallEnd = periods[0].end;
 
-        const filter = `$filter=Date ge datetimeoffset'${overallStart}T00:00:00Z' and Date le datetimeoffset'${overallEnd}T23:59:59Z' and (Status eq 'Open' or Status eq 'Closed')`;
+        const filter = `$filter=Date ge datetimeoffset'${overallStart}T00:00:00Z' and Date le datetimeoffset'${overallEnd}T23:59:59Z'`;
         
         let rawInvoices = [];
         let skip = 0;
