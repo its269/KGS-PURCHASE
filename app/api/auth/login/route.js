@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { authenticateAllCompanies } from "@/lib/company-auth";
 import { setBypassSession, SESSION_COOKIE_MAX_AGE_SEC } from "@/lib/session-store";
 import { MySqlService } from "@/services/mysql";
-import { getCookiePath } from "@/lib/base-path";
+import { getSessionCookieOptions } from "@/lib/base-path";
 
 export async function POST(request) {
     try {
@@ -52,13 +52,11 @@ export async function POST(request) {
         console.log("[Login] Session stored:", sessionId);
         const response = NextResponse.json({ success: true, sessionId });
 
-        response.cookies.set("acu_session", sessionId, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "lax",
-            path: getCookiePath(),
-            maxAge: SESSION_COOKIE_MAX_AGE_SEC,
-        });
+        response.cookies.set(
+            "acu_session",
+            sessionId,
+            getSessionCookieOptions(request, SESSION_COOKIE_MAX_AGE_SEC)
+        );
 
         return response;
     } catch (err) {

@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 
 const PUBLIC_PATHS = ["/signin", "/api/auth/login", "/api/auth/logout"];
 
+function redirectTo(request, pathname) {
+    const url = request.nextUrl.clone();
+    url.pathname = pathname;
+    return NextResponse.redirect(url);
+}
+
 export function proxy(request) {
     const { pathname } = request.nextUrl;
 
@@ -18,7 +24,7 @@ export function proxy(request) {
     // If the user is already signed in and tries to visit /signin, send to dashboard
     if (session?.value && pathname.startsWith("/signin")) {
         console.log(`[Middleware] Already authenticated — redirecting /signin → /dashboard`);
-        return NextResponse.redirect(new URL("/dashboard", request.url));
+        return redirectTo(request, "/dashboard");
     }
 
     // Allow auth API routes through without a session
@@ -31,7 +37,7 @@ export function proxy(request) {
     // All other routes require a valid session
     if (!session?.value) {
         console.log(`[Middleware] No session — redirecting ${pathname} → /signin`);
-        return NextResponse.redirect(new URL("/signin", request.url));
+        return redirectTo(request, "/signin");
     }
 
     console.log(`[Middleware] Session valid — allowing ${pathname}`);

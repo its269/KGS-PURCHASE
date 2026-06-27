@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { AuthService } from "@/services/auth";
 import { getSessionFromRequest, deleteSession } from "@/lib/session-store";
-import { getCookiePath } from "@/lib/base-path";
+import { getSessionCookieOptions } from "@/lib/base-path";
 
 export async function GET(request) {
     console.log("[Logout] Clearing session and redirecting to /signin");
@@ -12,9 +12,9 @@ export async function GET(request) {
     if (cookie) await AuthService.logout(cookie);
     if (sessionId) deleteSession(sessionId);
 
-    const response = NextResponse.redirect(
-        new URL("/signin", request.url)
-    );
-    response.cookies.set("acu_session", "", { httpOnly: true, sameSite: "lax", path: getCookiePath(), maxAge: 0 });
+    const signInUrl = request.nextUrl.clone();
+    signInUrl.pathname = "/signin";
+    const response = NextResponse.redirect(signInUrl);
+    response.cookies.set("acu_session", "", getSessionCookieOptions(request, 0));
     return response;
 }
