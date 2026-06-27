@@ -56,6 +56,44 @@ if ($missing.Count -gt 0) {
     exit 1
 }
 
+$mysqlHost = $envMap['MYSQL_HOST']
+$mysqlPort = if ($envMap['MYSQL_PORT']) { [int]$envMap['MYSQL_PORT'] } else { 3306 }
+
+function Test-TcpPort {
+    param([string]$HostName, [int]$Port)
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $async = $client.BeginConnect($HostName, $Port, $null, $null)
+        $ok = $async.AsyncWaitHandle.WaitOne(3000, $false)
+        if ($ok -and $client.Connected) {
+            $client.Close()
+            return $true
+        }
+        $client.Close()
+        return $false
+    } catch {
+        return $false
+    }
+}
+
+$localhostMysql = Test-TcpPort -HostName '127.0.0.1' -Port $mysqlPort
+$configuredMysql = Test-TcpPort -HostName $mysqlHost -Port $mysqlPort
+
+if (-not $configuredMysql -and $localhostMysql -and $mysqlHost -ne '127.0.0.1' -and $mysqlHost -ne 'localhost') {
+    Write-Error @"
+MySQL is not reachable at MYSQL_HOST=$mysqlHost`:$mysqlPort, but 127.0.0.1`:$mysqlPort is open.
+
+When MySQL runs on this server, set MYSQL_HOST=127.0.0.1 in .env (the public IP is often blocked by the firewall for local connections).
+Then run: pm2 reload kgs-purchase-http --update-env
+"@
+    exit 1
+}
+
+if (-not $configuredMysql -and -not $localhostMysql) {
+    Write-Error "MySQL is not reachable on $mysqlHost`:$mysqlPort or 127.0.0.1`:$mysqlPort. Start MySQL or fix MYSQL_HOST in .env."
+    exit 1
+}
+
 Write-Host "OK - production .env has required variables." -ForegroundColor Green
 Write-Host "  ACUMATICA_BASE_URL = $($envMap['ACUMATICA_BASE_URL'])"
 Write-Host "  NEXT_PUBLIC_BASE_URL = $($envMap['NEXT_PUBLIC_BASE_URL'])"
