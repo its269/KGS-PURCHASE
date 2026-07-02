@@ -10,7 +10,7 @@ import {
     sqlExcludeSalesBranches,
     resolveCompanyIdForBranch,
 } from "@/lib/companies.js";
-import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, netQtySold } from "@/lib/sales-velocity.js";
+import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -943,20 +943,78 @@ export const MySqlService = {
     },
 
     /**
+     * Retail replenishment branch picker — inventory sites + sales branch names.
+     */
+    async getReplenishmentBranches(companyId = "main") {
+        try {
+            const invBranches = await this.getBranches(companyId);
+            const branchIds = new Set(["MAIN"]);
+            for (const b of invBranches) {
+                if (b.SiteID) branchIds.add(String(b.SiteID).trim());
+            }
+
+            const salesEx = sqlExcludeSalesBranches("branch_name");
+            const [salesRows] = await purchasePool.query(
+                `SELECT DISTINCT branch_name
+                 FROM product_periodic_sales
+                 WHERE branch_name IS NOT NULL AND TRIM(branch_name) != ''
+                   AND ${salesEx.clause}`,
+                salesEx.params
+            );
+            for (const row of salesRows) {
+                if (row.branch_name) branchIds.add(String(row.branch_name).trim());
+            }
+
+            return [...branchIds]
+                .sort((a, b) => (a === "MAIN" ? -1 : b === "MAIN" ? 1 : a.localeCompare(b)))
+                .map((id) => ({ SiteID: id, Description: { value: id } }));
+        } catch (err) {
+            console.error("[MySQL getReplenishmentBranches Error]", err);
+            const fallback = await this.getBranches(companyId);
+            return fallback.length ? fallback : [{ SiteID: "MAIN", Description: { value: "MAIN" } }];
+        }
+    },
+
+    /**
      * Branch-accurate stock + sales for replenishment analysis.
      * Uses branch_id (site/branch location), not default_warehouse (physical warehouse).
      */
-    async getReplenishmentItems({ branch = "MAIN" } = {}) {
+    async getReplenishmentItems({ branch = "MAIN", companyId = "main", salesMap = null } = {}) {
         if (isExcludedBranchAlias(branch)) {
             return [];
         }
 
         try {
-            // MAIN is the central warehouse — almost no direct branch sales; use network demand.
             const isMainWarehouse = String(branch).trim().toUpperCase() === "MAIN";
-            const salesMap = await this.getPeriodicSalesSummary({
-                branch: isMainWarehouse ? "" : branch,
-            });
+            const resolvedSales =
+                salesMap ??
+                (await this.getPeriodicSalesSummary({
+                    branch: isMainWarehouse ? "" : branch,
+                }));
+
+            const whereClauses = [
+                "i.default_warehouse != '__catalog__'",
+                "i.branch_id IS NOT NULL",
+                "TRIM(i.branch_id) != ''",
+                "UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))",
+                "(i.item_status IS NULL OR UPPER(TRIM(i.item_status)) = 'ACTIVE')",
+                "i.company_id = ?",
+            ];
+            const params = [branch, companyId];
+
+            const branchEx = sqlExcludeBranches("i");
+            whereClauses.push(branchEx.clause);
+            params.push(...branchEx.params);
+
+            if (companyId === "main") {
+                const ecomEx = sqlExcludeEcomBranches("i");
+                whereClauses.push(ecomEx.clause);
+                params.push(...ecomEx.params);
+            } else if (companyId === "ecommerce") {
+                const ecomOnly = sqlOnlyEcomBranches("i");
+                whereClauses.push(ecomOnly.clause);
+                params.push(...ecomOnly.params);
+            }
 
             const [rows] = await pool.query(
                 `SELECT
@@ -967,28 +1025,59 @@ export const MySqlService = {
                     COALESCE(SUM(i.on_hand), 0) as totalOnHand,
                     COALESCE(SUM(i.available), 0) as totalAvailable
                  FROM inventory_items i
-                 WHERE i.default_warehouse != '__catalog__'
-                   AND i.branch_id IS NOT NULL
-                   AND TRIM(i.branch_id) != ''
-                   AND UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))
-                   AND (i.item_status IS NULL OR UPPER(TRIM(i.item_status)) = 'ACTIVE')
+                 WHERE ${whereClauses.join(" AND ")}
                  GROUP BY TRIM(i.inventory_id)
                  ORDER BY TRIM(i.inventory_id) ASC`,
-                [branch]
+                params
             );
 
-            return rows.map((r) => {
+            const itemMap = new Map();
+            for (const r of rows) {
                 const key = (r.inventoryId || "").toUpperCase().trim();
-                const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
-                return {
+                if (!key) continue;
+                const sales = resolvedSales.get(key) || { qty_sold: 0, total_sales: 0 };
+                itemMap.set(key, {
                     ...r,
                     totalOnHand: Number(r.totalOnHand) || 0,
                     totalAvailable: Number(r.totalAvailable) || 0,
                     totalQtySold: sales.qty_sold,
                     totalSales: sales.total_sales,
                     salesScope: isMainWarehouse ? "network" : "branch",
-                };
-            });
+                });
+            }
+
+            // Include items with branch sales but no on-hand stock at this branch (stockout risk).
+            const missingSalesKeys = [];
+            for (const [key, sales] of resolvedSales) {
+                if (!itemMap.has(key) && sales.qty_sold > 0) missingSalesKeys.push(key);
+            }
+            if (missingSalesKeys.length > 0) {
+                const placeholders = missingSalesKeys.map(() => "?").join(", ");
+                const [catalogRows] = await pool.query(
+                    `SELECT TRIM(inventory_id) AS inventoryId, inventory_name AS description, item_class AS itemClass
+                     FROM inventory_items
+                     WHERE company_id = ? AND default_warehouse = '__catalog__'
+                       AND UPPER(TRIM(inventory_id)) IN (${placeholders})`,
+                    [companyId, ...missingSalesKeys]
+                );
+                for (const cat of catalogRows) {
+                    const key = (cat.inventoryId || "").toUpperCase().trim();
+                    const sales = resolvedSales.get(key) || { qty_sold: 0, total_sales: 0 };
+                    itemMap.set(key, {
+                        inventoryId: cat.inventoryId,
+                        description: cat.description,
+                        itemStatus: "ACTIVE",
+                        itemClass: cat.itemClass,
+                        totalOnHand: 0,
+                        totalAvailable: 0,
+                        totalQtySold: sales.qty_sold,
+                        totalSales: sales.total_sales,
+                        salesScope: isMainWarehouse ? "network" : "branch",
+                    });
+                }
+            }
+
+            return [...itemMap.values()];
         } catch (err) {
             console.error("[MySQL getReplenishmentItems Error]", err);
             throw err;
@@ -1798,8 +1887,7 @@ export const MySqlService = {
             params.push(...salesEx.params);
 
             if (branch && branch !== "All Branches") {
-                // Dashboard passes Branch ID (e.g. MAIN)
-                whereClauses.push("UPPER(branch_name) = UPPER(?)");
+                whereClauses.push("TRIM(UPPER(branch_name)) = TRIM(UPPER(?))");
                 params.push(branch);
             }
             if (search) {
@@ -1834,5 +1922,165 @@ export const MySqlService = {
             console.error("[MySQL getPeriodicSalesSummary Error]", err);
             return new Map();
         }
+    },
+
+    /**
+     * Gross sales for SKUs stocked at a branch, counted across all invoice branches.
+     * Retail locations (ILOILO, CEBU, etc.) often post invoices under BACOLOD/BOHOL lines.
+     */
+    async getBranchCatalogNetworkSalesSummary({
+        branch = "",
+        companyId = "main",
+        lookbackDays = SALES_LOOKBACK_DAYS,
+    } = {}) {
+        if (!branch || isExcludedBranchAlias(branch)) {
+            return { map: new Map(), mode: "gross", salesScope: "catalog-network" };
+        }
+
+        try {
+            const inv = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+            const window = parseInt(lookbackDays, 10) || SALES_LOOKBACK_DAYS;
+            const whereClauses = [
+                `s.document_date >= DATE_SUB(CURDATE(), INTERVAL ${window} DAY)`,
+                `s.document_date <= CURDATE()`,
+                `s.order_type IN ('Invoice', 'Debit Memo')`,
+            ];
+            const params = [branch, companyId];
+
+            const salesEx = sqlExcludeSalesBranches("s.branch_name");
+            whereClauses.push(salesEx.clause);
+            params.push(...salesEx.params);
+
+            if (companyId === "main") {
+                const ecomEx = sqlExcludeEcomBranches("i");
+                whereClauses.push(ecomEx.clause);
+                params.push(...ecomEx.params);
+            } else if (companyId === "ecommerce") {
+                const ecomOnly = sqlOnlyEcomBranches("i");
+                whereClauses.push(ecomOnly.clause);
+                params.push(...ecomOnly.params);
+            }
+
+            const branchEx = sqlExcludeBranches("i");
+            whereClauses.push(branchEx.clause);
+            params.push(...branchEx.params);
+
+            const [rows] = await purchasePool.query(
+                `SELECT UPPER(TRIM(s.inventory_id)) AS inventory_id,
+                        SUM(CASE WHEN s.order_type IN ('Invoice','Debit Memo') THEN ABS(s.qty) ELSE 0 END) AS qty_sold,
+                        SUM(CASE WHEN s.order_type IN ('Invoice','Debit Memo') THEN ABS(s.total_amount) ELSE 0 END) AS total_sales
+                 FROM product_periodic_sales s
+                 INNER JOIN \`${inv}\`.inventory_items i
+                   ON UPPER(TRIM(s.inventory_id)) = UPPER(TRIM(i.inventory_id))
+                  AND UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))
+                  AND i.default_warehouse != '__catalog__'
+                  AND i.company_id = ?
+                  AND (i.item_status IS NULL OR UPPER(TRIM(i.item_status)) = 'ACTIVE')
+                 WHERE ${whereClauses.join(" AND ")}
+                 GROUP BY UPPER(TRIM(s.inventory_id))
+                 HAVING qty_sold > 0`,
+                params
+            );
+
+            const map = new Map();
+            for (const r of rows) {
+                if (r.inventory_id) {
+                    map.set(r.inventory_id, {
+                        qty_sold: Number(r.qty_sold) || 0,
+                        total_sales: Math.max(0, Number(r.total_sales) || 0),
+                    });
+                }
+            }
+            return { map, mode: "gross", salesScope: "catalog-network", lookbackDays };
+        } catch (err) {
+            console.error("[MySQL getBranchCatalogNetworkSalesSummary Error]", err);
+            return { map: new Map(), mode: "gross", salesScope: "catalog-network" };
+        }
+    },
+
+    async getReplenishmentSalesSummary({ branch = "", lookbackDays = SALES_LOOKBACK_DAYS } = {}) {
+        const netMap = await this.getPeriodicSalesSummary({ branch, lookbackDays });
+        let positiveNet = 0;
+        for (const v of netMap.values()) {
+            if ((v.qty_sold ?? 0) > 0) positiveNet++;
+        }
+        if (positiveNet > 0) return { map: netMap, mode: "net" };
+
+        try {
+            if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
+                return { map: new Map(), mode: "gross" };
+            }
+
+            const whereClauses = [salesLookbackSql(lookbackDays)];
+            const params = [];
+            const salesEx = sqlExcludeSalesBranches("branch_name");
+            whereClauses.push(salesEx.clause);
+            params.push(...salesEx.params);
+
+            if (branch && branch !== "All Branches") {
+                whereClauses.push("TRIM(UPPER(branch_name)) = TRIM(UPPER(?))");
+                params.push(branch);
+            }
+
+            const [rows] = await purchasePool.query(
+                `SELECT UPPER(TRIM(inventory_id)) AS inventory_id,
+                        SUM(${SQL_GROSS_QTY}) AS qty_sold,
+                        SUM(CASE WHEN order_type IN ('Invoice','Debit Memo') THEN ABS(total_amount) ELSE 0 END) AS total_sales
+                 FROM product_periodic_sales
+                 WHERE ${whereClauses.join(" AND ")}
+                 GROUP BY UPPER(TRIM(inventory_id))
+                 HAVING SUM(${SQL_GROSS_QTY}) > 0`,
+                params
+            );
+
+            const grossMap = new Map();
+            for (const r of rows) {
+                if (r.inventory_id) {
+                    grossMap.set(r.inventory_id, {
+                        qty_sold: Number(r.qty_sold) || 0,
+                        total_sales: Math.max(0, Number(r.total_sales) || 0),
+                    });
+                }
+            }
+            return { map: grossMap.size > 0 ? grossMap : netMap, mode: grossMap.size > 0 ? "gross" : "net" };
+        } catch (err) {
+            console.error("[MySQL getReplenishmentSalesSummary Error]", err);
+            return { map: netMap, mode: "net" };
+        }
+    },
+
+    /** Extended lookback gross sales when 90-day window has no invoice rows for a branch. */
+    async getReplenishmentSalesSummaryExtended({ branch = "", companyId = "main" } = {}) {
+        let result = await this.getReplenishmentSalesSummary({ branch, lookbackDays: SALES_LOOKBACK_DAYS });
+        let count = 0;
+        for (const v of result.map.values()) if ((v.qty_sold ?? 0) > 0) count++;
+
+        if (count < 20) {
+            for (const days of [180, 365]) {
+                const extended = await this.getReplenishmentSalesSummary({ branch, lookbackDays: days });
+                let extCount = 0;
+                for (const v of extended.map.values()) if ((v.qty_sold ?? 0) > 0) extCount++;
+                if (extCount > count) {
+                    result = { ...extended, lookbackDays: days };
+                    count = extCount;
+                }
+            }
+        }
+
+        const isMain = !branch || String(branch).trim().toUpperCase() === "MAIN";
+        if (!isMain && count < 20) {
+            const catalog = await this.getBranchCatalogNetworkSalesSummary({ branch, companyId });
+            let catCount = 0;
+            for (const v of catalog.map.values()) if ((v.qty_sold ?? 0) > 0) catCount++;
+            if (catCount > count) {
+                return catalog;
+            }
+        }
+
+        return {
+            ...result,
+            salesScope: isMain ? "network" : "branch",
+            lookbackDays: result.lookbackDays || SALES_LOOKBACK_DAYS,
+        };
     },
 };

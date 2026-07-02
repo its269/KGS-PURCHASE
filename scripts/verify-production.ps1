@@ -2,12 +2,16 @@
 Quick production health check (run on the server or after deploy).
 
   .\scripts\verify-production.ps1
+  .\scripts\verify-production.ps1 -RepoPath "C:\path\to\KGS-PURCHASE"
 #>
+param(
+    [string]$RepoPath = "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+)
 $ErrorActionPreference = 'Continue'
 
 Write-Host "=== KGS-PURCHASE production check ===" -ForegroundColor Cyan
 
-$repoPath = "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+$repoPath = $RepoPath
 if (Test-Path $repoPath) {
     Push-Location $repoPath
     $commit = (git rev-parse --short HEAD 2>$null)

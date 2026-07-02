@@ -91,7 +91,14 @@ body {
   background-color: var(--bg-main);
   color: var(--text-primary);
   font-family: var(--font-inter);
-  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Instant dark/light switch — no color fade anywhere */
+html.no-theme-transition,
+html.no-theme-transition *,
+html.no-theme-transition *::before,
+html.no-theme-transition *::after {
+  transition: none !important;
 }
 
 button {

@@ -2,19 +2,25 @@ import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
-import { filterBranchList } from "@/lib/companies";
+import { filterBranchList, filterReplenishmentBranchList } from "@/lib/companies";
 
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
         const source = searchParams.get("source") || "mysql";
+        const forModule = searchParams.get("for") || "";
         const companyId = getActiveCompanyFromRequest(request) || "main";
 
         if (source === "mysql") {
             try {
-                const branches = await MySqlService.getBranches(companyId);
+                const branches = forModule === "replenishment"
+                    ? await MySqlService.getReplenishmentBranches(companyId)
+                    : await MySqlService.getBranches(companyId);
                 if (branches.length > 0) {
-                    return NextResponse.json(filterBranchList(branches));
+                    const filtered = forModule === "replenishment"
+                        ? filterReplenishmentBranchList(branches)
+                        : filterBranchList(branches);
+                    return NextResponse.json(filtered);
                 }
                 console.log("[Branches API] MySQL returned 0 branches, falling back to Acumatica...");
             } catch (mError) {
@@ -33,7 +39,10 @@ export async function GET(request) {
         }
 
         const branches = await AcumaticaService.getBranches(cookie);
-        return NextResponse.json(filterBranchList(branches));
+        const filtered = forModule === "replenishment"
+            ? filterReplenishmentBranchList(branches)
+            : filterBranchList(branches);
+        return NextResponse.json(filtered);
     } catch (err) {
         console.error("[BFF Branches Error]", err);
         if (err.message === "Unauthorized") return NextResponse.json({ message: "Unauthorized" }, { status: 401 });

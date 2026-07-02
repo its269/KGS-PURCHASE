@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import "@/styles/signin.css";
 import { withBasePath } from "@/lib/base-path";
 
@@ -48,11 +48,19 @@ const IconAlert = () => (
 /* ── Component ──────────────────────────────────────────── */
 export default function SignInPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        if (searchParams.get("expired") === "1") {
+            localStorage.removeItem("acu_session");
+            setError("Your session expired. Please sign in again.");
+        }
+    }, [searchParams]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();

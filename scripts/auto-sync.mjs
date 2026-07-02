@@ -1,58 +1,93 @@
+/**
+ * Headless Acumatica sync via SYNC_SECRET.
+ * Usage: node scripts/auto-sync.mjs
+ * Env: SYNC_SECRET (required), SYNC_MODE=incremental|delta|full (default incremental),
+ *      NEXT_PUBLIC_BASE_URL or NEXT_PUBLIC_BASE_PATH for URL resolution.
+ */
 import fetch from "node-fetch";
 import dotenv from "dotenv";
-dotenv.config();
+import fs from "fs";
 
-const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+dotenv.config({ path: fs.existsSync(".env.local") ? ".env.local" : ".env" });
+
+function resolveBaseUrl() {
+    const explicit = process.env.SYNC_BASE_URL;
+    if (explicit) return explicit.replace(/\/$/, "");
+
+    const baseUrl = (process.env.NEXT_PUBLIC_BASE_URL || "").replace(/\/$/, "");
+    const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").replace(/\/$/, "");
+
+    if (baseUrl && basePath && !baseUrl.endsWith(basePath)) {
+        return `${baseUrl}${basePath}`;
+    }
+    if (baseUrl) return baseUrl;
+
+    if (basePath) return `http://localhost:3001${basePath}`;
+    return "http://localhost:3000";
+}
+
+const BASE_URL = resolveBaseUrl();
 const SYNC_SECRET = process.env.SYNC_SECRET;
+const SYNC_MODE = process.env.SYNC_MODE || "incremental";
 
 async function runAutoSync() {
-    console.log(`[Auto-Sync] Starting automated synchronization at ${new Date().toISOString()}`);
-    
+    console.log(`[Auto-Sync] Starting at ${new Date().toISOString()}`);
+    console.log(`[Auto-Sync] Target: ${BASE_URL}/api/sync?inventory=true&sales=true&mode=${SYNC_MODE}`);
+
     if (!SYNC_SECRET) {
         console.error("[Auto-Sync] SYNC_SECRET is not set in environment variables.");
         process.exit(1);
     }
 
+    const url = `${BASE_URL}/api/sync?inventory=true&sales=true&mode=${encodeURIComponent(SYNC_MODE)}`;
+
     try {
-        // 1. First, we need an active Acumatica session for the server to use.
-        // If we want a truly headless sync, the /api/sync route needs a way to 
-        // login to Acumatica using system credentials.
-        // For now, we assume the server has a valid 'system' session or we provide one.
-        
-        const res = await fetch(`${BASE_URL}/api/sync?inventory=true&sales=true&mode=incremental`, {
+        const res = await fetch(url, {
             method: "POST",
-            headers: {
-                "x-sync-secret": SYNC_SECRET
-            }
+            headers: { "x-sync-secret": SYNC_SECRET },
         });
 
         if (!res.ok) {
             throw new Error(`Sync API returned ${res.status}: ${await res.text()}`);
         }
 
-        console.log("[Auto-Sync] Sync process started. Streaming results:");
+        console.log("[Auto-Sync] Streaming results:");
 
-        const body = res.body;
-        body.on("data", (chunk) => {
-            const lines = chunk.toString().split("\n");
-            lines.forEach(line => {
-                if (line.trim()) {
+        let complete = false;
+        let errorMsg = null;
+
+        await new Promise((resolve, reject) => {
+            const body = res.body;
+            body.on("data", (chunk) => {
+                const lines = chunk.toString().split("\n");
+                for (const line of lines) {
+                    if (!line.trim()) continue;
                     try {
                         const data = JSON.parse(line);
                         if (data.details) console.log(`  > ${data.details}`);
-                        if (data.status === "complete") console.log("[Auto-Sync] SUCCESS: Synchronization complete.");
-                        if (data.status === "error") console.error(`[Auto-Sync] ERROR: ${data.message}`);
-                    } catch (e) {
-                        // Not JSON, probably ping or partial
+                        if (data.status === "complete") {
+                            complete = true;
+                            console.log("[Auto-Sync] SUCCESS: Synchronization complete.");
+                        }
+                        if (data.status === "error") {
+                            errorMsg = data.message || "Unknown sync error";
+                            console.error(`[Auto-Sync] ERROR: ${errorMsg}`);
+                        }
+                    } catch {
+                        // partial line
                     }
                 }
             });
+            body.on("end", resolve);
+            body.on("error", reject);
         });
 
-        body.on("end", () => {
-            console.log("[Auto-Sync] Stream ended.");
-        });
-
+        if (errorMsg) {
+            process.exit(1);
+        }
+        if (!complete) {
+            console.warn("[Auto-Sync] Stream ended without complete status.");
+        }
     } catch (err) {
         console.error("[Auto-Sync] CRITICAL FAILURE:", err.message);
         process.exit(1);

@@ -218,7 +218,7 @@ export default function ReplenishmentPage() {
         setError(null);
         try {
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 45000);
+            const timeout = setTimeout(() => controller.abort(), 120000);
             const res = await fetchWithAuth(`/api/replenishment?branch=${branchToFetch}`, {
                 signal: controller.signal,
             });
@@ -229,7 +229,7 @@ export default function ReplenishmentPage() {
             }
             const data = await res.json();
             applyPayload(data);
-            DataCache.set(`replenishment_recs_${branchToFetch}`, data);
+            DataCache.set(`replenishment_recs_v3_${branchToFetch}`, data);
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (err.name === "AbortError") {
@@ -246,7 +246,7 @@ export default function ReplenishmentPage() {
         let active = true;
         (async () => {
             try {
-                const res = await fetchWithAuth("/api/branches?source=mysql");
+                const res = await fetchWithAuth("/api/branches?source=mysql&for=replenishment");
                 if (res.ok && active) setBranches(await res.json());
             } catch (err) {
                 console.error("Failed to load branches", err);
@@ -257,7 +257,7 @@ export default function ReplenishmentPage() {
 
     useEffect(() => {
         let active = true;
-        const cacheKey = `replenishment_recs_${selectedBranch}`;
+        const cacheKey = `replenishment_recs_v3_${selectedBranch}`;
         const cached = DataCache.get(cacheKey);
 
         (async () => {
@@ -267,6 +267,15 @@ export default function ReplenishmentPage() {
 
         return () => { active = false; };
     }, [fetchRecommendations, selectedBranch, applyPayload]);
+
+    useEffect(() => {
+        const onCompanyChange = () => {
+            DataCache.clear();
+            fetchRecommendations(false, selectedBranch);
+        };
+        window.addEventListener("company-changed", onCompanyChange);
+        return () => window.removeEventListener("company-changed", onCompanyChange);
+    }, [fetchRecommendations, selectedBranch]);
 
     const stats = useMemo(() => {
         const urgent = recs.filter((r) => r.priorityLevel === "High").length;
@@ -416,20 +425,17 @@ export default function ReplenishmentPage() {
                                     >
                                         <strong>How &quot;Sells / day&quot; is calculated</strong>
                                         <p>
-                                            This is the <strong>average number of units sold per day</strong> for each product at branch{" "}
-                                            <strong>{selectedBranch}</strong> — not today&apos;s sales alone.
+                                            This is the <strong>average number of units sold per day</strong> for each product
+                                            {isMain ? " across all retail branches (network demand)" : (
+                                                <> at branch <strong>{selectedBranch}</strong></>
+                                            )} — not today&apos;s sales alone.
                                         </p>
                                         <p className="repl-col-info-formula">
-                                            Sells / day = Net units sold in the last 90 days at {selectedBranch} ÷ 90
+                                            Sells / day = Net units sold in the last 90 days{isMain ? " (network-wide)" : ` at ${selectedBranch}`} ÷ 90
                                         </p>
-                                        <p><strong>Example</strong></p>
-                                        <ul>
-                                            <li>6,381 net units sold in 90 days at {selectedBranch} (invoices minus returns)</li>
-                                            <li>6,381 ÷ 90 = <strong>70.9 units per day</strong></li>
-                                        </ul>
                                         <p>
-                                            Sales totals are fetched <strong>live from Acumatica</strong> (Sales Invoices for the last 90 days at {selectedBranch}; credit memos are subtracted).
-                                            Stock on hand comes from synced inventory.
+                                            Sales velocity is loaded from <strong>Acumatica</strong> when you are signed in (Sales Invoices + memos, last 90 days).
+                                            If Acumatica is unavailable, synced database sales are used instead. Stock on hand comes from synced inventory.
                                         </p>
                                         <p className="repl-col-info-note">
                                             <strong>Days left</strong> uses this rate: Branch stock ÷ Sells / day (e.g. 462 ÷ 70.9 ≈ 6 days).
@@ -480,6 +486,8 @@ export default function ReplenishmentPage() {
                         {meta.salesSource === "acumatica" && " · Sales from Acumatica (live)"}
                         {meta.salesSource === "mysql" && " · Sales from database cache"}
                         {meta.salesScope === "network" && " · Velocity from all branches"}
+                        {meta.salesScope === "catalog-network" &&
+                            " · Sales velocity from network invoices for this branch's catalog"}
                     </p>
                 )}
             </main>

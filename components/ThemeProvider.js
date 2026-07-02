@@ -17,9 +17,11 @@ export function ThemeProvider({ children }) {
         setMounted(true);
     }, []);
 
-    // Apply theme changes to the document
+    // Apply theme changes to the document (instant — no color transition)
     useEffect(() => {
         if (!mounted) return;
+
+        document.documentElement.classList.add("no-theme-transition");
 
         if (isDarkMode) {
             document.documentElement.setAttribute("data-theme", "dark");
@@ -28,9 +30,20 @@ export function ThemeProvider({ children }) {
             document.documentElement.setAttribute("data-theme", "light");
             localStorage.setItem("theme", "light");
         }
+
+        const frame = requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.documentElement.classList.remove("no-theme-transition");
+            });
+        });
+
+        return () => cancelAnimationFrame(frame);
     }, [isDarkMode, mounted]);
 
-    const toggleTheme = () => setIsDarkMode(prev => !prev);
+    const toggleTheme = () => {
+        document.documentElement.classList.add("no-theme-transition");
+        setIsDarkMode((prev) => !prev);
+    };
 
     // Context value
     const value = {

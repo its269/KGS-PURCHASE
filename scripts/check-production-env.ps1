@@ -2,15 +2,18 @@
 Validates production .env before deploy/build. Run on the Windows server.
 
   .\scripts\check-production-env.ps1
+  .\scripts\check-production-env.ps1 -RepoPath "C:\path\to\KGS-PURCHASE"
 #>
+param(
+    [string]$RepoPath = "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+)
 $ErrorActionPreference = 'Stop'
 
-$repoPath = "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-Set-Location $repoPath
+Set-Location $RepoPath
 
 if (-not (Test-Path -LiteralPath '.env')) {
     Write-Error @"
-.env file is MISSING at $repoPath
+.env file is MISSING at $RepoPath
 
 Copy .env.example to .env and fill in Acumatica + MySQL values.
 Login will fail with 'undefined/entity/auth/login' until ACUMATICA_BASE_URL is set.

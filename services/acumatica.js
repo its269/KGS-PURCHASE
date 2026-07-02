@@ -2,6 +2,7 @@ import { MySqlService } from "@/services/mysql";
 import { SALES_LOOKBACK_DAYS } from "@/lib/sales-velocity";
 import {
     aggregateBranchSales,
+    aggregateBranchGrossSales,
     invoicesToPeriodicSalesRows,
 } from "@/lib/acumatica-sales-aggregate";
 const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
@@ -479,6 +480,35 @@ export const AcumaticaService = {
         ]);
 
         return aggregateBranchSales([...salesInvoices, ...creditMemos, ...debitMemos], {
+            branch,
+            startDate,
+            endDate,
+        });
+    },
+
+    /**
+     * Gross outbound 90-day sales by inventory ID (invoices + debit memos, no credit subtraction).
+     * Primary source for replenishment velocity — matches how branches sell through stock.
+     */
+    async fetchBranchGrossSalesSummary({ cookie, branch, lookbackDays = SALES_LOOKBACK_DAYS }) {
+        const end = new Date();
+        const start = new Date(end);
+        start.setDate(end.getDate() - (Number(lookbackDays) || SALES_LOOKBACK_DAYS) + 1);
+        const startDate = toISODate(start);
+        const endDate = toISODate(end);
+
+        const [salesInvoices, debitMemos] = await Promise.all([
+            this.fetchSalesDocuments({ cookie, entity: "SalesInvoice", startDate, endDate }),
+            this.fetchSalesDocuments({
+                cookie,
+                entity: "Invoice",
+                startDate,
+                endDate,
+                extraFilter: "Type eq 'Debit Memo'",
+            }),
+        ]);
+
+        return aggregateBranchGrossSales([...salesInvoices, ...debitMemos], {
             branch,
             startDate,
             endDate,
