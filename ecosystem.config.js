@@ -3,7 +3,7 @@ const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 require("dotenv").config({ path: path.join(__dirname, ".env.local"), override: false });
 
-const appDir = "C:\\Users\\Administrator\\Desktop\\Github\\KGS-PURCHASE";
+const appDir = __dirname;
 
 module.exports = {
   apps: [
