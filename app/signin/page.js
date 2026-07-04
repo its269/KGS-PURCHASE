@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import "@/styles/signin.css";
 import { withBasePath } from "@/lib/base-path";
@@ -46,7 +46,7 @@ const IconAlert = () => (
 );
 
 /* ── Component ──────────────────────────────────────────── */
-export default function SignInPage() {
+function SignInContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const [username, setUsername] = useState("");
@@ -222,3 +222,10 @@ export default function SignInPage() {
     );
 }
 
+export default function SignInPage() {
+    return (
+        <Suspense fallback={null}>
+            <SignInContent />
+        </Suspense>
+    );
+}
