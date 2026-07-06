@@ -9,6 +9,19 @@ import "@/styles/inventory-detail.css";
 
 const PAGE_SIZE = 50;
 
+function formatReliabilityScore(score) {
+    if (score == null || !Number.isFinite(Number(score))) return "N/A";
+    return `${Number(score).toFixed(2)}%`;
+}
+
+function reliabilityBorderColor(score) {
+    if (score == null || !Number.isFinite(Number(score))) return "var(--border-light)";
+    const n = Number(score);
+    if (n >= 90) return "var(--status-success)";
+    if (n >= 80) return "var(--status-warning)";
+    return "var(--status-danger)";
+}
+
 /* ── SVG Icons ─────────────────────────────────────────── */
 const IconSearch = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -95,7 +108,7 @@ export default function SuppliersPage() {
 
             const params = new URLSearchParams({ page: String(initialPage), pageSize: String(PAGE_SIZE) });
             if (savedSearch) params.set("search", savedSearch);
-            const cached = DataCache.get(`vendors_${params.toString()}`);
+            const cached = DataCache.get(`vendors_v2_${params.toString()}`);
             if (cached) {
                 setVendors(cached.vendors ?? []);
                 setHasMore(cached.hasMore ?? false);
@@ -153,7 +166,7 @@ export default function SuppliersPage() {
         try {
             const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
             if (debouncedSearch) params.set("search", debouncedSearch);
-            const cacheKey = `vendors_${params.toString()}`;
+            const cacheKey = `vendors_v2_${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/vendors?${params}`);
             if (!res.ok) {
@@ -175,7 +188,7 @@ export default function SuppliersPage() {
     useEffect(() => {
         const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
         if (debouncedSearch) params.set("search", debouncedSearch);
-        const cacheKey = `vendors_${params.toString()}`;
+        const cacheKey = `vendors_v2_${params.toString()}`;
 
         const cached = DataCache.get(cacheKey);
         if (cached) {
@@ -313,17 +326,23 @@ export default function SuppliersPage() {
                                             display: 'inline-flex', 
                                             alignItems: 'center', 
                                             justifyContent: 'center',
-                                            width: '50px', 
-                                            height: '50px', 
+                                            minWidth: '64px', 
+                                            height: '64px', 
+                                            padding: '0 8px',
                                             borderRadius: '50%', 
-                                            border: `4px solid ${v.reliabilityScore >= 90 ? 'var(--status-success)' : v.reliabilityScore >= 80 ? 'var(--status-warning)' : 'var(--status-danger)'}`,
+                                            border: `4px solid ${reliabilityBorderColor(v.reliabilityScore)}`,
                                             fontWeight: '700',
-                                            fontSize: '0.85rem',
+                                            fontSize: '0.7rem',
                                             color: 'var(--text-primary)',
                                             background: 'var(--bg-surface)'
                                         }}>
-                                            {Math.round(v.reliabilityScore)}%
+                                            {formatReliabilityScore(v.reliabilityScore)}
                                         </div>
+                                        {v.totalOrders > 0 && (
+                                            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.4rem', fontWeight: '600' }}>
+                                                {v.onTimeOrders}/{v.totalOrders} on-time
+                                            </div>
+                                        )}
                                     </td>
                                     <td style={{ padding: '1.25rem' }}>
                                         <div className="sup-lead-time-input">
@@ -384,7 +403,7 @@ export default function SuppliersPage() {
                             </div>
 
                             <p style={{ color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '1.5rem' }}>
-                                The Reliability Score measures how consistently a supplier delivers orders on or before their promised date. It is expressed as a percentage to make it easy to compare vendors.
+                                The Reliability Score measures how consistently a supplier delivers closed purchase orders on or before the promised date. Scores are calculated live from synced PO history and shown to two decimal places (for example, <strong>11.51%</strong>).
                             </p>
 
                             <div style={{ background: 'var(--bg-main)', padding: '1.5rem', borderRadius: '12px', border: '1px solid var(--border-light)', marginBottom: '1.5rem' }}>
@@ -396,7 +415,9 @@ export default function SuppliersPage() {
                                         (On-Time Orders ÷ Total Orders) × 100
                                     </div>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                                        *On-Time = Orders received on or before the Promised Date.
+                                        *On-Time = Receipt date on or before the promised date.<br />
+                                        *Only <strong>Closed</strong> or <strong>Completed</strong> POs with both promised and receipt dates are included.<br />
+                                        *Suppliers with no qualifying orders in the last 12 months show <strong>N/A</strong>.
                                     </div>
                                 </div>
 
@@ -406,7 +427,8 @@ export default function SuppliersPage() {
                                         Σ(Receipt Date - Order Date) ÷ Total Orders
                                     </div>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                                        *Lead Time = The real number of days from PO creation to warehouse arrival.
+                                        *Lead Time = Days from PO creation to warehouse receipt.<br />
+                                        *Shown below the lead-time input when historical data exists.
                                     </div>
                                 </div>
                             </div>
@@ -417,7 +439,16 @@ export default function SuppliersPage() {
                                     <div>
                                         <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>Measurement Period</strong>
                                         <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                                            Metrics are calculated using the last <strong>12 months</strong> of historical data to reflect recent supplier performance.
+                                            Reliability scores use the last <strong>12 months</strong> of closed PO history. Each score also shows the underlying count (for example, <strong>61/530 on-time</strong>).
+                                        </span>
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: '1rem' }}>
+                                    <div style={{ color: 'var(--accent-primary)', fontWeight: '700' }}>●</div>
+                                    <div>
+                                        <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>Data Source</strong>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                                            Values come from purchase orders synced from Acumatica during Data Synchronization — not static placeholders.
                                         </span>
                                     </div>
                                 </div>

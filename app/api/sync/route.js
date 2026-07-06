@@ -350,13 +350,18 @@ export async function POST(request) {
 
                 // 1.5 VENDORS (Sync every time or if inventory/sales is selected)
                 if (options.inventory || options.sales) {
-                    send({ section: "Suppliers", details: "Updating vendor directory...", progress: 7 });
+                    send({ section: "Suppliers", details: "Updating vendor directory...", progress: 5 });
+                    let vendorCount = 0;
                     try {
-                        const url = `${ACU_BASE}/Vendor?$top=1000`;
-                        const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
-                        const data = await res.json();
-                        const vendors = data.value || [];
-                        if (vendors.length > 0) {
+                        const vendorPageSize = 500;
+                        let vendorSkip = 0;
+                        while (true) {
+                            const url = `${ACU_BASE}/Vendor?$top=${vendorPageSize}&$skip=${vendorSkip}`;
+                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
+                            const data = await res.json();
+                            const vendors = data.value || [];
+                            if (vendors.length === 0) break;
+
                             const vendorRows = vendors.map(v => ({
                                 vendor_id: String(getF(v, "VendorID")).trim(),
                                 vendor_name: String(getF(v, "VendorName")).trim(),
@@ -364,11 +369,30 @@ export async function POST(request) {
                                 last_sync: new Date()
                             }));
                             await MySqlService.upsertVendors(vendorRows);
-                            await MySqlService.logSyncEvent(options.mode, "Suppliers", "completed", vendorRows.length);
+                            vendorCount += vendorRows.length;
+
+                            send({
+                                section: "Suppliers",
+                                details: `Synced ${vendorCount} vendor(s)...`,
+                                progress: Math.min(90, 10 + Math.floor(vendorCount / 20)),
+                                count: vendorCount
+                            });
+
+                            if (vendors.length < vendorPageSize) break;
+                            vendorSkip += vendorPageSize;
                         }
+                        await MySqlService.logSyncEvent(options.mode, "Suppliers", "completed", vendorCount);
+                        send({
+                            section: "Suppliers",
+                            status: "done",
+                            details: `Supplier sync complete (${vendorCount} vendors).`,
+                            progress: 100,
+                            count: vendorCount
+                        });
                     } catch (e) {
                         console.error(">>> [Sync API] Vendor sync error:", e.message);
                         await MySqlService.logSyncEvent(options.mode, "Suppliers", "error", 0, e.message);
+                        send({ section: "Suppliers", details: `Supplier sync error: ${e.message}`, progress: 5 });
                     }
                 }
 

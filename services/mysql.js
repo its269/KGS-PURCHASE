@@ -347,7 +347,7 @@ export const MySqlService = {
             
             for (const vid of vendorIds) {
                 const lt = leadTimes[vid]?.days || 0;
-                const rs = reliability[vid] || 100.00;
+                const rs = reliability[vid]?.score ?? null;
                 
                 await purchasePool.query(
                     `UPDATE vendors SET avg_lead_time = ?, reliability_score = ? WHERE vendor_id = ?`,
@@ -446,17 +446,24 @@ export const MySqlService = {
                 SELECT 
                     vendor_id,
                     COUNT(*) as total_orders,
-                    SUM(CASE WHEN receipt_date > promised_date THEN 1 ELSE 0 END) as late_orders,
+                    SUM(CASE WHEN receipt_date <= promised_date THEN 1 ELSE 0 END) as on_time_orders,
                     ROUND(
                         (SUM(CASE WHEN receipt_date <= promised_date THEN 1 ELSE 0 END) / COUNT(*)) * 100, 
-                        1
+                        2
                     ) as reliability_score
                 FROM purchase_history
-                WHERE status IN ('Closed', 'Completed') AND promised_date IS NOT NULL AND receipt_date IS NOT NULL
+                WHERE status IN ('Closed', 'Completed')
+                  AND promised_date IS NOT NULL
+                  AND receipt_date IS NOT NULL
+                  AND order_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
                 GROUP BY vendor_id
             `);
             return rows.reduce((acc, row) => {
-                acc[row.vendor_id] = row.reliability_score;
+                acc[row.vendor_id] = {
+                    score: Number(row.reliability_score),
+                    totalOrders: Number(row.total_orders),
+                    onTimeOrders: Number(row.on_time_orders)
+                };
                 return acc;
             }, {});
         } catch (err) {

@@ -17,17 +17,21 @@ export async function GET(request) {
         if (source === "mysql") {
             try {
                 const result = await MySqlService.getVendors({ page, pageSize, search });
-                const scores = await MySqlService.getSupplierPerformance();
+                const performance = await MySqlService.getSupplierPerformance();
                 
                 if (result.data.length > 0) {
                     return NextResponse.json({ 
                         vendors: result.data.map(v => {
                             const vid = v.VendorID.value;
+                            const perf = performance[vid];
                             return {
                                 vendorId: vid,
                                 vendorName: v.VendorName.value,
                                 status: v.Status?.value || "Active",
-                                reliabilityScore: scores[vid] ?? 100
+                                reliabilityScore: perf?.score ?? null,
+                                totalOrders: perf?.totalOrders ?? 0,
+                                onTimeOrders: perf?.onTimeOrders ?? 0,
+                                avgLeadTime: Number(v.AvgLeadTime?.value ?? 0)
                             };
                         }),
                         totalCount: result.totalCount,
