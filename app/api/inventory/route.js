@@ -4,8 +4,33 @@ import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/sessio
 
 export const runtime = "nodejs";
 
-/**
- * BFF API Route for Inventory
+async function enrichInventoryRows(rows, { branch, search }) {
+    const [salesMap, vendorMap, leadTimeMap] = await Promise.all([
+        MySqlService.getPeriodicSalesSummary({ branch, search }),
+        MySqlService.getItemVendorMap(),
+        MySqlService.getVendorLeadTimes(),
+    ]);
+
+    return rows.map((item) => {
+        const key = (item.InventoryID?.value || "").toUpperCase().trim();
+        const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
+        const supplierId = vendorMap.get(key) || "";
+        const leadTimeDays = supplierId ? (leadTimeMap[supplierId]?.days ?? null) : null;
+
+        return {
+            ...item,
+            Category: { value: item.ItemClass?.value || item.Category?.value || "" },
+            SupplierID: { value: supplierId },
+            LeadTimeDays: { value: leadTimeDays },
+            SafetyStock: item.SafetyStock ?? { value: null },
+            MOQ: item.MOQ ?? { value: null },
+            QtySold: { value: sales.qty_sold },
+            TotalSales: { value: sales.total_sales },
+        };
+    });
+}
+
+/** * BFF API Route for Inventory
  * Handles request parsing and delegates to AcumaticaService or MySqlService.
  */
 export async function GET(request) {
@@ -28,8 +53,8 @@ export async function GET(request) {
             console.log(`[BFF] Fetching from MySQL (company: ${companyId})...`);
             try {
                 const inventory = await MySqlService.getInventory({ page, pageSize, search, branch, filter, companyId });
-                const warehouseRows = await MySqlService.countWarehouseRows(companyId);
-                const isCatalogOnly = inventory.dataMode === "catalog" || warehouseRows === 0;
+                const layout = await MySqlService.resolveInventoryLayout(companyId);
+                const isCatalogOnly = layout === "catalog-empty";
 
                 if (inventory.data.length === 0) {
                     console.log("[BFF] MySQL returned 0 items for this query, falling back to Acumatica...");
@@ -39,7 +64,7 @@ export async function GET(request) {
                 const cookie = getSessionFromRequest(request);
 
                 if (isCatalogOnly && cookie && cookie !== "__bypass__") {
-                    console.log(`[BFF] MySQL has catalog only (${warehouseRows} warehouse rows) — loading live stock from Acumatica`);
+                    console.log(`[BFF] MySQL catalog has no branch stock — loading live stock from Acumatica`);
                     const live = await AcumaticaService.getStockItems({
                         page,
                         pageSize,
@@ -48,16 +73,7 @@ export async function GET(request) {
                         cookie,
                         includeStats: stats,
                     });
-                    const salesMap = await MySqlService.getPeriodicSalesSummary({ branch, search });
-                    const enriched = live.data.map((item) => {
-                        const key = (item.InventoryID?.value || "").toUpperCase().trim();
-                        const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
-                        return {
-                            ...item,
-                            QtySold: { value: sales.qty_sold },
-                            TotalSales: { value: sales.total_sales },
-                        };
-                    });
+                    const enriched = await enrichInventoryRows(live.data, { branch, search });
                     return Response.json({
                         ...live,
                         data: enriched,
@@ -78,31 +94,29 @@ export async function GET(request) {
                     });
                 }
 
-                let globalStats = { totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 };
+                let globalStats = {
+                    totalStock: 0,
+                    totalValue: 0,
+                    lowStock: 0,
+                    totalLowStock: 0,
+                    outOfStock: 0,
+                    deadStock: 0,
+                    overstock: 0,
+                    lastSync: null,
+                    dataMode: layout,
+                };
                 if (stats) {
                     globalStats = await MySqlService.getGlobalStats(branch, search, companyId);
                 }
 
-                // Merge periodic sales summary (qty_sold, total_sales) per inventory item
-                const salesMap = await MySqlService.getPeriodicSalesSummary({ branch, search });
-                const enriched = inventory.data.map(item => {
-                    const key = (item.InventoryID?.value || "").toUpperCase().trim();
-                    const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
-                    return {
-                        ...item,
-                        QtySold: { value: sales.qty_sold },
-                        TotalSales: { value: sales.total_sales },
-                    };
-                });
-
                 result = {
                     ...inventory,
-                    data: enriched,
+                    data: inventory.data,
                     globalStats,
-                    source: inventory.dataMode === "catalog" ? "mysql-catalog" : "mysql",
+                    dataMode: layout,
+                    source: layout === "catalog" ? "mysql-catalog" : "mysql",
                     companyId,
-                };
-            } catch (mError) {
+                };            } catch (mError) {
                 console.error("[MySQL Inventory Error]", mError.message);
                 
                 const cookie = getSessionFromRequest(request);
@@ -149,12 +163,18 @@ export async function GET(request) {
             result.source = "acumatica-direct";
         }
 
-        return Response.json({
-            ...result,
+        if (result?.data) {
+            result.data = await enrichInventoryRows(result.data, { branch, search });
+        }
+
+        if (stats && !result.globalStats) {
+            result.globalStats = await MySqlService.getGlobalStats(branch, search, companyId);
+        }
+
+        return Response.json({            ...result,
             page,
             pageSize
         });
-
     } catch (err) {
         console.error("[BFF Inventory Error]", err);
         if (err.message === "Unauthorized") {

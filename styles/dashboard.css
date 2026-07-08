@@ -35,6 +35,12 @@
     margin-top: 0.5rem;
 }
 
+.db-catalog-hint {
+    font-size: 0.8rem;
+    color: var(--status-warning);
+    margin-top: 0.35rem;
+}
+
 .db-data-source {
     font-size: 0.65rem;
     font-weight: 800;

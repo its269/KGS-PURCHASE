@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef, memo } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useRef, memo } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
@@ -73,54 +72,35 @@ IconClose.displayName = "IconClose";
 /* ── Constants ────────────────────────────────────────────── */
 const ROWS_PER_PAGE = 15;
 const LOW_STOCK_THRESHOLD = 10;
-
-const getStatus = (onHand) => {
-    if (onHand <= 0) return "OUT_OF_STOCK";
-    if (onHand <= LOW_STOCK_THRESHOLD) return "LOW_STOCK";
-    return "IN_STOCK";
-};
-const STATUS_LABEL = { IN_STOCK: "In Stock", LOW_STOCK: "Low Stock", OUT_OF_STOCK: "Out of Stock" };
-const STATUS_CLASS = { IN_STOCK: "db-status-in", LOW_STOCK: "db-status-low", OUT_OF_STOCK: "db-status-out" };
 const cellVal = (row, key) => {
     const val = row[key]?.value;
-    if (val === null || val === undefined) return "—";
+    if (val === null || val === undefined || val === "") return "—";
     if (typeof val === "object") return "—";
     return val;
 };
 
-/* ── Table Row Component ───────────────────────────────────── */
-const InventoryRow = memo(({ row, index }) => {
-    const onHand = Number(row.OnHand?.value) || 0;
-    const available = Number(row.Available?.value) || 0;
-    const status = getStatus(onHand);
-    const price = Number(row.DefaultPrice?.value) || 0;
-    const qtySold = Number(row.QtySold?.value) || 0;
-    const totalSales = Number(row.TotalSales?.value) || 0;
+const cellNum = (row, key) => {
+    const val = row[key]?.value;
+    if (val === null || val === undefined || val === "") return "—";
+    const n = Number(val);
+    return Number.isFinite(n) ? n.toLocaleString() : String(val);
+};
 
-    return (
-        <tr
-            className={`${status === "LOW_STOCK" ? "db-row-warn" : status === "OUT_OF_STOCK" ? "db-row-danger" : ""}`}
-        >
-            <td className="db-row-num col-mobile-hide">{index}</td>
-            <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
-            <td className="db-desc">{cellVal(row, "Description")}</td>
-            <td><span className="db-branch-tag">{cellVal(row, "Branch")}</span></td>
-            <td className="col-tablet-hide">{cellVal(row, "SiteID")}</td>
-            <td className="db-num"><span className={onHand > 0 ? "db-badge db-badge-green" : "db-badge"}>{onHand.toLocaleString()}</span></td>
-            <td className="db-num col-mobile-hide"><span className={available > 0 ? "db-badge db-badge-blue" : "db-badge"}>{available.toLocaleString()}</span></td>
-            <td className="db-num col-mobile-hide">₱{price.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
-            <td className="col-tablet-hide"><span className="db-class-tag">{cellVal(row, "ItemClass")}</span></td>
-            <td><span className={`db-status-badge ${STATUS_CLASS[status]}`}>{STATUS_LABEL[status]}</span></td>
-            <td className="db-num col-tablet-hide">{qtySold > 0 ? qtySold.toLocaleString("en-PH", { minimumFractionDigits: 2 }) : "—"}</td>
-            <td className="db-num col-tablet-hide">{totalSales > 0 ? `₱${totalSales.toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}</td>
-        </tr>
-    );
-});
+/* ── Table Row Component ───────────────────────────────────── */
+const InventoryRow = memo(({ row }) => (
+    <tr>
+        <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
+        <td className="db-desc">{cellVal(row, "Description")}</td>
+        <td><span className="db-class-tag">{cellVal(row, "Category")}</span></td>
+        <td>{cellVal(row, "SupplierID")}</td>
+        <td className="db-num">{cellNum(row, "LeadTimeDays")}</td>
+        <td className="db-num">{cellNum(row, "SafetyStock")}</td>
+        <td className="db-num">{cellNum(row, "MOQ")}</td>
+    </tr>
+));
 InventoryRow.displayName = "InventoryRow";
 
 export default function DashboardPage() {
-    const router = useRouter();
-
     /* ── State ────────────────────────────────────────────── */
     const [selectedBranch, setSelectedBranch] = useState("");
     const [search, setSearch] = useState("");
@@ -130,22 +110,22 @@ export default function DashboardPage() {
     const [allInventory, setAllInventory] = useState([]);
     const [dataSource, setDataSource] = useState("mysql");
     const [totalCount, setTotalCount] = useState(0);
-    const [globalStats, setGlobalStats] = useState({ 
-        totalStock: 0, 
-        totalValue: 0, 
-        lowStock: 0, 
-        totalLowStock: 0, 
+    const [globalStats, setGlobalStats] = useState({
+        totalStock: 0,
+        totalValue: 0,
+        lowStock: 0,
+        totalLowStock: 0,
         outOfStock: 0,
         deadStock: 0,
-        overstock: 0 
+        overstock: 0,
+        lastSync: null,
     });
+    const [activeFilter, setActiveFilter] = useState(null);
     const [hasMore, setHasMore] = useState(false);
 
     const [branchOptions, setBranchOptions] = useState([]);
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [loading, setLoading] = useState(true);
-    const [showQuickSync, setShowQuickSync] = useState(false);
-    const [activeFilter, setActiveFilter] = useState(null);
     const [companyLabel, setCompanyLabel] = useState("KGSC");
 
     const inventoryCachePrefix = () =>
@@ -212,10 +192,8 @@ export default function DashboardPage() {
         localStorage.setItem("db_filter_search", search);
         localStorage.setItem("db_filter_page", page.toString());
     }, [selectedBranch, search, page]);
-    const [showSyncConfirm, setShowSyncConfirm] = useState(false);
 
     const searchTimer = useRef(null);
-    const syncingRef = useRef(false);
 
     /* ── Init Data ────────────────────────────────────────── */
     useEffect(() => {
@@ -308,16 +286,7 @@ export default function DashboardPage() {
         }
     }, [page, debouncedSearch, selectedBranch, fetchInventory]);
 
-    const initials = useMemo(() => {
-        const parts = userName.split(" ");
-        if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-        return userName.slice(0, 2).toUpperCase();
-    }, [userName]);
-
-    const selectedBranchName = useMemo(() => {
-        if (!selectedBranch) return "All Branches";
-        return selectedBranch;
-    }, [selectedBranch]);
+    const isStale = globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000;
 
     /* ── Render ───────────────────────────────────────────── */
     return (
@@ -331,7 +300,7 @@ export default function DashboardPage() {
                             {dataSource === "mysql"
                                 ? "Live from MySQL"
                                 : dataSource === "mysql-catalog"
-                                ? "MySQL catalog (run sync for stock)"
+                                ? "Product catalog"
                                 : dataSource === "acumatica-live"
                                 ? "Live from ERP"
                                 : dataSource === "acumatica-fallback"
@@ -373,12 +342,12 @@ export default function DashboardPage() {
                     <span className="db-stat-value">{(globalStats.overstock || 0).toLocaleString()}</span>
                     <span className="db-stat-sub">{">"}180 days of supply</span>
                 </div>
-                <div className={`db-stat-card ${globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000 ? "db-stat-danger db-stat-stale" : "db-stat-info"}`}>
+                <div className={`db-stat-card ${isStale ? "db-stat-danger db-stat-stale" : "db-stat-info"}`}>
                     <span className="db-stat-label">Data Freshness</span>
                     <span className="db-stat-value db-stat-value-sm">
                         {globalStats.lastSync ? new Date(globalStats.lastSync).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Never"}
                     </span>
-                    <span className="db-stat-sub">{globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000 ? "Warning: Data is stale (>24h)" : "Last successful sync"}</span>
+                    <span className="db-stat-sub">{isStale ? "Warning: Data is stale (>24h)" : "Last successful sync"}</span>
                 </div>
                 </div>
 
@@ -409,26 +378,20 @@ export default function DashboardPage() {
                         <table className="db-table">
                             <thead>
                                 <tr>
-                                    <th className="col-mobile-hide">#</th>
                                     <th>Inventory ID</th>
                                     <th>Description</th>
-                                    <th>Branch</th>
-                                    <th className="col-tablet-hide">Site</th>
-                                    <th className="db-num">On Hand</th>
-                                    <th className="db-num col-mobile-hide">Available</th>
-                                    <th className="db-num col-mobile-hide">Price</th>
-                                    <th className="col-tablet-hide">Class</th>
-                                    <th>Status</th>
-                                    <th className="db-num col-tablet-hide">Qty Sold</th>
-                                    <th className="db-num col-tablet-hide">Total Sales</th>
+                                    <th>Category</th>
+                                    <th>SupplierID</th>
+                                    <th className="db-num">LeadTimeDays</th>
+                                    <th className="db-num">SafetyStock</th>
+                                    <th className="db-num">MOQ</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {allInventory.map((row, i) => (
                                     <InventoryRow
-                                        key={i}
+                                        key={`${row.InventoryID?.value ?? "row"}-${row.Branch?.value ?? ""}-${i}`}
                                         row={row}
-                                        index={(page - 1) * ROWS_PER_PAGE + i + 1}
                                     />
                                 ))}
                             </tbody>
@@ -448,29 +411,26 @@ export default function DashboardPage() {
             </main>
 
             {activeFilter && (
-                <FilteredStockModal 
-                    filter={activeFilter} 
+                <FilteredStockModal
+                    filter={activeFilter}
                     branch={selectedBranch}
-                    onClose={() => setActiveFilter(null)} 
+                    onClose={() => setActiveFilter(null)}
                 />
             )}
         </div>
     );
 }
 
-/* ── Filtered Stock Modal Component ───────────────────────── */
 function FilteredStockModal({ filter, branch, onClose }) {
     const [items, setItems] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    const title = useMemo(() => {
-        if (filter === "low_stock") return "Low Stock Items";
-        if (filter === "out_of_stock") return "Out of Stock Items";
-        if (filter === "dead_stock") return "Dead Stock (No sales in 90 days)";
-        if (filter === "overstock") return "Overstock Items (Excessive Supply)";
-        return "Filtered Items";
-    }, [filter]);
+    const title = filter === "low_stock" ? "Low Stock Items"
+        : filter === "out_of_stock" ? "Out of Stock Items"
+        : filter === "dead_stock" ? "Dead Stock (No sales in 90 days)"
+        : filter === "overstock" ? "Overstock Items (Excessive Supply)"
+        : "Filtered Items";
 
     useEffect(() => {
         const fetchFiltered = async () => {
@@ -478,18 +438,15 @@ function FilteredStockModal({ filter, branch, onClose }) {
             try {
                 const params = new URLSearchParams({
                     page: "1",
-                    pageSize: "100", // Show top 100
-                    branch: branch,
-                    filter: filter,
-                    source: "mysql"
+                    pageSize: "100",
+                    branch,
+                    filter,
+                    source: "mysql",
                 });
                 const res = await fetchWithAuth(`/api/inventory?${params}`);
-                if (res.ok) {
-                    const result = await res.json();
-                    setItems(result.data || []);
-                } else {
-                    throw new Error("Failed to fetch filtered list");
-                }
+                if (!res.ok) throw new Error("Failed to fetch filtered list");
+                const result = await res.json();
+                setItems(result.data || []);
             } catch (err) {
                 setError(err.message);
             } finally {
@@ -501,44 +458,42 @@ function FilteredStockModal({ filter, branch, onClose }) {
 
     return (
         <div className="db-modal-overlay" onClick={onClose}>
-            <div className="db-modal" style={{ maxWidth: '800px' }} onClick={e => e.stopPropagation()}>
+            <div className="db-modal" style={{ maxWidth: "800px" }} onClick={(e) => e.stopPropagation()}>
                 <div className="db-modal-header">
                     <h2 className="db-modal-title">{title}</h2>
                     <button className="db-modal-close" onClick={onClose}><IconClose /></button>
                 </div>
                 <div className="db-modal-body" style={{ padding: 0 }}>
                     {loading ? (
-                        <div style={{ padding: '3rem', textAlign: 'center' }}>
-                            <div className="db-spinner" style={{ margin: '0 auto 1rem' }} />
-                            <p style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Loading items...</p>
+                        <div style={{ padding: "3rem", textAlign: "center" }}>
+                            <div className="db-spinner" style={{ margin: "0 auto 1rem" }} />
+                            <p style={{ fontWeight: "600", color: "var(--text-secondary)" }}>Loading items...</p>
                         </div>
                     ) : error ? (
-                        <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--status-danger)' }}>{error}</div>
+                        <div style={{ padding: "3rem", textAlign: "center", color: "var(--status-danger)" }}>{error}</div>
                     ) : items.length === 0 ? (
-                        <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>No items found for this filter.</div>
+                        <div style={{ padding: "3rem", textAlign: "center", color: "var(--text-muted)" }}>No items found for this filter.</div>
                     ) : (
-                        <table className="db-table" style={{ fontSize: '0.85rem' }}>
-                            <thead style={{ position: 'sticky', top: 0, zIndex: 10 }}>
+                        <table className="db-table" style={{ fontSize: "0.85rem" }}>
+                            <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
                                 <tr>
-                                    <th style={{ padding: '1rem' }}>ID</th>
+                                    <th style={{ padding: "1rem" }}>ID</th>
                                     <th>Description</th>
                                     <th className="db-num">On Hand</th>
                                     <th>Branch</th>
-                                    <th>Site</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {items.map((item, i) => (
                                     <tr key={i}>
-                                        <td style={{ padding: '0.75rem 1rem' }}><span className="db-inv-id">{cellVal(item, "InventoryID")}</span></td>
+                                        <td style={{ padding: "0.75rem 1rem" }}><span className="db-inv-id">{cellVal(item, "InventoryID")}</span></td>
                                         <td>{cellVal(item, "Description")}</td>
-                                        <td className="db-num" style={{ fontWeight: '700' }}>
+                                        <td className="db-num" style={{ fontWeight: "700" }}>
                                             <span className={Number(item.OnHand?.value) > 0 ? "db-badge db-badge-green" : "db-badge db-status-out"}>
                                                 {Number(item.OnHand?.value).toLocaleString()}
                                             </span>
                                         </td>
                                         <td>{cellVal(item, "Branch")}</td>
-                                        <td>{cellVal(item, "SiteID")}</td>
                                     </tr>
                                 ))}
                             </tbody>

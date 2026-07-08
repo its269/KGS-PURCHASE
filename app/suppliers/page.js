@@ -428,6 +428,7 @@ export default function SuppliersPage() {
                                     </div>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
                                         *Lead Time = Days from PO creation to warehouse receipt.<br />
+                                        *Uses the last <strong>12 months</strong> of closed PO history.<br />
                                         *Shown below the lead-time input when historical data exists.
                                     </div>
                                 </div>

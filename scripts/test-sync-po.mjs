@@ -80,7 +80,13 @@ async function main() {
             status: getF(o, "Status"),
             order_date: getF(o, "Date"),
             promised_date: getF(o, "PromisedOn"),
-            receipt_date: null,
+            receipt_date: (() => {
+                const status = String(getF(o, "Status") || "").trim();
+                if (status === "Closed" || status === "Completed") {
+                    return getAny(o, "LastReceiptDate", "ReceiptDate", "LastModifiedDateTime") || null;
+                }
+                return null;
+            })(),
             total_amount: parseFloat(getF(o, "OrderTotal") || 0)
         });
 

@@ -238,14 +238,61 @@ export async function POST(request) {
         );
         if (pkCheck.cnt === 0) {
             try {
+                for (const idx of ["uq_inventory_items_inventory_id", "inventory_id"]) {
+                    const [[row]] = await conn.query(
+                        `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                         WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME=?`,
+                        [inventoryDb, idx]
+                    );
+                    if (row.cnt > 0) {
+                        await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP INDEX \`${idx}\``);
+                    }
+                }
+                const [[uqOld]] = await conn.query(
+                    `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME='uq_inv_warehouse'`,
+                    [inventoryDb]
+                );
+                if (uqOld.cnt > 0) {
+                    await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP INDEX uq_inv_warehouse`);
+                }
+                const [[idCol]] = await conn.query(
+                    `SELECT EXTRA FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND COLUMN_NAME='id'`,
+                    [inventoryDb]
+                );
+                if (idCol?.EXTRA?.includes("auto_increment")) {
+                    await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` MODIFY COLUMN id INT NOT NULL`);
+                }
                 await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP PRIMARY KEY`);
                 await conn.query(
                     `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD PRIMARY KEY (inventory_id, default_warehouse, company_id)`
                 );
+                await conn.query(
+                    `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\`
+                     ADD UNIQUE KEY uq_inv_warehouse (inventory_id, default_warehouse, company_id)`
+                ).catch(() => {});
+                const [[{ maxId }]] = await conn.query(
+                    `SELECT COALESCE(MAX(id), 0) AS maxId FROM \`${inventoryDb}\`.\`inventory_items\``
+                );
+                await conn.query(
+                    `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD KEY idx_inventory_row_id (id)`
+                ).catch(() => {});
+                await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` MODIFY COLUMN id INT NOT NULL AUTO_INCREMENT`);
+                await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` AUTO_INCREMENT = ${maxId + 1}`);
                 console.log(">>> [Sync API] Updated inventory_items primary key to include company_id.");
             } catch (pkErr) {
                 console.warn(">>> [Sync API] PK migration skipped:", pkErr.message);
             }
+        }
+
+        try {
+            const cleaned = await MySqlService.sanitizeCatalogStockFields();
+            if (cleaned > 0) {
+                console.log(`>>> [Sync API] Cleared stock fields on ${cleaned} catalog row(s).`);
+            }
+        } catch (sanitizeErr) {
+            console.warn(">>> [Sync API] Catalog sanitize skipped:", sanitizeErr.message);
         }
 
         try {
@@ -304,6 +351,58 @@ export async function POST(request) {
                     if (v !== "" && v !== null && v !== undefined) return v;
                 }
                 return "";
+            };
+
+            const parseAcumaticaRows = (data) => data?.value || (Array.isArray(data) ? data : []);
+
+            const resolveReceiptDate = (order, receiptDateByOrder) => {
+                const orderNbr = getF(order, "OrderNbr");
+                const status = String(getF(order, "Status") || "").trim();
+                const fromReceipt = receiptDateByOrder.get(orderNbr);
+                if (fromReceipt) return fromReceipt;
+                if (status === "Closed" || status === "Completed") {
+                    return getAny(order, "LastReceiptDate", "ReceiptDate", "LastModifiedDateTime") || null;
+                }
+                return null;
+            };
+
+            const buildReceiptDateMap = async (acuBase, startDate) => {
+                const receiptDateByOrder = new Map();
+                let prSkip = 0;
+                while (!signal.aborted) {
+                    const prFilter = `Date ge datetimeoffset'${startDate}T00:00:00Z'`;
+                    const prUrl = `${acuBase}/PurchaseReceipt?$expand=Details&$top=100&$skip=${prSkip}&$filter=${encodeURIComponent(prFilter)}`;
+                    try {
+                        const prRes = await AcumaticaService.fetchWithRetry(prUrl, effectiveCookie);
+                        const prData = await prRes.json();
+                        const receipts = parseAcumaticaRows(prData);
+                        if (receipts.length === 0) break;
+
+                        for (const pr of receipts) {
+                            const receiptDate = getF(pr, "Date");
+                            if (!receiptDate) continue;
+                            let details = pr.Details || [];
+                            if (details.value) details = details.value;
+                            if (!Array.isArray(details)) details = [];
+
+                            for (const d of details) {
+                                const poNbr = getF(d, "POOrderNbr");
+                                if (!poNbr) continue;
+                                const existing = receiptDateByOrder.get(poNbr);
+                                if (!existing || new Date(receiptDate) > new Date(existing)) {
+                                    receiptDateByOrder.set(poNbr, receiptDate);
+                                }
+                            }
+                        }
+
+                        prSkip += receipts.length;
+                        if (receipts.length < 100) break;
+                    } catch (prErr) {
+                        console.warn(">>> [Sync API] PurchaseReceipt fetch skipped:", prErr.message);
+                        break;
+                    }
+                }
+                return receiptDateByOrder;
             };
 
             try {
@@ -565,6 +664,7 @@ export async function POST(request) {
                     send({ section: "Incoming PO", details: "Updating purchase order details...", progress: 50 });
                     try {
                         let poStart = options.startDate || "2024-01-01";
+                        const receiptDateByOrder = await buildReceiptDateMap(ACU_BASE, poStart);
                         const poFilter = `Date ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
                         let poSkip = 0;
                         let poTotal = 0;
@@ -572,7 +672,7 @@ export async function POST(request) {
                             const url = `${ACU_BASE}/PurchaseOrder?$expand=Details&$top=50&$skip=${poSkip}&$filter=${encodeURIComponent(poFilter)}`;
                             const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
                             const data = await res.json();
-                            const orders = data.value || [];
+                            const orders = parseAcumaticaRows(data);
                             if (orders.length === 0) break;
 
                             const historyRows = [];
@@ -585,7 +685,7 @@ export async function POST(request) {
                                     status: getF(o, "Status"),
                                     order_date: getF(o, "Date"),
                                     promised_date: getF(o, "PromisedOn"),
-                                    receipt_date: null, // Would come from receipt sync if implemented
+                                    receipt_date: resolveReceiptDate(o, receiptDateByOrder),
                                     total_amount: parseFloat(getF(o, "OrderTotal") || 0)
                                 });
 

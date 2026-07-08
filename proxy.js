@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionMeta } from "@/lib/session-store";
-import { getSessionCookieOptions, withBasePath, getBasePath } from "@/lib/base-path";
+import { withBasePath, getBasePath, clearAllCookies } from "@/lib/base-path";
 
 const PUBLIC_PATHS = ["/signin", "/api/auth/login", "/api/auth/logout"];
 
@@ -19,7 +19,7 @@ function redirectTo(request, pathname) {
 }
 
 function clearSessionCookie(request, response) {
-    response.cookies.set("acu_session", "", getSessionCookieOptions(request, 0));
+    clearAllCookies(request, response);
     return response;
 }
 

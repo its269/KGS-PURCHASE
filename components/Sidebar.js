@@ -301,20 +301,17 @@ export default function Sidebar() {
           <button
             className="sidebar-logout"
             onClick={() => {
-              // Clear user info
               localStorage.removeItem("acu_session");
               localStorage.removeItem("userName");
               localStorage.removeItem("userFirstName");
               localStorage.removeItem("userLastName");
+              localStorage.removeItem("activeCompanyId");
 
-              // Clear filter persistence
               Object.keys(localStorage)
-                .filter(k => k.includes("_filter_"))
-                .forEach(k => localStorage.removeItem(k));
+                .filter((k) => k.includes("_filter_") || k.startsWith("acu_data_"))
+                .forEach((k) => localStorage.removeItem(k));
 
               DataCache.clear();
-              // Navigate directly — the logout route clears the cookie and
-              // redirects to /signin in a single server response.
               window.location.href = withBasePath("/api/auth/logout");
             }}
             title={isCollapsed ? "Logout" : ""}
