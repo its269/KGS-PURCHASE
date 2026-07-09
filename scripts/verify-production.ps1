@@ -20,7 +20,7 @@ if (Test-Path $repoPath) {
     if (Test-Path ".next\BUILD_ID") {
         Write-Host "Build ID  : $(Get-Content .next\BUILD_ID -Raw)"
     } else {
-        Write-Warning "No .next\BUILD_ID — app may not be built yet."
+        Write-Warning 'No .next\BUILD_ID - app may not be built yet.'
     }
 
     Write-Host ""

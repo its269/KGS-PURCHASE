@@ -44,6 +44,7 @@ jobs:
         shell: powershell
         run: |
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-node-path.ps1
           npm ci
 
       - name: Build production bundle
@@ -51,6 +52,7 @@ jobs:
         shell: powershell
         run: |
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-node-path.ps1
           $env:NEXT_TELEMETRY_DISABLED = '1'
           $env:NODE_OPTIONS = '--max-old-space-size=8192'
           $env:NEXT_PUBLIC_BASE_PATH = '/kgs-purchase'

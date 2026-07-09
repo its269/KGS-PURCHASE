@@ -27,6 +27,7 @@ if (-not (Test-Path -LiteralPath $RepoPath)) {
 }
 
 Set-Location $RepoPath
+& "$PSScriptRoot\ensure-node-path.ps1"
 Write-Host "Deploy target: $RepoPath"
 Write-Host "Public URL   : http://190.92.233.232/kgs-purchase/signin"
 
@@ -65,7 +66,7 @@ try {
     & .\scripts\copy-standalone-assets.ps1
 
     if (-not (Test-Path -LiteralPath ".next\BUILD_ID")) {
-        throw "BUILD_ID missing — build failed"
+        throw "BUILD_ID missing - build failed"
     }
     if (-not (Test-Path -LiteralPath ".next\standalone\server.js")) {
         throw "standalone server.js missing"
