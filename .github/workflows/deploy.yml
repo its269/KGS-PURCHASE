@@ -41,20 +41,20 @@ jobs:
 
       - name: Install dependencies
         timeout-minutes: 15
-        shell: cmd
+        shell: powershell
         run: |
-          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          npm ci 2>&1
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          npm ci
 
       - name: Build production bundle
         timeout-minutes: 45
-        shell: cmd
+        shell: powershell
         run: |
-          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          set NEXT_TELEMETRY_DISABLED=1
-          set NODE_OPTIONS=--max-old-space-size=8192
-          set NEXT_PUBLIC_BASE_PATH=/kgs-purchase
-          npm run build 2>&1
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          $env:NEXT_TELEMETRY_DISABLED = '1'
+          $env:NODE_OPTIONS = '--max-old-space-size=8192'
+          $env:NEXT_PUBLIC_BASE_PATH = '/kgs-purchase'
+          npm run build
 
       - name: Copy standalone assets
         shell: powershell
