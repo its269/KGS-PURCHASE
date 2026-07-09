@@ -43,6 +43,7 @@ jobs:
         timeout-minutes: 15
         shell: powershell
         run: |
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           npm ci
 
@@ -50,6 +51,7 @@ jobs:
         timeout-minutes: 45
         shell: powershell
         run: |
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           $env:NEXT_TELEMETRY_DISABLED = '1'
           $env:NODE_OPTIONS = '--max-old-space-size=8192'
