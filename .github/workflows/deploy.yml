@@ -43,6 +43,7 @@ jobs:
         timeout-minutes: 15
         shell: powershell
         run: |
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\ensure-node-path.ps1
           $env:NPM_CONFIG_CACHE = "$env:ProgramData\kgs-purchase-npm-cache"
@@ -58,6 +59,7 @@ jobs:
         timeout-minutes: 45
         shell: powershell
         run: |
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\ensure-node-path.ps1
           $env:NEXT_TELEMETRY_DISABLED = '1'
