@@ -45,7 +45,14 @@ jobs:
         run: |
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\ensure-node-path.ps1
-          npm ci
+          $env:NPM_CONFIG_CACHE = "$env:ProgramData\kgs-purchase-npm-cache"
+          New-Item -ItemType Directory -Force -Path $env:NPM_CONFIG_CACHE | Out-Null
+          if (Test-Path "node_modules") {
+            Write-Host "node_modules present - running npm install (skip destructive npm ci on Windows runner)"
+            npm install --no-audit --no-fund
+          } else {
+            npm ci
+          }
 
       - name: Build production bundle
         timeout-minutes: 45
@@ -79,16 +86,17 @@ jobs:
           echo Build verified - ID: && type .next\BUILD_ID
 
       - name: Restart production server
-        shell: cmd
+        shell: powershell
         run: |
-          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          call scripts\pm2-env.bat
-          call pm2 reload kgs-purchase-http --update-env
-          if errorlevel 1 (
-            call pm2 start ecosystem.config.js --only kgs-purchase-http
-          )
-          call pm2 save
-          call pm2 status
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-pm2-env.ps1
+          & .\scripts\ensure-node-path.ps1
+          pm2 reload kgs-purchase-http --update-env
+          if ($LASTEXITCODE -ne 0) {
+            pm2 start ecosystem.config.js --only kgs-purchase-http
+          }
+          pm2 save
+          pm2 status
 
       - name: Health check
         shell: powershell
@@ -108,6 +116,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\ensure-pm2-env.ps1
+          & .\scripts\ensure-node-path.ps1
           Write-Host "Rolling back..."
           pm2 stop kgs-purchase-http 2>&1 | Out-Null
           Start-Sleep -Seconds 8
