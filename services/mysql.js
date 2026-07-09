@@ -107,15 +107,30 @@ function inventorySelectCols(layout) {
                     i.default_price as DefaultPrice`;
 }
 
-function netSalesQtySubquery(purchaseDb, salesEx) {
+function netSalesQtySubquery(purchaseDb, salesEx, branch = "") {
+    const branchClause = branch
+        ? ` AND TRIM(UPPER(branch_name)) = TRIM(UPPER(?))`
+        : "";
     return `(
         SELECT inventory_id, SUM(${SQL_NET_QTY}) as total_qty
         FROM \`${purchaseDb}\`.product_periodic_sales
         WHERE ${salesEx.clause}
-          AND ${salesLookbackSql()}
+          AND ${salesLookbackSql()}${branchClause}
         GROUP BY inventory_id
     )`;
 }
+
+const EMPTY_GLOBAL_STATS = {
+    totalStock: 0,
+    totalValue: 0,
+    lowStock: 0,
+    totalLowStock: 0,
+    outOfStock: 0,
+    deadStock: 0,
+    overstock: 0,
+    count: 0,
+    lastSync: null,
+};
 
 export const MySqlService = {
     /**
@@ -540,8 +555,15 @@ export const MySqlService = {
 
         try {
             const layout = await resolveInventoryLayout(effectiveCompanyId);
-            // Per-site warehouse rows share one inventory_id; without a branch, list catalog (one row per SKU).
-            const queryLayout = (layout === "warehouse" && !branch && !filter) ? "catalog" : layout;
+            const hasWarehouse = layout === "warehouse";
+            // Stock KPIs and branch views always use per-site warehouse rows — never catalog on_hand.
+            const stockMode = hasWarehouse && (branch || filter);
+            const queryLayout = stockMode ? "warehouse" : (hasWarehouse && !branch && !filter ? "catalog" : (hasWarehouse ? "warehouse" : "catalog"));
+
+            if ((branch || filter) && !hasWarehouse) {
+                return { data: [], totalCount: 0, hasMore: false, dataMode: "warehouse-missing" };
+            }
+
             let whereClauses = ["i.company_id = ?"];
             let params = [effectiveCompanyId];
 
@@ -730,36 +752,30 @@ export const MySqlService = {
             const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
 
             if (branch && isExcludedBranchAlias(branch)) {
+                return { ...EMPTY_GLOBAL_STATS };
+            }
+
+            const warehouseRows = await countWarehouseRows(effectiveCompanyId);
+            if (warehouseRows === 0) {
                 return {
-                    totalStock: 0,
-                    totalValue: 0,
-                    lowStock: 0,
-                    totalLowStock: 0,
-                    outOfStock: 0,
-                    deadStock: 0,
-                    overstock: 0,
-                    count: 0,
-                    lastSync: null,
+                    ...EMPTY_GLOBAL_STATS,
+                    lastSync: await this.getLastInventorySyncTime(),
+                    dataMode: "warehouse-missing",
                 };
             }
 
-            const layout = await resolveInventoryLayout(effectiveCompanyId);
-            let whereClauses = ["i.company_id = ?"];
+            let whereClauses = [
+                "i.company_id = ?",
+                "i.default_warehouse IS NOT NULL",
+                "i.default_warehouse != '__catalog__'",
+            ];
             let params = [effectiveCompanyId];
-
-            if (layout === "warehouse") {
-                whereClauses.push("i.default_warehouse IS NOT NULL", "i.default_warehouse != '__catalog__'");
-            } else if (layout === "catalog") {
-                whereClauses.push("i.default_warehouse = '__catalog__'");
-            } else {
-                whereClauses.push("i.default_warehouse IS NOT NULL", "i.default_warehouse != '__catalog__'");
-            }
 
             const branchEx = sqlExcludeBranches("i");
             whereClauses.push(branchEx.clause);
             params.push(...branchEx.params);
 
-            if (branch && layout === "warehouse") {
+            if (branch) {
                 whereClauses.push("i.branch_id = ?");
                 params.push(branch);
             }
@@ -775,23 +791,19 @@ export const MySqlService = {
             }
 
             if (search) {
-                if (layout === "warehouse") {
-                    whereClauses.push("(i.inventory_id LIKE ? OR COALESCE(c.inventory_name, i.inventory_name) LIKE ?)");
-                } else {
-                    whereClauses.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
-                }
+                whereClauses.push("(i.inventory_id LIKE ? OR COALESCE(c.inventory_name, i.inventory_name) LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`);
             }
 
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
 
             const salesEx = sqlExcludeSalesBranches("branch_name");
-            const salesParams = [...salesEx.params];
+            const salesParams = branch
+                ? [...salesEx.params, branch]
+                : [...salesEx.params];
 
-            const fromClause = inventoryFromClause(layout);
-            const priceExpr = layout === "warehouse"
-                ? "COALESCE(c.default_price, i.default_price, 0)"
-                : "COALESCE(i.default_price, 0)";
+            const fromClause = inventoryFromClause("warehouse");
+            const priceExpr = "COALESCE(c.default_price, i.default_price, 0)";
 
             const query = `
                 SELECT
@@ -805,7 +817,7 @@ export const MySqlService = {
                     SUM(CASE WHEN i.on_hand > (COALESCE(s.total_qty, 0) * 2) AND COALESCE(s.total_qty, 0) > 0 THEN 1 ELSE 0 END) as overstockCount,
                     MAX(i.last_sync) as lastSync
                  ${fromClause}
-                 LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx)} s ON i.inventory_id = s.inventory_id
+                 LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx, branch)} s ON i.inventory_id = s.inventory_id
                  ${wherePart}`;
 
             const [[stats]] = await pool.query(query, [...salesParams, ...params]);
@@ -822,7 +834,7 @@ export const MySqlService = {
                 overstock: Number(stats.overstockCount) || 0,
                 count: totalProducts,
                 lastSync: stats.lastSync || await this.getLastInventorySyncTime(),
-                dataMode: layout,
+                dataMode: "warehouse",
             };
         } catch (err) {
             console.error("[MySQL getGlobalStats Error]", err);
@@ -1553,12 +1565,14 @@ export const MySqlService = {
     /** Remove stock rows not refreshed during the current sync run. */
     async deleteStaleInventoryLevels(syncStartedAt, companyId = "main") {
         try {
+            // 2-minute buffer so freshly upserted rows are never removed due to clock skew
+            const cutoff = new Date(new Date(syncStartedAt).getTime() - 2 * 60 * 1000);
             const [result] = await pool.query(
                 `DELETE FROM inventory_items
                  WHERE company_id = ?
                    AND default_warehouse != '__catalog__'
                    AND (last_sync IS NULL OR last_sync < ?)`,
-                [companyId, syncStartedAt]
+                [companyId, cutoff]
             );
             return result.affectedRows || 0;
         } catch (err) {

@@ -231,6 +231,23 @@ export async function POST(request) {
              MODIFY COLUMN \`posting_class\` VARCHAR(100) NULL DEFAULT ''`
         ).catch((e) => console.warn(">>> [Sync API] Column default migration:", e.message));
 
+        // Always drop inventory_id-only unique indexes — they block per-warehouse rows
+        try {
+            for (const idx of ["uq_inventory_items_inventory_id", "inventory_id"]) {
+                const [[row]] = await conn.query(
+                    `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME=?`,
+                    [inventoryDb, idx]
+                );
+                if (row.cnt > 0) {
+                    await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP INDEX \`${idx}\``);
+                    console.log(`>>> [Sync API] Dropped blocking index: ${idx}`);
+                }
+            }
+        } catch (idxErr) {
+            console.warn(">>> [Sync API] Index cleanup skipped:", idxErr.message);
+        }
+
         const [[pkCheck]] = await conn.query(
             `SELECT COUNT(*) as cnt FROM information_schema.KEY_COLUMN_USAGE
              WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND CONSTRAINT_NAME='PRIMARY' AND COLUMN_NAME='company_id'`,
@@ -238,16 +255,6 @@ export async function POST(request) {
         );
         if (pkCheck.cnt === 0) {
             try {
-                for (const idx of ["uq_inventory_items_inventory_id", "inventory_id"]) {
-                    const [[row]] = await conn.query(
-                        `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
-                         WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME=?`,
-                        [inventoryDb, idx]
-                    );
-                    if (row.cnt > 0) {
-                        await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP INDEX \`${idx}\``);
-                    }
-                }
                 const [[uqOld]] = await conn.query(
                     `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
                      WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME='uq_inv_warehouse'`,
@@ -369,7 +376,10 @@ export async function POST(request) {
             const buildReceiptDateMap = async (acuBase, startDate) => {
                 const receiptDateByOrder = new Map();
                 let prSkip = 0;
-                while (!signal.aborted) {
+                let prTotal = 0;
+                const maxReceiptPages = 40;
+                let prPage = 0;
+                while (!signal.aborted && prPage < maxReceiptPages) {
                     const prFilter = `Date ge datetimeoffset'${startDate}T00:00:00Z'`;
                     const prUrl = `${acuBase}/PurchaseReceipt?$expand=Details&$top=100&$skip=${prSkip}&$filter=${encodeURIComponent(prFilter)}`;
                     try {
@@ -395,7 +405,16 @@ export async function POST(request) {
                             }
                         }
 
+                        prTotal += receipts.length;
                         prSkip += receipts.length;
+                        prPage++;
+                        const prProg = Math.min(65, 50 + Math.floor(prPage * 1.5));
+                        send({
+                            section: "Incoming PO",
+                            details: `Loading receipt dates… (${prTotal} receipts)`,
+                            progress: prProg,
+                        });
+
                         if (receipts.length < 100) break;
                     } catch (prErr) {
                         console.warn(">>> [Sync API] PurchaseReceipt fetch skipped:", prErr.message);
@@ -604,11 +623,23 @@ export async function POST(request) {
                             if (items.length < top) break;
                         }
 
-                        if (!isDelta && !signal.aborted) {
-                            const removedMain = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "main");
-                            const removedEcom = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "ecommerce");
-                            console.log(`>>> [Sync API] Removed stale stock rows: main=${removedMain}, ecommerce=${removedEcom}`);
+                        if (!isDelta && !signal.aborted && totalLevelsSynced > 0) {
+                            // Verify rows were actually written before pruning old site rows
+                            const writtenMain = await MySqlService.countWarehouseRows("main");
+                            const writtenEcom = await MySqlService.countWarehouseRows("ecommerce");
+                            if (writtenMain + writtenEcom > 0) {
+                                const removedMain = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "main");
+                                const removedEcom = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "ecommerce");
+                                console.log(`>>> [Sync API] Removed stale stock rows: main=${removedMain}, ecommerce=${removedEcom}`);
+                            } else {
+                                console.warn(">>> [Sync API] Skipping stale cleanup — warehouse rows not found after upsert.");
+                            }
+                        } else if (!isDelta && totalLevelsSynced === 0) {
+                            console.warn(">>> [Sync API] Skipping stale row cleanup — no warehouse levels were synced.");
                         }
+
+                        await MySqlService.sanitizeCatalogStockFields("main").catch(() => 0);
+                        await MySqlService.sanitizeCatalogStockFields("ecommerce").catch(() => 0);
 
                         await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced, `${totalLevelsSynced} stock rows`);
                         send({ section: "Inventory", status: "done", details: `Inventory sync complete (${totalLevelsSynced} stock rows).`, progress: 100 });
@@ -711,6 +742,13 @@ export async function POST(request) {
 
                             poTotal += orders.length;
                             poSkip += orders.length;
+                            const poProg = Math.min(99, 65 + Math.floor(poTotal / 5));
+                            send({
+                                section: "Incoming PO",
+                                details: `Synced ${poTotal} purchase order(s)…`,
+                                progress: poProg,
+                                count: poTotal,
+                            });
                             if (orders.length < 50) break;
                         }
                         await MySqlService.logSyncEvent(options.mode, "Incoming PO", "completed", poTotal);

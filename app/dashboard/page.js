@@ -72,6 +72,16 @@ IconClose.displayName = "IconClose";
 /* ── Constants ────────────────────────────────────────────── */
 const ROWS_PER_PAGE = 15;
 const LOW_STOCK_THRESHOLD = 10;
+const EMPTY_GLOBAL_STATS = {
+    totalStock: 0,
+    totalValue: 0,
+    lowStock: 0,
+    totalLowStock: 0,
+    outOfStock: 0,
+    deadStock: 0,
+    overstock: 0,
+    lastSync: null,
+};
 const cellVal = (row, key) => {
     const val = row[key]?.value;
     if (val === null || val === undefined || val === "") return "—";
@@ -111,14 +121,8 @@ export default function DashboardPage() {
     const [dataSource, setDataSource] = useState("mysql");
     const [totalCount, setTotalCount] = useState(0);
     const [globalStats, setGlobalStats] = useState({
-        totalStock: 0,
-        totalValue: 0,
-        lowStock: 0,
-        totalLowStock: 0,
-        outOfStock: 0,
-        deadStock: 0,
-        overstock: 0,
-        lastSync: null,
+        ...EMPTY_GLOBAL_STATS,
+        count: 0,
     });
     const [activeFilter, setActiveFilter] = useState(null);
     const [hasMore, setHasMore] = useState(false);
@@ -130,6 +134,11 @@ export default function DashboardPage() {
 
     const inventoryCachePrefix = () =>
         `inventory_${localStorage.getItem("activeCompanyId") || "main"}_`;
+
+    const clearInventoryCache = () => DataCache.deleteByPrefix(inventoryCachePrefix());
+
+    const shouldUseCachedStats = (stats) =>
+        stats && stats.dataMode !== "warehouse-missing";
 
     // Hydration fix & Initial Restoration
     useEffect(() => {
@@ -158,7 +167,7 @@ export default function DashboardPage() {
                 setAllInventory(cached.data || []);
                 setTotalCount(cached.totalCount || 0);
                 setHasMore(!!cached.hasMore);
-                if (cached.globalStats) setGlobalStats(cached.globalStats);
+                if (shouldUseCachedStats(cached.globalStats)) setGlobalStats(cached.globalStats);
             }
         });
     }, []);
@@ -192,6 +201,15 @@ export default function DashboardPage() {
         localStorage.setItem("db_filter_search", search);
         localStorage.setItem("db_filter_page", page.toString());
     }, [selectedBranch, search, page]);
+
+    const handleBranchChange = (branchId) => {
+        setSelectedBranch(branchId);
+        setPage(1);
+        setGlobalStats({ ...EMPTY_GLOBAL_STATS, count: 0 });
+        setAllInventory([]);
+        setTotalCount(0);
+        clearInventoryCache();
+    };
 
     const searchTimer = useRef(null);
 
@@ -279,6 +297,10 @@ export default function DashboardPage() {
 
         const cached = DataCache.get(cacheKey);
         if (cached) {
+            setAllInventory(cached.data || []);
+            setTotalCount(cached.totalCount || 0);
+            setHasMore(!!cached.hasMore);
+            if (shouldUseCachedStats(cached.globalStats)) setGlobalStats(cached.globalStats);
             // Re-fetch in background
             Promise.resolve().then(() => fetchInventory(true));
         } else {
@@ -309,13 +331,18 @@ export default function DashboardPage() {
                         </span>
                     </div>
                     <p>Manage and monitor stock levels across all locations.</p>
+                    {globalStats.dataMode === "warehouse-missing" && (
+                        <p className="db-catalog-hint">
+                            Branch stock has not been loaded yet. Run a full Inventory sync from Sync Center to populate warehouse totals.
+                        </p>
+                    )}
                 </div>
 
                 <div className="db-stats">
                 <div className="db-stat-card">
                     <span className="db-stat-label">Total Stocks</span>
                     <span className="db-stat-value">{(globalStats.totalStock || 0).toLocaleString()}</span>
-                    <span className="db-stat-sub">{totalCount.toLocaleString()} products in {selectedBranch || "all branches"}</span>
+                    <span className="db-stat-sub">{(globalStats.count ?? totalCount).toLocaleString()} products in {selectedBranch || "all branches"}</span>
                 </div>
                 <div className="db-stat-card">
                     <span className="db-stat-label">Total Value</span>
@@ -355,7 +382,7 @@ export default function DashboardPage() {
                     <div className="db-toolbar-left">
                         <div className="db-select-wrapper">
                             <IconFilter />
-                            <select className="db-select" value={selectedBranch} onChange={(e) => { setSelectedBranch(e.target.value); setPage(1); }}>
+                            <select className="db-select" value={selectedBranch} onChange={(e) => handleBranchChange(e.target.value)}>
                                 <option value="">All Branches</option>
                                 {branchOptions.map(b => <option key={b.id} value={b.id}>{b.id}</option>)}
                             </select>
@@ -367,7 +394,7 @@ export default function DashboardPage() {
                         </div>
                     </div>
                     <div className="db-toolbar-right">
-                        <button className="db-refresh-btn" onClick={fetchInventory}><IconRefresh /> <span>Refresh</span></button>
+                        <button className="db-refresh-btn" onClick={() => { clearInventoryCache(); fetchInventory(); }}><IconRefresh /> <span>Refresh</span></button>
                     </div>
                 </div>
 

@@ -106,6 +106,7 @@ export async function GET(request) {
                     dataMode: layout,
                 };
                 if (stats) {
+                    await MySqlService.sanitizeCatalogStockFields(companyId).catch(() => 0);
                     globalStats = await MySqlService.getGlobalStats(branch, search, companyId);
                 }
 
@@ -113,10 +114,11 @@ export async function GET(request) {
                     ...inventory,
                     data: inventory.data,
                     globalStats,
-                    dataMode: layout,
-                    source: layout === "catalog" ? "mysql-catalog" : "mysql",
+                    dataMode: globalStats.dataMode || inventory.dataMode || layout,
+                    source: layout === "warehouse" ? "mysql" : "mysql-catalog",
                     companyId,
-                };            } catch (mError) {
+                };
+            } catch (mError) {
                 console.error("[MySQL Inventory Error]", mError.message);
                 
                 const cookie = getSessionFromRequest(request);
@@ -171,11 +173,11 @@ export async function GET(request) {
             result.globalStats = await MySqlService.getGlobalStats(branch, search, companyId);
         }
 
-        return Response.json({            ...result,
+        return Response.json({
+            ...result,
             page,
-            pageSize
-        });
-    } catch (err) {
+            pageSize,
+        });    } catch (err) {
         console.error("[BFF Inventory Error]", err);
         if (err.message === "Unauthorized") {
             return Response.json({ message: "Unauthorized" }, { status: 401 });
