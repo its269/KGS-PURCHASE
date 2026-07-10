@@ -54,19 +54,55 @@
 }
 
 .repl-branch-field,
-.repl-priority-field {
+.repl-priority-field,
+.repl-view-field {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
 }
 
 .repl-branch-field label,
-.repl-priority-field label {
+.repl-priority-field label,
+.repl-view-field label {
     font-size: 0.72rem;
     font-weight: 700;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+}
+
+.repl-view-switch {
+    display: inline-flex;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-surface);
+}
+
+.repl-view-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.55rem 0.9rem;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+    white-space: nowrap;
+}
+
+.repl-view-btn:hover {
+    background: var(--bg-main);
+    color: var(--text-primary);
+}
+
+.repl-view-btn.active {
+    background: var(--accent-primary);
+    color: #fff;
+}
+
+.repl-view-btn + .repl-view-btn {
+    border-left: 1px solid var(--border-light);
 }
 
 .repl-branch-field .db-select,

@@ -26,6 +26,11 @@ const IconInfo = () => (
         <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
     </svg>
 );
+const IconDownload = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+);
 
 function ColumnInfoHeader({ label, panelId, openId, setOpenId, align = "left", children }) {
     const open = openId === panelId;
@@ -128,7 +133,9 @@ function toggleAiRow(id, setExpandedAi) {
     setExpandedAi((prev) => ({ ...prev, [id]: !prev[id] }));
 }
 
-function ReplenishmentRows({ recs, expandedAi, setExpandedAi }) {
+function ReplenishmentRows({ recs, expandedAi, setExpandedAi, isMain }) {
+    const colSpan = isMain ? 11 : 9;
+
     return recs.map((rec) => {
         const ai = rec.aiInsights || {};
         const how = ai.howItWorks || {};
@@ -136,6 +143,7 @@ function ReplenishmentRows({ recs, expandedAi, setExpandedAi }) {
         const ads = ai.salesVelocity;
         const hasSales = days !== "N/A" && days != null;
         const isOpen = !!expandedAi[rec.recommendationId];
+        const leadTime = rec.leadTimeDays ?? ai.leadTimeDays;
 
         return (
             <Fragment key={rec.recommendationId}>
@@ -149,9 +157,19 @@ function ReplenishmentRows({ recs, expandedAi, setExpandedAi }) {
                         <div className="repl-product-id">{rec.itemId}</div>
                         <div className="repl-product-desc">{rec.description || "—"}</div>
                     </td>
-                    <td className="repl-num">{fmtNum(rec.currentStock)}</td>
+                    {isMain ? (
+                        <>
+                            <td className="repl-num">{fmtNum(rec.branchOrderQty ?? 0)}</td>
+                            <td className="repl-num">{fmtNum(rec.mainInventory ?? rec.currentStock)}</td>
+                            <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
+                            <td className="repl-num">{fmtNum(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0)}</td>
+                        </>
+                    ) : (
+                        <td className="repl-num">{fmtNum(rec.currentStock)}</td>
+                    )}
                     <td className="repl-num">{hasSales ? fmtNum(ads) : "—"}</td>
                     <td className="repl-num">{hasSales ? `${fmtNum(days)} days` : "—"}</td>
+                    <td className="repl-num">{leadTime > 0 ? `${fmtNum(leadTime)} days` : "—"}</td>
                     <td className="repl-num repl-order-qty">+{fmtNum(rec.suggestedQty)}</td>
                     <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
                     <td className="repl-ai-cell">
@@ -169,7 +187,7 @@ function ReplenishmentRows({ recs, expandedAi, setExpandedAi }) {
                 </tr>
                 {isOpen && how.steps?.length > 0 && (
                     <tr className="repl-ai-detail-row">
-                        <td colSpan={8}>
+                        <td colSpan={colSpan}>
                             <div className="repl-ai-panel">
                                 <div className="repl-ai-panel-header">
                                     <IconSparkles />
@@ -198,13 +216,25 @@ export default function ReplenishmentPage() {
     const [brief, setBrief] = useState(null);
     const [meta, setMeta] = useState(null);
     const [branches, setBranches] = useState([]);
-    const [selectedBranch, setSelectedBranch] = useState("MAIN");
+    const [viewMode, setViewMode] = useState("main");
+    const [selectedBranch, setSelectedBranch] = useState("");
     const [priorityFilter, setPriorityFilter] = useState("all");
     const [search, setSearch] = useState("");
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [expandedAi, setExpandedAi] = useState({});
     const [openColumnInfo, setOpenColumnInfo] = useState(null);
+
+    const retailBranches = useMemo(
+        () => branches.filter((b) => {
+            const id = String(b.SiteID || b.branch_id || "").trim();
+            return id && id !== "MAIN" && id !== "__catalog__";
+        }),
+        [branches]
+    );
+
+    const activeBranch = viewMode === "main" ? "MAIN" : selectedBranch;
+    const isMain = viewMode === "main";
 
     const applyPayload = useCallback((data) => {
         const list = Array.isArray(data) ? data : (data?.recommendations ?? []);
@@ -213,7 +243,8 @@ export default function ReplenishmentPage() {
         setMeta(data?.meta ?? null);
     }, []);
 
-    const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = selectedBranch) => {
+    const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = activeBranch) => {
+        if (!branchToFetch) return;
         if (!isBackground) setLoading(true);
         setError(null);
         try {
@@ -240,7 +271,27 @@ export default function ReplenishmentPage() {
         } finally {
             setLoading(false);
         }
-    }, [selectedBranch, applyPayload]);
+    }, [activeBranch, applyPayload]);
+
+    useEffect(() => {
+        const savedView = localStorage.getItem("repl_view_mode");
+        const savedBranch = localStorage.getItem("repl_selected_branch") || "";
+        if (savedView === "main" || savedView === "branch") {
+            setViewMode(savedView);
+        } else if (savedBranch === "MAIN") {
+            setViewMode("main");
+        } else if (savedBranch) {
+            setViewMode("branch");
+            setSelectedBranch(savedBranch);
+        }
+    }, []);
+
+    useEffect(() => {
+        localStorage.setItem("repl_view_mode", viewMode);
+        if (viewMode === "branch" && selectedBranch) {
+            localStorage.setItem("repl_selected_branch", selectedBranch);
+        }
+    }, [viewMode, selectedBranch]);
 
     useEffect(() => {
         let active = true;
@@ -256,26 +307,33 @@ export default function ReplenishmentPage() {
     }, []);
 
     useEffect(() => {
+        if (viewMode !== "branch" || selectedBranch || retailBranches.length === 0) return;
+        setSelectedBranch(retailBranches[0].SiteID || retailBranches[0].branch_id || "");
+    }, [viewMode, selectedBranch, retailBranches]);
+
+    useEffect(() => {
         let active = true;
-        const cacheKey = `replenishment_recs_v3_${selectedBranch}`;
+        if (!activeBranch) return undefined;
+
+        const cacheKey = `replenishment_recs_v3_${activeBranch}`;
         const cached = DataCache.get(cacheKey);
 
         (async () => {
             if (cached && active) applyPayload(cached);
-            if (active) await fetchRecommendations(!!cached, selectedBranch);
+            if (active) await fetchRecommendations(!!cached, activeBranch);
         })();
 
         return () => { active = false; };
-    }, [fetchRecommendations, selectedBranch, applyPayload]);
+    }, [fetchRecommendations, activeBranch, applyPayload]);
 
     useEffect(() => {
         const onCompanyChange = () => {
             DataCache.clear();
-            fetchRecommendations(false, selectedBranch);
+            if (activeBranch) fetchRecommendations(false, activeBranch);
         };
         window.addEventListener("company-changed", onCompanyChange);
         return () => window.removeEventListener("company-changed", onCompanyChange);
-    }, [fetchRecommendations, selectedBranch]);
+    }, [fetchRecommendations, activeBranch]);
 
     const stats = useMemo(() => {
         const urgent = recs.filter((r) => r.priorityLevel === "High").length;
@@ -300,10 +358,59 @@ export default function ReplenishmentPage() {
         return list;
     }, [recs, priorityFilter, search]);
 
-    const isMain = selectedBranch === "MAIN";
     const branchHint = isMain
-        ? "For MAIN: create a Purchase Order from your vendor."
-        : `For ${selectedBranch}: request a stock transfer from MAIN.`;
+        ? "MAIN warehouse: aggregate branch demand, MAIN stock, coming PO, and vendor order qty."
+        : selectedBranch
+            ? `For ${selectedBranch}: request a stock transfer from MAIN.`
+            : "Select a branch to view replenishment needs.";
+
+    const scopeLabel = isMain ? "MAIN Warehouse" : (selectedBranch || "Branch");
+
+    const exportCSV = useCallback(() => {
+        const rows = filteredRecs;
+        if (!rows.length) return;
+
+        const headers = isMain
+            ? ["Status", "Product ID", "Description", "Branch Order Qty", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"]
+            : ["Status", "Product ID", "Description", "Branch Stock", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"];
+
+        const csvRows = rows.map((rec) => {
+            const ai = rec.aiInsights || {};
+            const leadTime = rec.leadTimeDays ?? ai.leadTimeDays ?? "";
+            const base = [
+                priorityLabel(rec.priorityLevel),
+                rec.itemId,
+                rec.description || "",
+            ];
+            if (isMain) {
+                base.push(
+                    rec.branchOrderQty ?? 0,
+                    rec.mainInventory ?? rec.currentStock ?? 0,
+                    rec.comingPO ?? 0,
+                    rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0
+                );
+            } else {
+                base.push(rec.currentStock ?? 0);
+            }
+            base.push(
+                ai.salesVelocity ?? "",
+                ai.daysRemaining ?? "",
+                leadTime || "",
+                rec.suggestedQty ?? 0,
+                ai.whatToDo || rec.restockSource || ""
+            );
+            return base.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
+        });
+
+        const csv = [headers.join(","), ...csvRows].join("\n");
+        const blob = new Blob([csv], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `replenishment-${isMain ? "MAIN" : selectedBranch}-${new Date().toISOString().split("T")[0]}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }, [filteredRecs, isMain, selectedBranch, viewMode]);
 
     return (
         <div className="db-root">
@@ -311,7 +418,9 @@ export default function ReplenishmentPage() {
                 <div className="db-page-title">
                     <h1>Replenishment</h1>
                     <p>
-                        Items that need restocking at your branch. Check stock, how fast it sells, and how many to order.
+                        {isMain
+                            ? "MAIN warehouse planning — vendor orders to supply all retail branches."
+                            : "Branch replenishment — stock transfers needed from MAIN warehouse."}
                     </p>
                 </div>
 
@@ -336,29 +445,53 @@ export default function ReplenishmentPage() {
                     <div className="db-stat-card">
                         <span className="db-stat-label">Total units to order</span>
                         <span className="db-stat-value">{loading && recs.length === 0 ? "..." : stats.totalSuggested.toLocaleString()}</span>
-                        <span className="db-stat-sub">{selectedBranch}</span>
+                        <span className="db-stat-sub">{scopeLabel}</span>
                     </div>
                 </div>
 
                 <div className="db-toolbar">
                     <div className="db-toolbar-left">
-                        <div className="repl-branch-field">
-                            <label htmlFor="repl-branch">Branch</label>
-                            <div className="db-select-wrapper">
-                                <select
-                                    id="repl-branch"
-                                    className="db-select"
-                                    value={selectedBranch}
-                                    onChange={(e) => setSelectedBranch(e.target.value)}
+                        <div className="repl-view-field">
+                            <label>View</label>
+                            <div className="repl-view-switch">
+                                <button
+                                    type="button"
+                                    className={`repl-view-btn ${viewMode === "main" ? "active" : ""}`}
+                                    onClick={() => setViewMode("main")}
                                 >
-                                    <option value="MAIN">MAIN</option>
-                                    {branches.filter((b) => b.SiteID !== "MAIN" && b.SiteID !== "__catalog__").map((b) => (
-                                        <option key={b.SiteID} value={b.SiteID}>{b.SiteID}</option>
-                                    ))}
-                                </select>
-                                <IconChevron />
+                                    MAIN Warehouse
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`repl-view-btn ${viewMode === "branch" ? "active" : ""}`}
+                                    onClick={() => setViewMode("branch")}
+                                >
+                                    Branches
+                                </button>
                             </div>
                         </div>
+
+                        {viewMode === "branch" && (
+                            <div className="repl-branch-field">
+                                <label htmlFor="repl-branch">Branch</label>
+                                <div className="db-select-wrapper">
+                                    <select
+                                        id="repl-branch"
+                                        className="db-select"
+                                        value={selectedBranch}
+                                        onChange={(e) => setSelectedBranch(e.target.value)}
+                                        disabled={retailBranches.length === 0}
+                                    >
+                                        {retailBranches.length === 0 ? (
+                                            <option value="">No branches</option>
+                                        ) : retailBranches.map((b) => (
+                                            <option key={b.SiteID} value={b.SiteID}>{b.SiteID}</option>
+                                        ))}
+                                    </select>
+                                    <IconChevron />
+                                </div>
+                            </div>
+                        )}
 
                         <div className="repl-priority-field">
                             <label htmlFor="repl-priority">Show</label>
@@ -392,12 +525,20 @@ export default function ReplenishmentPage() {
 
                     <div className="db-toolbar-right">
                         <button
+                            className="db-action-btn"
+                            onClick={exportCSV}
+                            disabled={loading || filteredRecs.length === 0}
+                        >
+                            <IconDownload /> Export CSV
+                        </button>
+                        <button
                             className="db-refresh-btn"
                             onClick={() => {
-                                DataCache.delete(`replenishment_recs_${selectedBranch}`);
-                                fetchRecommendations(false, selectedBranch);
+                                if (!activeBranch) return;
+                                DataCache.delete(`replenishment_recs_v3_${activeBranch}`);
+                                fetchRecommendations(false, activeBranch);
                             }}
-                            disabled={loading}
+                            disabled={loading || !activeBranch}
                         >
                             {loading ? "Loading..." : "Refresh"}
                         </button>
@@ -414,7 +555,16 @@ export default function ReplenishmentPage() {
                             <tr>
                                 <th style={{ width: "90px" }}>Status</th>
                                 <th>Product</th>
-                                <th style={{ width: "100px", textAlign: "right" }}>Branch stock</th>
+                                {isMain ? (
+                                    <>
+                                        <th style={{ width: "110px", textAlign: "right" }}>Branch order qty</th>
+                                        <th style={{ width: "100px", textAlign: "right" }}>Main inventory</th>
+                                        <th style={{ width: "100px", textAlign: "right" }}>Coming PO</th>
+                                        <th style={{ width: "120px", textAlign: "right" }}>Total branch repl.</th>
+                                    </>
+                                ) : (
+                                    <th style={{ width: "100px", textAlign: "right" }}>Branch stock</th>
+                                )}
                                 <th className="repl-col-th" style={{ width: "128px", textAlign: "right" }}>
                                     <ColumnInfoHeader
                                         label="Sells / day"
@@ -444,6 +594,7 @@ export default function ReplenishmentPage() {
                                     </ColumnInfoHeader>
                                 </th>
                                 <th style={{ width: "110px", textAlign: "right" }}>Days left</th>
+                                <th style={{ width: "100px", textAlign: "right" }}>Avg. lead time</th>
                                 <th style={{ width: "110px", textAlign: "right" }}>Order qty</th>
                                 <th>What to do</th>
                                 <th style={{ width: "200px" }}>
@@ -456,16 +607,18 @@ export default function ReplenishmentPage() {
                         <tbody>
                             {loading && recs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={8} className="repl-table-empty">
+                                    <td colSpan={isMain ? 11 : 9} className="repl-table-empty">
                                         <div className="db-spinner db-spinner-lg" style={{ margin: "0 auto 0.75rem" }} />
-                                        Loading recommendations for {selectedBranch}...
+                                        Loading recommendations for {scopeLabel}...
                                     </td>
                                 </tr>
                             ) : filteredRecs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={8} className="repl-table-empty">
+                                    <td colSpan={isMain ? 11 : 9} className="repl-table-empty">
                                         {recs.length === 0
-                                            ? `No restock needed at ${selectedBranch}. Stock looks good based on recent sales.`
+                                            ? isMain
+                                                ? "No vendor orders needed at MAIN. Branch demand is covered."
+                                                : `No restock needed at ${selectedBranch}. Stock looks good based on recent sales.`
                                             : "No items match your search or filter."}
                                     </td>
                                 </tr>
@@ -474,6 +627,7 @@ export default function ReplenishmentPage() {
                                     recs={filteredRecs}
                                     expandedAi={expandedAi}
                                     setExpandedAi={setExpandedAi}
+                                    isMain={isMain}
                                 />
                             )}
                         </tbody>

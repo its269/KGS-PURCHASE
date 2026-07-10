@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
-import { isExcludedBranchAlias } from "@/lib/companies";
+import { isExcludedBranchAlias, filterReplenishmentBranchList } from "@/lib/companies";
 import { MySqlService } from "@/services/mysql";
 import { AcumaticaService } from "@/services/acumatica";
 import {
@@ -123,7 +123,116 @@ function buildRecommendation(item, branch, vendorMap, leadTimeMap, recId) {
         generatedDate: new Date().toISOString(),
         aiInsights,
         stockSource: item.stockSource || "mysql",
+        leadTimeDays: leadTime,
+        vendorId,
     };
+}
+
+function buildMainRecommendation({
+    item,
+    branchOrderQty,
+    comingPO,
+    vendorMap,
+    leadTimeMap,
+    recId,
+}) {
+    const itemId = (item.inventoryId || "").toUpperCase().trim();
+    const mainInventory = Number(item.totalOnHand) || 0;
+    const qtySold90 = Number(item.totalQtySold) || 0;
+    const ads = averageDailySales(qtySold90, SALES_LOOKBACK_DAYS);
+    const vendorId = vendorMap.get(itemId) || null;
+    const leadTime = vendorId ? (leadTimeMap[vendorId]?.days || 0) : 0;
+    const totalBranchReplenishment = Number(branchOrderQty) || 0;
+    const comingPoQty = Number(comingPO) || 0;
+
+    if (totalBranchReplenishment <= 0) return null;
+
+    const availableAtMain = mainInventory + comingPoQty;
+    const orderQty = Math.max(0, totalBranchReplenishment - availableAtMain);
+    const daysRemaining = ads > 0 ? Math.floor(availableAtMain / ads) : null;
+    const isCritical = orderQty > 0 && (
+        availableAtMain < totalBranchReplenishment ||
+        (ads > 0 && daysRemaining !== null && daysRemaining <= (leadTime + SAFETY_BUFFER_DAYS))
+    );
+    const priority = isCritical ? "High" : orderQty > 0 ? "Medium" : "Low";
+
+    const aiInsights = buildReplenishmentInsight({
+        itemId: item.inventoryId,
+        description: item.description,
+        currentStock: mainInventory,
+        suggestedQty: orderQty,
+        priorityLevel: priority,
+        branchId: "MAIN",
+        ads,
+        daysRemaining: daysRemaining ?? 0,
+        leadTimeDays: leadTime,
+        vendorId,
+        hasSalesHistory: ads > 0,
+        qtySold90,
+        targetStock: totalBranchReplenishment,
+        salesScope: item.salesScope || "network",
+        mainWarehouseContext: {
+            branchOrderQty: totalBranchReplenishment,
+            comingPO: comingPoQty,
+            totalBranchReplenishment,
+        },
+    });
+
+    return {
+        recommendationId: `REC-${recId}`,
+        itemId: item.inventoryId,
+        description: item.description,
+        currentStock: mainInventory,
+        mainInventory,
+        branchOrderQty: totalBranchReplenishment,
+        comingPO: comingPoQty,
+        totalBranchReplenishment,
+        suggestedQty: orderQty,
+        priorityLevel: priority,
+        branchId: "MAIN",
+        restockSource: aiInsights.restockSource,
+        generatedDate: new Date().toISOString(),
+        aiInsights,
+        stockSource: item.stockSource || "mysql",
+        leadTimeDays: leadTime,
+        vendorId,
+        isMainWarehouseView: true,
+    };
+}
+
+async function aggregateBranchOrderQty({ cookie, companyId, vendorMap, leadTimeMap }) {
+    const branchList = filterReplenishmentBranchList(
+        await MySqlService.getReplenishmentBranches(companyId)
+    );
+    const retailBranches = branchList
+        .map((b) => b.SiteID || b.branch_id || "")
+        .filter((id) => id && String(id).trim().toUpperCase() !== "MAIN" && !isExcludedBranchAlias(id));
+
+    const qtyByItem = new Map();
+
+    for (const branchId of retailBranches) {
+        const { map: salesMap } = await fetchSalesMap({
+            cookie,
+            branch: branchId,
+            isMainWarehouse: false,
+            companyId,
+        });
+        const items = await MySqlService.getReplenishmentItems({
+            branch: branchId,
+            companyId,
+            salesMap,
+        });
+
+        let recId = 3000;
+        for (const item of items) {
+            const rec = buildRecommendation(item, branchId, vendorMap, leadTimeMap, recId++);
+            if (!rec || rec.suggestedQty <= 0) continue;
+            const key = (item.inventoryId || "").toUpperCase().trim();
+            qtyByItem.set(key, (qtyByItem.get(key) || 0) + rec.suggestedQty);
+        }
+    }
+
+    return qtyByItem;
 }
 
 /** Replenishment API — branch + catalog-network sales velocity with Acumatica fallback. */
@@ -150,21 +259,78 @@ export async function GET(request) {
         const { map: salesMap, source: salesSource, salesMode, salesScope, lookbackDays } =
             await fetchSalesMap({ cookie, branch, isMainWarehouse, companyId });
 
-        const items = await MySqlService.getReplenishmentItems({
-            branch,
-            companyId,
-            salesMap,
-        });
-
         const vendorMap = await MySqlService.getItemVendorMap();
-        const leadTimeMap = await MySqlService.getVendorLeadTimes();
+        const leadTimeMap = await MySqlService.getEffectiveVendorLeadTimes();
 
-        const recommendations = [];
+        let recommendations = [];
         let recId = 2000;
 
-        for (const item of items) {
-            const rec = buildRecommendation(item, branch, vendorMap, leadTimeMap, recId++);
-            if (rec) recommendations.push(rec);
+        if (isMainWarehouse) {
+            const [items, branchQtyMap, comingPoMap] = await Promise.all([
+                MySqlService.getReplenishmentItems({ branch, companyId, salesMap }),
+                aggregateBranchOrderQty({ cookie, companyId, vendorMap, leadTimeMap }),
+                MySqlService.getOpenPoQtyByItem(),
+            ]);
+
+            for (const item of items) {
+                const key = (item.inventoryId || "").toUpperCase().trim();
+                const branchOrderQty = branchQtyMap.get(key) || 0;
+                if (branchOrderQty <= 0) continue;
+
+                const rec = buildMainRecommendation({
+                    item,
+                    branchOrderQty,
+                    comingPO: comingPoMap.get(key) || 0,
+                    vendorMap,
+                    leadTimeMap,
+                    recId: recId++,
+                });
+                if (rec) recommendations.push(rec);
+            }
+
+            // Include branch-demand items not present in MAIN stock rows
+            const missingKeys = [...branchQtyMap.keys()].filter(
+                (key) => !recommendations.some((r) => (r.itemId || "").toUpperCase().trim() === key)
+            );
+            if (missingKeys.length > 0) {
+                const catalogRows = await MySqlService.getCatalogItemsByIds(missingKeys, companyId);
+                const catalogByKey = new Map(
+                    catalogRows.map((c) => [(c.inventoryId || "").toUpperCase().trim(), c])
+                );
+
+                for (const key of missingKeys) {
+                    const branchOrderQty = branchQtyMap.get(key) || 0;
+                    if (branchOrderQty <= 0) continue;
+                    const cat = catalogByKey.get(key);
+
+                    const rec = buildMainRecommendation({
+                        item: {
+                            inventoryId: cat?.inventoryId || key,
+                            description: cat?.description || "",
+                            totalOnHand: 0,
+                            totalQtySold: salesMap.get(key)?.qty_sold || 0,
+                            salesScope: "network",
+                        },
+                        branchOrderQty,
+                        comingPO: comingPoMap.get(key) || 0,
+                        vendorMap,
+                        leadTimeMap,
+                        recId: recId++,
+                    });
+                    if (rec) recommendations.push(rec);
+                }
+            }
+        } else {
+            const items = await MySqlService.getReplenishmentItems({
+                branch,
+                companyId,
+                salesMap,
+            });
+
+            for (const item of items) {
+                const rec = buildRecommendation(item, branch, vendorMap, leadTimeMap, recId++);
+                if (rec) recommendations.push(rec);
+            }
         }
 
         const sorted = recommendations.sort((a, b) => {
@@ -190,6 +356,7 @@ export async function GET(request) {
                 salesMode,
                 salesScope,
                 salesLookbackDays: lookbackDays,
+                isMainWarehouseView: isMainWarehouse,
             },
         });
     } catch (err) {

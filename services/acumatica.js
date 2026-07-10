@@ -121,7 +121,7 @@ const mapPurchaseOrder = (po) => ({
     status: getF(po, "Status"),
     date: getF(po, "Date"),
     vendorId: getF(po, "VendorID"),
-    vendorName: getF(po, "VendorName"),
+    vendorName: getAny(po, "VendorName", "VendorID_description", "VendorDescription"),
     totalAmount: parseFloat(getF(po, "OrderTotal") || 0),
     lines: extractPoDetails(po).map(mapPoLine),
 });

@@ -181,10 +181,11 @@ export const MySqlService = {
     /**
      * Fetch purchase orders from MySQL (for Purchase Orders module)
      */
-    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "" }) {
+    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", branch = "", companyId = "main" } = {}) {
         const offset = (page - 1) * pageSize;
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
+        const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
 
         try {
             let whereClauses = [];
@@ -201,8 +202,20 @@ export const MySqlService = {
             }
 
             if (search) {
-                whereClauses.push("(h.order_nbr LIKE ? OR h.vendor_id LIKE ? OR h.vendor_name LIKE ?)");
-                params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+                whereClauses.push("(h.order_nbr LIKE ? OR h.vendor_id LIKE ? OR h.vendor_name LIKE ? OR v.vendor_name LIKE ?)");
+                params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+            }
+
+            if (branch) {
+                whereClauses.push(`EXISTS (
+                    SELECT 1 FROM purchase_order_details d
+                    INNER JOIN \`${inventoryDb}\`.inventory_items i
+                        ON UPPER(TRIM(d.inventory_id)) = UPPER(TRIM(i.inventory_id))
+                    WHERE d.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr
+                      AND i.company_id = ?
+                      AND UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))
+                )`);
+                params.push(companyId, branch);
             }
 
             const wherePart = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
@@ -211,11 +224,12 @@ export const MySqlService = {
                 `SELECT 
                     h.order_nbr as orderNbr,
                     h.vendor_id as vendorId,
-                    h.vendor_name as vendorName,
+                    COALESCE(NULLIF(TRIM(h.vendor_name), ''), v.vendor_name) as vendorName,
                     h.status,
                     h.order_date as date,
                     h.total_amount as totalAmount
                  FROM purchase_history h
+                 LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
                  ${wherePart}
                  ORDER BY h.order_date DESC, h.order_nbr DESC
                  LIMIT ${limitInt} OFFSET ${offsetInt}`,
@@ -253,7 +267,9 @@ export const MySqlService = {
             }));
 
             const [[{ total }]] = await purchasePool.query(
-                `SELECT COUNT(*) as total FROM purchase_history h ${wherePart}`,
+                `SELECT COUNT(*) as total FROM purchase_history h
+                 LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
+                 ${wherePart}`,
                 params
             );
 
@@ -281,7 +297,8 @@ export const MySqlService = {
                 (order_nbr, vendor_id, vendor_name, status, order_date, promised_date, receipt_date, total_amount, last_sync)
                 VALUES ?
                 ON DUPLICATE KEY UPDATE
-                vendor_name = VALUES(vendor_name),
+                vendor_id = VALUES(vendor_id),
+                vendor_name = COALESCE(NULLIF(VALUES(vendor_name), ''), vendor_name),
                 status = VALUES(status),
                 promised_date = VALUES(promised_date),
                 receipt_date = COALESCE(VALUES(receipt_date), receipt_date),
@@ -334,7 +351,7 @@ export const MySqlService = {
                 INSERT INTO vendors (vendor_id, vendor_name, status, last_sync)
                 VALUES ?
                 ON DUPLICATE KEY UPDATE
-                vendor_name = VALUES(vendor_name),
+                vendor_name = COALESCE(NULLIF(VALUES(vendor_name), ''), vendor_name),
                 status = VALUES(status),
                 last_sync = VALUES(last_sync)
             `;
@@ -342,6 +359,49 @@ export const MySqlService = {
             await connection.query(sql, [values]);
         } finally {
             connection.release();
+        }
+    },
+
+    async getVendorNamesByIds(vendorIds = []) {
+        const ids = [...new Set((vendorIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+        if (!ids.length) return {};
+
+        try {
+            const placeholders = ids.map(() => "?").join(", ");
+            const [rows] = await purchasePool.query(
+                `SELECT vendor_id, vendor_name
+                 FROM vendors
+                 WHERE vendor_id IN (${placeholders})`,
+                ids
+            );
+            return rows.reduce((acc, row) => {
+                const name = String(row.vendor_name || "").trim();
+                if (name) acc[row.vendor_id] = name;
+                return acc;
+            }, {});
+        } catch (err) {
+            console.error("[MySQL getVendorNamesByIds Error]", err);
+            return {};
+        }
+    },
+
+    /**
+     * Backfill missing purchase_history.vendor_name from the vendors table.
+     */
+    async backfillPurchaseHistoryVendorNames() {
+        try {
+            const [result] = await purchasePool.query(`
+                UPDATE purchase_history h
+                INNER JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
+                SET h.vendor_name = v.vendor_name
+                WHERE (h.vendor_name IS NULL OR TRIM(h.vendor_name) = '')
+                  AND v.vendor_name IS NOT NULL
+                  AND TRIM(v.vendor_name) != ''
+            `);
+            return result?.affectedRows || 0;
+        } catch (err) {
+            console.error("[MySQL backfillPurchaseHistoryVendorNames Error]", err);
+            return 0;
         }
     },
 
@@ -496,13 +556,63 @@ export const MySqlService = {
             return rows.reduce((acc, row) => {
                 acc[row.vendor_id] = {
                     days: Math.round(row.avg_lead_time) || 0,
-                    sample: row.sample_size
+                    sample: row.sample_size,
+                    source: "actual",
                 };
                 return acc;
             }, {});
         } catch (err) {
             console.error("[MySQL getVendorLeadTimes Error]", err);
             return {};
+        }
+    },
+
+    /**
+     * Vendor lead times for replenishment — user-entered values from Suppliers take priority over calculated actuals.
+     */
+    async getEffectiveVendorLeadTimes() {
+        const calculated = await this.getVendorLeadTimes();
+        const annotations = await this.getAnnotations("supplier");
+        const merged = { ...calculated };
+
+        for (const [vendorId, fields] of Object.entries(annotations)) {
+            const raw = fields?.leadTime;
+            if (raw === undefined || raw === null || raw === "") continue;
+            const days = parseInt(String(raw).trim(), 10);
+            if (!Number.isNaN(days) && days >= 0) {
+                merged[vendorId] = { days, sample: 0, source: "user" };
+            }
+        }
+
+        return merged;
+    },
+
+    /**
+     * Open purchase order quantities by inventory ID (incoming stock).
+     */
+    async getOpenPoQtyByItem() {
+        try {
+            const [rows] = await purchasePool.query(`
+                SELECT
+                    UPPER(TRIM(d.inventory_id)) as inventoryId,
+                    COALESCE(SUM(d.qty), 0) as openQty
+                FROM purchase_order_details d
+                INNER JOIN purchase_history h
+                    ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
+                WHERE h.status IN ('Open', 'Hold', 'Balanced', 'Pending Approval', 'Pending Printing', 'Pending Email')
+                  AND d.inventory_id IS NOT NULL
+                  AND TRIM(d.inventory_id) != ''
+                GROUP BY UPPER(TRIM(d.inventory_id))
+            `);
+            const map = new Map();
+            for (const row of rows) {
+                const key = String(row.inventoryId || "").toUpperCase().trim();
+                if (key) map.set(key, Number(row.openQty) || 0);
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getOpenPoQtyByItem Error]", err);
+            return new Map();
         }
     },
 
@@ -1231,6 +1341,33 @@ export const MySqlService = {
         } catch (err) {
             console.error("[MySQL getReplenishmentItems Error]", err);
             throw err;
+        }
+    },
+
+    /**
+     * Fetch catalog metadata for a list of inventory IDs (uppercase keys).
+     */
+    async getCatalogItemsByIds(itemIds = [], companyId = "main") {
+        const keys = [...new Set(
+            (itemIds || [])
+                .map((id) => String(id || "").toUpperCase().trim())
+                .filter(Boolean)
+        )];
+        if (!keys.length) return [];
+
+        try {
+            const placeholders = keys.map(() => "?").join(", ");
+            const [rows] = await pool.query(
+                `SELECT TRIM(inventory_id) AS inventoryId, inventory_name AS description, item_class AS itemClass
+                 FROM inventory_items
+                 WHERE company_id = ? AND default_warehouse = '__catalog__'
+                   AND UPPER(TRIM(inventory_id)) IN (${placeholders})`,
+                [companyId, ...keys]
+            );
+            return rows;
+        } catch (err) {
+            console.error("[MySQL getCatalogItemsByIds Error]", err);
+            return [];
         }
     },
 

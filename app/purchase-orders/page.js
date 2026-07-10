@@ -57,6 +57,11 @@ const IconDownload = () => (
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
     </svg>
 );
+const IconChevronSelect = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="6 9 12 15 18 9" />
+    </svg>
+);
 
 function poStatusClass(status) {
     const s = (status || "").toLowerCase();
@@ -83,6 +88,8 @@ export default function PurchaseOrdersPage() {
     const [debSearch, setDebSearch] = useState("");
     const [startDate, setStartDate] = useState("");
     const [status, setStatus] = useState("Open");
+    const [selectedBranch, setSelectedBranch] = useState("");
+    const [branchOptions, setBranchOptions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [expanded, setExpanded] = useState({}); // orderNbr -> bool
@@ -110,6 +117,7 @@ export default function PurchaseOrdersPage() {
         const savedSearch = localStorage.getItem("po_filter_search");
         const savedStart = localStorage.getItem("po_filter_startDate");
         const savedStatus = localStorage.getItem("po_filter_status");
+        const savedBranch = localStorage.getItem("po_filter_branch") || "";
 
         Promise.resolve().then(async () => {
             // 1. Load filters
@@ -117,6 +125,7 @@ export default function PurchaseOrdersPage() {
             if (savedSearch) setSearch(savedSearch);
             if (savedStart) setStartDate(savedStart);
             if (savedStatus) setStatus(savedStatus);
+            if (savedBranch) setSelectedBranch(savedBranch);
 
             // 2. Fetch PERSISTENT annotations from DB
             try {
@@ -143,6 +152,7 @@ export default function PurchaseOrdersPage() {
                 status: savedStatus || "Open"
             });
             if (savedSearch) params.set("search", savedSearch);
+            if (savedBranch) params.set("branch", savedBranch);
             const cacheKey = `po_orders_${params.toString()}`;
             const cached = DataCache.get(cacheKey);
             if (cached && isPoCacheUsable(cached)) {
@@ -151,6 +161,26 @@ export default function PurchaseOrdersPage() {
             }
             isInitialMount.current = false;
         });
+    }, []);
+
+    useEffect(() => {
+        let active = true;
+        (async () => {
+            try {
+                const res = await fetchWithAuth("/api/branches?source=mysql");
+                if (res.ok && active) {
+                    const branches = await res.json();
+                    const options = branches.map((b) => ({
+                        id: b.SiteID || b.branch_id || "",
+                        name: b.Description?.value || b.branch_name || b.SiteID || "",
+                    })).filter((b) => b.id);
+                    setBranchOptions(options);
+                }
+            } catch (err) {
+                console.error("Failed to load branches", err);
+            }
+        })();
+        return () => { active = false; };
     }, []);
 
     // Backup to localStorage just in case
@@ -196,8 +226,9 @@ export default function PurchaseOrdersPage() {
             localStorage.setItem("po_filter_search", search);
             localStorage.setItem("po_filter_startDate", startDate);
             localStorage.setItem("po_filter_status", status);
+            localStorage.setItem("po_filter_branch", selectedBranch);
         }
-    }, [page, search, startDate, status]);
+    }, [page, search, startDate, status, selectedBranch]);
 
     useEffect(() => {
         const t = setTimeout(() => setDebSearch(search), 350);
@@ -210,7 +241,7 @@ export default function PurchaseOrdersPage() {
             return;
         }
         setPage(1);
-    }, [debSearch, startDate, status]);
+    }, [debSearch, startDate, status, selectedBranch]);
 
     const fetchOrders = useCallback(async (isBackground = false) => {
         if (!isBackground) setLoading(true);
@@ -223,6 +254,7 @@ export default function PurchaseOrdersPage() {
                 status: status
             });
             if (debSearch) params.set("search", debSearch);
+            if (selectedBranch) params.set("branch", selectedBranch);
             const cacheKey = `po_orders_${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/po?${params}`); 
@@ -240,7 +272,7 @@ export default function PurchaseOrdersPage() {
         } finally {
             setLoading(false);
         }
-    }, [page, debSearch, startDate, status]);
+    }, [page, debSearch, startDate, status, selectedBranch]);
 
     useEffect(() => {
         const params = new URLSearchParams({
@@ -250,6 +282,7 @@ export default function PurchaseOrdersPage() {
             status: status
         });
         if (debSearch) params.set("search", debSearch);
+        if (selectedBranch) params.set("branch", selectedBranch);
         const cacheKey = `po_orders_${params.toString()}`;
 
         const cached = DataCache.get(cacheKey);
@@ -264,7 +297,7 @@ export default function PurchaseOrdersPage() {
             if (cached) DataCache.delete(cacheKey);
             setTimeout(() => fetchOrders(false), 0);
         }
-    }, [fetchOrders, page, debSearch, startDate, status]);
+    }, [fetchOrders, page, debSearch, startDate, status, selectedBranch]);
 
     const toggleExpand = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -314,6 +347,25 @@ export default function PurchaseOrdersPage() {
                         </select>
                     </div>
 
+                    <div className="po-filter-group">
+                        <span className="po-filter-label">Branch:</span>
+                        <div className="db-select-wrapper">
+                            <select
+                                className="po-select-box"
+                                style={{ width: '180px' }}
+                                value={selectedBranch}
+                                onChange={(e) => setSelectedBranch(e.target.value)}
+                            >
+                                <option value="">All Branches</option>
+                                <option value="MAIN">MAIN</option>
+                                {branchOptions.filter((b) => b.id !== "MAIN").map((b) => (
+                                    <option key={b.id} value={b.id}>{b.name || b.id}</option>
+                                ))}
+                            </select>
+                            <IconChevronSelect />
+                        </div>
+                    </div>
+
                     <div className="db-search-wrapper po-search-container">
                         <IconSearch />
                         <input
@@ -350,7 +402,8 @@ export default function PurchaseOrdersPage() {
                             <tr>
                                 <th style={{ width: 48 }}></th>
                                 <th style={{ width: 140 }}>Order #</th>
-                                <th>Vendor</th>
+                                <th style={{ width: 120 }}>Vendor ID</th>
+                                <th>Vendor Name</th>
                                 <th style={{ width: 140 }}>Status</th>
                                 <th>Order Date</th>
                                 <th style={{ width: 160 }}>ETA (Input)</th>
@@ -360,14 +413,14 @@ export default function PurchaseOrdersPage() {
                         </thead>
                         <tbody>
                             {loading && orders.length === 0 ? (
-                                <tr><td colSpan={8} className="si-loading-cell">
+                                <tr><td colSpan={9} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem 0' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Fetching orders...</span>
                                     </div>
                                 </td></tr>
                             ) : orders.length === 0 ? (
-                                <tr><td colSpan={8} className="si-empty-cell" style={{ padding: '4rem 0' }}>No purchase orders found.</td></tr>
+                                <tr><td colSpan={9} className="si-empty-cell" style={{ padding: '4rem 0' }}>No purchase orders found.</td></tr>
                             ) : orders.map(po => {
                                 const key = `${po.orderType}-${po.orderNbr}`;
                                 const isOpen = !!expanded[key];
@@ -381,11 +434,9 @@ export default function PurchaseOrdersPage() {
                                                 </span>
                                             </td>
                                             <td><span className="db-inv-id">{po.orderNbr}</span></td>
+                                            <td><span className="po-vendor-id">{po.vendorId || "—"}</span></td>
                                             <td>
-                                                <div className="po-vendor-cell">
-                                                    <span className="po-vendor-name">{po.vendorName || po.vendorId}</span>
-                                                    <span className="po-vendor-id">{po.vendorId}</span>
-                                                </div>
+                                                <span className="po-vendor-name">{po.vendorName || "—"}</span>
                                             </td>
                                             <td>
                                                 <span className={`db-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
@@ -420,7 +471,7 @@ export default function PurchaseOrdersPage() {
                                         </tr>
                                         {isOpen && (
                                             <tr className="po-lines-row">
-                                                <td colSpan={8}>
+                                                <td colSpan={9}>
                                                     <div className="po-lines-wrap">
                                                         <table className="po-lines-table">
                                                             <thead>

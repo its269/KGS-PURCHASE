@@ -46,13 +46,14 @@ export async function GET(request) {
             fileName = `PurchaseOrders_Export_${new Date().toISOString().split('T')[0]}.csv`;
             
             // Header
-            csvContent = "Order Nbr,Vendor,Status,Date,Total Amount\n";
+            csvContent = "Order Nbr,Vendor ID,Vendor Name,Status,Date,Total Amount\n";
             
             // Rows
             result.orders.forEach(po => {
                 const row = [
                     `"${po.orderNbr}"`,
-                    `"${(po.vendorName || po.vendorId || "").replace(/"/g, '""')}"`,
+                    `"${(po.vendorId || "").replace(/"/g, '""')}"`,
+                    `"${(po.vendorName || "").replace(/"/g, '""')}"`,
                     `"${po.status}"`,
                     po.date ? po.date.split('T')[0] : "",
                     po.totalAmount

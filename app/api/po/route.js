@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSessionFromRequest, getPoCredentialFromRequest } from "@/lib/session-store";
+import { getSessionFromRequest, getPoCredentialFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
 import { getSystemAcumaticaCredential } from "@/lib/acumatica-system-auth";
 import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
@@ -76,6 +76,24 @@ async function enrichMissingLines(orders, params, credential) {
     return orders;
 }
 
+async function enrichVendorNames(orders) {
+    if (!orders?.length) return orders;
+    const missingIds = [...new Set(
+        orders
+            .filter((o) => o.vendorId && !String(o.vendorName || "").trim())
+            .map((o) => o.vendorId)
+    )];
+    if (!missingIds.length) return orders;
+
+    const nameMap = await MySqlService.getVendorNamesByIds(missingIds);
+    if (!Object.keys(nameMap).length) return orders;
+
+    return orders.map((o) => ({
+        ...o,
+        vendorName: String(o.vendorName || "").trim() || nameMap[o.vendorId] || o.vendorName,
+    }));
+}
+
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
@@ -84,15 +102,32 @@ export async function GET(request) {
         const search = (searchParams.get("search") || "").trim();
         const startDate = searchParams.get("startDate") || "";
         const status = searchParams.get("status") || "";
+        const branch = (searchParams.get("branch") || "").trim();
         const source = searchParams.get("source") || "mysql";
         const userCred = getSessionFromRequest(request);
         const poCred = await resolvePoCredential(request);
+        const companyId = getActiveCompanyFromRequest(request) || "main";
 
-        const fetchParams = { page, pageSize, search, startDate, status };
+        const fetchParams = { page, pageSize, search, startDate, status, branch, companyId };
 
         if (source === "mysql") {
             try {
-                const result = await MySqlService.getPurchaseOrders(fetchParams);
+                let result = await MySqlService.getPurchaseOrders(fetchParams);
+
+                const needsVendorBackfill = result.orders.some(
+                    (o) => o.vendorId && !String(o.vendorName || "").trim()
+                );
+                if (needsVendorBackfill) {
+                    const updated = await MySqlService.backfillPurchaseHistoryVendorNames();
+                    if (updated > 0) {
+                        result = await MySqlService.getPurchaseOrders(fetchParams);
+                    } else {
+                        result = {
+                            ...result,
+                            orders: await enrichVendorNames(result.orders),
+                        };
+                    }
+                }
 
                 if (result.orders.length > 0) {
                     const allMissingLines = result.orders.every(o => !o.lines?.length);
@@ -104,6 +139,7 @@ export async function GET(request) {
                                 await persistLinesToMySQL(live.orders);
                                 return NextResponse.json({
                                     ...live,
+                                    orders: await enrichVendorNames(live.orders),
                                     source: "acumatica",
                                     page,
                                     pageSize,
@@ -119,7 +155,7 @@ export async function GET(request) {
 
                     return NextResponse.json({
                         ...result,
-                        orders: enriched,
+                        orders: await enrichVendorNames(enriched),
                         source: wasEnriched ? "mysql+enriched" : "mysql",
                         page,
                         pageSize,
@@ -135,7 +171,13 @@ export async function GET(request) {
                 return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
             }
             const result = await fetchLivePurchaseOrders(fetchParams, poCred);
-            return NextResponse.json({ ...result, source: "acumatica-system", page, pageSize });
+            return NextResponse.json({
+                ...result,
+                orders: await enrichVendorNames(result.orders),
+                source: "acumatica-system",
+                page,
+                pageSize,
+            });
         }
 
         if (userCred === "__bypass__") {
@@ -144,7 +186,13 @@ export async function GET(request) {
                     const result = await fetchLivePurchaseOrders(fetchParams, poCred);
                     if (result.orders.length > 0) {
                         await persistLinesToMySQL(result.orders);
-                        return NextResponse.json({ ...result, source: "acumatica-system", page, pageSize });
+                        return NextResponse.json({
+                            ...result,
+                            orders: await enrichVendorNames(result.orders),
+                            source: "acumatica-system",
+                            page,
+                            pageSize,
+                        });
                     }
                 } catch (err) {
                     console.error("[PO Bypass Fallback]", err.message);
@@ -163,6 +211,7 @@ export async function GET(request) {
 
         return NextResponse.json({
             ...result,
+            orders: await enrichVendorNames(result.orders),
             source: "acumatica",
             page,
             pageSize,

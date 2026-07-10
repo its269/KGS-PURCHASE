@@ -739,6 +739,7 @@ export async function POST(request) {
                             }
                             if (historyRows.length > 0) await MySqlService.upsertPurchaseHistory(historyRows);
                             if (lineRows.length > 0) await MySqlService.upsertPurchaseOrderDetails(lineRows);
+                            await MySqlService.backfillPurchaseHistoryVendorNames();
 
                             poTotal += orders.length;
                             poSkip += orders.length;
