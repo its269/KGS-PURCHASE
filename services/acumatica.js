@@ -64,6 +64,7 @@ export function extractWarehouseLevels(item, catalogFields = {}) {
         const siteId = String(
             getAny(wh, "SiteID", "Branch", "BranchID", "LinkBranch") || getAny(wh, "WarehouseID")
         ).trim();
+        const warehouseId = String(getAny(wh, "WarehouseID") || siteId).trim();
         if (!siteId) continue;
 
         const onHand = parseFloat(getAny(wh, "QtyOnHand", "OnHand", "Qty") || 0);
@@ -75,6 +76,7 @@ export function extractWarehouseLevels(item, catalogFields = {}) {
             inventory_id: invId,
             branch_id: siteId,
             site_id: siteId,
+            warehouse_id: warehouseId,
             on_hand: onHandVal,
             available: Number.isNaN(available) ? onHandVal : available,
             ...catalogFields,

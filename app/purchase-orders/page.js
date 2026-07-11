@@ -407,20 +407,23 @@ export default function PurchaseOrdersPage() {
                                 <th style={{ width: 140 }}>Status</th>
                                 <th>Order Date</th>
                                 <th style={{ width: 160 }}>ETA (Input)</th>
+                                <th style={{ width: 140 }}>ETD</th>
+                                <th style={{ width: 150 }}>Container Number</th>
+                                <th style={{ width: 180 }}>Remarks</th>
                                 <th style={{ width: 160 }}>User Status</th>
                                 <th style={{ textAlign: "right", width: 160 }}>Total Amount</th>
                             </tr>
                         </thead>
                         <tbody>
                             {loading && orders.length === 0 ? (
-                                <tr><td colSpan={9} className="si-loading-cell">
+                                <tr><td colSpan={12} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem 0' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Fetching orders...</span>
                                     </div>
                                 </td></tr>
                             ) : orders.length === 0 ? (
-                                <tr><td colSpan={9} className="si-empty-cell" style={{ padding: '4rem 0' }}>No purchase orders found.</td></tr>
+                                <tr><td colSpan={12} className="si-empty-cell" style={{ padding: '4rem 0' }}>No purchase orders found.</td></tr>
                             ) : orders.map(po => {
                                 const key = `${po.orderType}-${po.orderNbr}`;
                                 const isOpen = !!expanded[key];
@@ -452,6 +455,35 @@ export default function PurchaseOrdersPage() {
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
+                                                <input
+                                                    type="date"
+                                                    className="po-input-date"
+                                                    style={{ width: '100%' }}
+                                                    value={ui.etd || ""}
+                                                    onChange={(e) => handleUserInput(key, 'etd', e.target.value)}
+                                                />
+                                            </td>
+                                            <td onClick={(e) => e.stopPropagation()}>
+                                                <input
+                                                    type="text"
+                                                    className="po-input-text"
+                                                    style={{ width: '100%' }}
+                                                    placeholder="Container #"
+                                                    value={ui.containerNumber || ""}
+                                                    onChange={(e) => handleUserInput(key, 'containerNumber', e.target.value)}
+                                                />
+                                            </td>
+                                            <td onClick={(e) => e.stopPropagation()}>
+                                                <input
+                                                    type="text"
+                                                    className="po-input-text"
+                                                    style={{ width: '100%' }}
+                                                    placeholder="Remarks"
+                                                    value={ui.remarks || ""}
+                                                    onChange={(e) => handleUserInput(key, 'remarks', e.target.value)}
+                                                />
+                                            </td>
+                                            <td onClick={(e) => e.stopPropagation()}>
                                                 <select 
                                                     className="po-input-text" 
                                                     style={{ width: '100%' }}
@@ -471,7 +503,7 @@ export default function PurchaseOrdersPage() {
                                         </tr>
                                         {isOpen && (
                                             <tr className="po-lines-row">
-                                                <td colSpan={9}>
+                                                <td colSpan={12}>
                                                     <div className="po-lines-wrap">
                                                         <table className="po-lines-table">
                                                             <thead>

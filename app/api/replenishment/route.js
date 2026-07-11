@@ -1,241 +1,31 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
-import { isExcludedBranchAlias, filterReplenishmentBranchList } from "@/lib/companies";
+import { isExcludedBranchAlias, resolveCompanyIdForBranch } from "@/lib/companies";
 import { MySqlService } from "@/services/mysql";
-import { AcumaticaService } from "@/services/acumatica";
 import {
-    buildReplenishmentInsight,
-    buildBranchBrief,
+    computeReplenishmentForBranch,
+    rebuildAllReplenishmentCache,
     TARGET_DAYS_OF_COVER,
-    SAFETY_BUFFER_DAYS,
-} from "@/lib/replenishment-insights";
-import { SALES_LOOKBACK_DAYS, averageDailySales } from "@/lib/sales-velocity";
+} from "@/lib/replenishment-engine";
+import { buildBranchBrief } from "@/lib/replenishment-insights";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ACU_SALES_TIMEOUT_MS = 60000;
+function isCacheFresh(cacheUpdatedAt, dataWatermark) {
+    if (!cacheUpdatedAt) return false;
+    const cacheTs = new Date(cacheUpdatedAt).getTime();
+    if (!Number.isFinite(cacheTs)) return false;
 
-function mergeSalesMaps(baseMap, acuMap) {
-    const merged = new Map(baseMap);
-    if (!acuMap) return merged;
-    for (const [key, acu] of acuMap) {
-        const existing = merged.get(key);
-        if (!existing || (acu.qty_sold ?? 0) > (existing.qty_sold ?? 0)) {
-            merged.set(key, acu);
-        }
-    }
-    return merged;
-}
-
-function countPositiveSales(map) {
-    let count = 0;
-    for (const v of map.values()) if ((v.qty_sold ?? 0) > 0) count++;
-    return count;
-}
-
-async function fetchSalesMap({ cookie, branch, isMainWarehouse, companyId }) {
-    const salesBranch = isMainWarehouse ? "" : branch;
-
-    const mysqlResult = await MySqlService.getReplenishmentSalesSummaryExtended({
-        branch: salesBranch,
-        companyId,
-    });
-
-    const mysqlPositive = countPositiveSales(mysqlResult.map);
-    const useMysqlOnly =
-        mysqlResult.salesScope === "catalog-network" || mysqlPositive >= 20;
-
-    let acuMap = null;
-    if (!useMysqlOnly && cookie && cookie !== "__bypass__") {
-        try {
-            acuMap = await Promise.race([
-                AcumaticaService.fetchBranchGrossSalesSummary({ cookie, branch: salesBranch }),
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error("Acumatica sales timeout")), ACU_SALES_TIMEOUT_MS)
-                ),
-            ]);
-        } catch (err) {
-            console.warn("[Replenishment API] Acumatica gross sales skipped:", err.message);
-        }
+    if (dataWatermark) {
+        const wmTs = new Date(dataWatermark).getTime();
+        if (Number.isFinite(wmTs) && cacheTs < wmTs) return false;
     }
 
-    const merged = mergeSalesMaps(mysqlResult.map, acuMap);
-    const acuUsed = acuMap && acuMap.size > 0 && countPositiveSales(acuMap) > mysqlPositive;
-
-    return {
-        map: merged,
-        source: acuUsed ? "acumatica" : "mysql",
-        salesMode: acuUsed ? "gross" : mysqlResult.mode,
-        salesScope:
-            mysqlResult.salesScope || (isMainWarehouse ? "network" : "branch"),
-        lookbackDays: mysqlResult.lookbackDays || SALES_LOOKBACK_DAYS,
-    };
+    return true;
 }
 
-function buildRecommendation(item, branch, vendorMap, leadTimeMap, recId) {
-    const itemId = (item.inventoryId || "").toUpperCase().trim();
-    const currentStock = Number(item.totalOnHand) || 0;
-    const qtySold90 = Number(item.totalQtySold) || 0;
-    const ads = averageDailySales(qtySold90, SALES_LOOKBACK_DAYS);
-    const vendorId = vendorMap.get(itemId) || null;
-    const leadTime = vendorId ? (leadTimeMap[vendorId]?.days || 0) : 0;
-
-    if (ads <= 0) return null;
-
-    const daysRemaining = Math.floor(currentStock / ads);
-    const targetStock = Math.ceil(ads * TARGET_DAYS_OF_COVER);
-    const suggestedQty = Math.max(0, targetStock - currentStock);
-    const isCritical = daysRemaining <= (leadTime + SAFETY_BUFFER_DAYS);
-    const priority = isCritical ? "High" : daysRemaining < 30 ? "Medium" : "Low";
-
-    const needsRestock = suggestedQty > 0 || isCritical || currentStock === 0;
-    if (!needsRestock && daysRemaining >= TARGET_DAYS_OF_COVER) return null;
-
-    const orderQty = suggestedQty > 0 ? suggestedQty : Math.max(1, Math.ceil(ads * 14));
-
-    const aiInsights = buildReplenishmentInsight({
-        itemId: item.inventoryId,
-        description: item.description,
-        currentStock,
-        suggestedQty: orderQty,
-        priorityLevel: priority,
-        branchId: branch,
-        ads,
-        daysRemaining,
-        leadTimeDays: leadTime,
-        vendorId,
-        hasSalesHistory: true,
-        qtySold90,
-        targetStock,
-        salesScope: item.salesScope,
-    });
-
-    return {
-        recommendationId: `REC-${recId}`,
-        itemId: item.inventoryId,
-        description: item.description,
-        currentStock,
-        suggestedQty: orderQty,
-        priorityLevel: priority,
-        branchId: branch,
-        restockSource: aiInsights.restockSource,
-        generatedDate: new Date().toISOString(),
-        aiInsights,
-        stockSource: item.stockSource || "mysql",
-        leadTimeDays: leadTime,
-        vendorId,
-    };
-}
-
-function buildMainRecommendation({
-    item,
-    branchOrderQty,
-    comingPO,
-    vendorMap,
-    leadTimeMap,
-    recId,
-}) {
-    const itemId = (item.inventoryId || "").toUpperCase().trim();
-    const mainInventory = Number(item.totalOnHand) || 0;
-    const qtySold90 = Number(item.totalQtySold) || 0;
-    const ads = averageDailySales(qtySold90, SALES_LOOKBACK_DAYS);
-    const vendorId = vendorMap.get(itemId) || null;
-    const leadTime = vendorId ? (leadTimeMap[vendorId]?.days || 0) : 0;
-    const totalBranchReplenishment = Number(branchOrderQty) || 0;
-    const comingPoQty = Number(comingPO) || 0;
-
-    if (totalBranchReplenishment <= 0) return null;
-
-    const availableAtMain = mainInventory + comingPoQty;
-    const orderQty = Math.max(0, totalBranchReplenishment - availableAtMain);
-    const daysRemaining = ads > 0 ? Math.floor(availableAtMain / ads) : null;
-    const isCritical = orderQty > 0 && (
-        availableAtMain < totalBranchReplenishment ||
-        (ads > 0 && daysRemaining !== null && daysRemaining <= (leadTime + SAFETY_BUFFER_DAYS))
-    );
-    const priority = isCritical ? "High" : orderQty > 0 ? "Medium" : "Low";
-
-    const aiInsights = buildReplenishmentInsight({
-        itemId: item.inventoryId,
-        description: item.description,
-        currentStock: mainInventory,
-        suggestedQty: orderQty,
-        priorityLevel: priority,
-        branchId: "MAIN",
-        ads,
-        daysRemaining: daysRemaining ?? 0,
-        leadTimeDays: leadTime,
-        vendorId,
-        hasSalesHistory: ads > 0,
-        qtySold90,
-        targetStock: totalBranchReplenishment,
-        salesScope: item.salesScope || "network",
-        mainWarehouseContext: {
-            branchOrderQty: totalBranchReplenishment,
-            comingPO: comingPoQty,
-            totalBranchReplenishment,
-        },
-    });
-
-    return {
-        recommendationId: `REC-${recId}`,
-        itemId: item.inventoryId,
-        description: item.description,
-        currentStock: mainInventory,
-        mainInventory,
-        branchOrderQty: totalBranchReplenishment,
-        comingPO: comingPoQty,
-        totalBranchReplenishment,
-        suggestedQty: orderQty,
-        priorityLevel: priority,
-        branchId: "MAIN",
-        restockSource: aiInsights.restockSource,
-        generatedDate: new Date().toISOString(),
-        aiInsights,
-        stockSource: item.stockSource || "mysql",
-        leadTimeDays: leadTime,
-        vendorId,
-        isMainWarehouseView: true,
-    };
-}
-
-async function aggregateBranchOrderQty({ cookie, companyId, vendorMap, leadTimeMap }) {
-    const branchList = filterReplenishmentBranchList(
-        await MySqlService.getReplenishmentBranches(companyId)
-    );
-    const retailBranches = branchList
-        .map((b) => b.SiteID || b.branch_id || "")
-        .filter((id) => id && String(id).trim().toUpperCase() !== "MAIN" && !isExcludedBranchAlias(id));
-
-    const qtyByItem = new Map();
-
-    for (const branchId of retailBranches) {
-        const { map: salesMap } = await fetchSalesMap({
-            cookie,
-            branch: branchId,
-            isMainWarehouse: false,
-            companyId,
-        });
-        const items = await MySqlService.getReplenishmentItems({
-            branch: branchId,
-            companyId,
-            salesMap,
-        });
-
-        let recId = 3000;
-        for (const item of items) {
-            const rec = buildRecommendation(item, branchId, vendorMap, leadTimeMap, recId++);
-            if (!rec || rec.suggestedQty <= 0) continue;
-            const key = (item.inventoryId || "").toUpperCase().trim();
-            qtyByItem.set(key, (qtyByItem.get(key) || 0) + rec.suggestedQty);
-        }
-    }
-
-    return qtyByItem;
-}
-
-/** Replenishment API — branch + catalog-network sales velocity with Acumatica fallback. */
+/** Replenishment API — reads pre-computed MySQL cache; rebuilds on refresh or stale cache. */
 export async function GET(request) {
     const cookie = getSessionFromRequest(request);
     if (!cookie) {
@@ -245,6 +35,8 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const branch = searchParams.get("branch") || "MAIN";
     const companyId = getActiveCompanyFromRequest(request) || "main";
+    const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
+    const forceRefresh = searchParams.get("refresh") === "1";
 
     if (isExcludedBranchAlias(branch)) {
         return NextResponse.json({
@@ -255,112 +47,66 @@ export async function GET(request) {
     }
 
     try {
-        const isMainWarehouse = String(branch).trim().toUpperCase() === "MAIN";
-        const { map: salesMap, source: salesSource, salesMode, salesScope, lookbackDays } =
-            await fetchSalesMap({ cookie, branch, isMainWarehouse, companyId });
+        const dataWatermark = await MySqlService.getReplenishmentDataWatermark();
+        let payload = null;
 
-        const vendorMap = await MySqlService.getItemVendorMap();
-        const leadTimeMap = await MySqlService.getEffectiveVendorLeadTimes();
-
-        let recommendations = [];
-        let recId = 2000;
-
-        if (isMainWarehouse) {
-            const [items, branchQtyMap, comingPoMap] = await Promise.all([
-                MySqlService.getReplenishmentItems({ branch, companyId, salesMap }),
-                aggregateBranchOrderQty({ cookie, companyId, vendorMap, leadTimeMap }),
-                MySqlService.getOpenPoQtyByItem(),
-            ]);
-
-            for (const item of items) {
-                const key = (item.inventoryId || "").toUpperCase().trim();
-                const branchOrderQty = branchQtyMap.get(key) || 0;
-                if (branchOrderQty <= 0) continue;
-
-                const rec = buildMainRecommendation({
-                    item,
-                    branchOrderQty,
-                    comingPO: comingPoMap.get(key) || 0,
-                    vendorMap,
-                    leadTimeMap,
-                    recId: recId++,
-                });
-                if (rec) recommendations.push(rec);
-            }
-
-            // Include branch-demand items not present in MAIN stock rows
-            const missingKeys = [...branchQtyMap.keys()].filter(
-                (key) => !recommendations.some((r) => (r.itemId || "").toUpperCase().trim() === key)
-            );
-            if (missingKeys.length > 0) {
-                const catalogRows = await MySqlService.getCatalogItemsByIds(missingKeys, companyId);
-                const catalogByKey = new Map(
-                    catalogRows.map((c) => [(c.inventoryId || "").toUpperCase().trim(), c])
-                );
-
-                for (const key of missingKeys) {
-                    const branchOrderQty = branchQtyMap.get(key) || 0;
-                    if (branchOrderQty <= 0) continue;
-                    const cat = catalogByKey.get(key);
-
-                    const rec = buildMainRecommendation({
-                        item: {
-                            inventoryId: cat?.inventoryId || key,
-                            description: cat?.description || "",
-                            totalOnHand: 0,
-                            totalQtySold: salesMap.get(key)?.qty_sold || 0,
-                            salesScope: "network",
-                        },
-                        branchOrderQty,
-                        comingPO: comingPoMap.get(key) || 0,
-                        vendorMap,
-                        leadTimeMap,
-                        recId: recId++,
-                    });
-                    if (rec) recommendations.push(rec);
-                }
-            }
-        } else {
-            const items = await MySqlService.getReplenishmentItems({
-                branch,
-                companyId,
-                salesMap,
-            });
-
-            for (const item of items) {
-                const rec = buildRecommendation(item, branch, vendorMap, leadTimeMap, recId++);
-                if (rec) recommendations.push(rec);
+        if (!forceRefresh) {
+            const cached = await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch);
+            if (cached?.recommendations?.length && isCacheFresh(cached.meta?.generatedAt, dataWatermark)) {
+                payload = {
+                    recommendations: cached.recommendations,
+                    brief: buildBranchBrief(cached.recommendations, branch),
+                    meta: {
+                        ...cached.meta,
+                        targetDaysOfCover: TARGET_DAYS_OF_COVER,
+                        stockSource: "mysql",
+                        salesSource: "mysql",
+                        isMainWarehouseView: String(branch).trim().toUpperCase() === "MAIN",
+                        dataWatermark,
+                        servedFrom: "cache",
+                    },
+                };
             }
         }
 
-        const sorted = recommendations.sort((a, b) => {
-            const pMap = { High: 3, Medium: 2, Low: 1 };
-            if (pMap[b.priorityLevel] !== pMap[a.priorityLevel]) {
-                return pMap[b.priorityLevel] - pMap[a.priorityLevel];
-            }
-            return b.suggestedQty - a.suggestedQty;
-        });
+        if (!payload) {
+            const computed = await computeReplenishmentForBranch(branch, companyId);
+            await MySqlService.upsertReplenishmentCache(effectiveCompanyId, branch, computed.recommendations);
+            payload = {
+                ...computed,
+                meta: {
+                    ...computed.meta,
+                    dataWatermark,
+                    servedFrom: forceRefresh ? "live-refresh" : "live",
+                },
+            };
+        }
 
-        const brief = buildBranchBrief(sorted, branch);
-
-        return NextResponse.json({
-            recommendations: sorted,
-            brief,
-            meta: {
-                branch,
-                generatedAt: new Date().toISOString(),
-                itemCount: sorted.length,
-                targetDaysOfCover: TARGET_DAYS_OF_COVER,
-                stockSource: "mysql",
-                salesSource,
-                salesMode,
-                salesScope,
-                salesLookbackDays: lookbackDays,
-                isMainWarehouseView: isMainWarehouse,
-            },
-        });
+        return NextResponse.json(payload);
     } catch (err) {
         console.error("[Replenishment API Error]", err);
+        return NextResponse.json({ message: err.message }, { status: 500 });
+    }
+}
+
+/** Rebuild replenishment cache for all branches (called from sync or manual refresh-all). */
+export async function POST(request) {
+    const cookie = getSessionFromRequest(request);
+    if (!cookie) {
+        return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+    }
+
+    const companyId = getActiveCompanyFromRequest(request) || "main";
+
+    try {
+        const result = await rebuildAllReplenishmentCache(companyId);
+        return NextResponse.json({
+            ok: true,
+            ...result,
+            message: `Replenishment cache rebuilt for ${result.branches} branch view(s).`,
+        });
+    } catch (err) {
+        console.error("[Replenishment Rebuild Error]", err);
         return NextResponse.json({ message: err.message }, { status: 500 });
     }
 }

@@ -6,9 +6,21 @@ import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/replenishment.css";
 
+const PAGE_SIZE = 20;
+
 const IconSearch = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+);
+const IconChevronRight = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="9 18 15 12 9 6" />
+    </svg>
+);
+const IconChevronLeft = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="15 18 9 12 15 6" />
     </svg>
 );
 const IconChevron = () => (
@@ -224,6 +236,7 @@ export default function ReplenishmentPage() {
     const [error, setError] = useState(null);
     const [expandedAi, setExpandedAi] = useState({});
     const [openColumnInfo, setOpenColumnInfo] = useState(null);
+    const [page, setPage] = useState(1);
 
     const retailBranches = useMemo(
         () => branches.filter((b) => {
@@ -243,14 +256,15 @@ export default function ReplenishmentPage() {
         setMeta(data?.meta ?? null);
     }, []);
 
-    const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = activeBranch) => {
+    const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = activeBranch, forceRefresh = false) => {
         if (!branchToFetch) return;
         if (!isBackground) setLoading(true);
         setError(null);
         try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 120000);
-            const res = await fetchWithAuth(`/api/replenishment?branch=${branchToFetch}`, {
+            const refreshParam = forceRefresh ? "&refresh=1" : "";
+            const res = await fetchWithAuth(`/api/replenishment?branch=${branchToFetch}${refreshParam}`, {
                 signal: controller.signal,
             });
             clearTimeout(timeout);
@@ -357,6 +371,20 @@ export default function ReplenishmentPage() {
         }
         return list;
     }, [recs, priorityFilter, search]);
+
+    useEffect(() => {
+        setPage(1);
+    }, [priorityFilter, search, viewMode, selectedBranch]);
+
+    const totalPages = Math.max(1, Math.ceil(filteredRecs.length / PAGE_SIZE));
+    const paginatedRecs = useMemo(() => {
+        const start = (page - 1) * PAGE_SIZE;
+        return filteredRecs.slice(start, start + PAGE_SIZE);
+    }, [filteredRecs, page]);
+
+    useEffect(() => {
+        if (page > totalPages) setPage(totalPages);
+    }, [page, totalPages]);
 
     const branchHint = isMain
         ? "MAIN warehouse: aggregate branch demand, MAIN stock, coming PO, and vendor order qty."
@@ -536,7 +564,7 @@ export default function ReplenishmentPage() {
                             onClick={() => {
                                 if (!activeBranch) return;
                                 DataCache.delete(`replenishment_recs_v3_${activeBranch}`);
-                                fetchRecommendations(false, activeBranch);
+                                fetchRecommendations(false, activeBranch, true);
                             }}
                             disabled={loading || !activeBranch}
                         >
@@ -624,7 +652,7 @@ export default function ReplenishmentPage() {
                                 </tr>
                             ) : (
                                 <ReplenishmentRows
-                                    recs={filteredRecs}
+                                    recs={paginatedRecs}
                                     expandedAi={expandedAi}
                                     setExpandedAi={setExpandedAi}
                                     isMain={isMain}
@@ -634,11 +662,28 @@ export default function ReplenishmentPage() {
                     </table>
                 </div>
 
+                {filteredRecs.length > 0 && (
+                    <div className="db-pagination">
+                        <span className="db-page-info">
+                            Showing <strong>{(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filteredRecs.length)}</strong> of <strong>{filteredRecs.length}</strong>
+                        </span>
+                        <div className="db-page-btns">
+                            <button className="db-page-btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
+                                <IconChevronLeft />
+                            </button>
+                            <span className="db-page-dots">Page {page} of {totalPages}</span>
+                            <button className="db-page-btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+                                <IconChevronRight />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {meta?.generatedAt && (
                     <p className="repl-footer">
                         Updated {new Date(meta.generatedAt).toLocaleString("en-PH")}
                         {meta.salesSource === "acumatica" && " · Sales from Acumatica (live)"}
-                        {meta.salesSource === "mysql" && " · Sales from database cache"}
+                        {meta.servedFrom === "cache" && " · Loaded from replenishment cache"}
                         {meta.salesScope === "network" && " · Velocity from all branches"}
                         {meta.salesScope === "catalog-network" &&
                             " · Sales velocity from network invoices for this branch's catalog"}

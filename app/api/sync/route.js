@@ -3,6 +3,7 @@ import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getSessionIdFromRequest, getCompanyCredential, getSessionCookies } from "@/lib/session-store";
 import { COMPANIES, getAcumaticaCompanyName, splitLevelsByCompany } from "@/lib/companies";
+import { rebuildAllReplenishmentCache } from "@/lib/replenishment-engine";
 import mysql from "mysql2/promise";
 
 export const runtime = "nodejs";
@@ -180,10 +181,42 @@ export async function POST(request) {
                 \`inventory_id\` VARCHAR(100),
                 \`description\` VARCHAR(255),
                 \`qty\` DECIMAL(18,4),
+                \`received_qty\` DECIMAL(18,4) DEFAULT 0,
                 \`uom\` VARCHAR(50),
                 \`ext_cost\` DECIMAL(18,4),
                 \`last_sync\` DATETIME,
                 UNIQUE KEY \`uq_po_line\` (\`order_nbr\`, \`line_nbr\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        await MySqlService.ensureReceivedQtyColumn();
+
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`replenishment_cache\` (
+                \`company_id\` VARCHAR(50) NOT NULL DEFAULT 'main',
+                \`branch_id\` VARCHAR(100) NOT NULL,
+                \`inventory_id\` VARCHAR(100) NOT NULL,
+                \`description\` VARCHAR(500) NULL,
+                \`current_stock\` DECIMAL(18,4) DEFAULT 0,
+                \`qty_sold_90\` DECIMAL(18,4) DEFAULT 0,
+                \`sales_velocity\` DECIMAL(18,6) DEFAULT 0,
+                \`days_remaining\` INT DEFAULT 0,
+                \`suggested_qty\` DECIMAL(18,4) DEFAULT 0,
+                \`priority_level\` VARCHAR(20) NOT NULL DEFAULT 'Low',
+                \`lead_time_days\` INT DEFAULT 0,
+                \`vendor_id\` VARCHAR(100) NULL,
+                \`branch_order_qty\` DECIMAL(18,4) DEFAULT 0,
+                \`main_inventory\` DECIMAL(18,4) DEFAULT 0,
+                \`coming_po\` DECIMAL(18,4) DEFAULT 0,
+                \`total_branch_replenishment\` DECIMAL(18,4) DEFAULT 0,
+                \`sales_scope\` VARCHAR(50) NULL,
+                \`restock_source\` VARCHAR(255) NULL,
+                \`what_to_do\` TEXT NULL,
+                \`ai_preview\` TEXT NULL,
+                \`ai_insights_json\` JSON NULL,
+                \`is_main_warehouse_view\` TINYINT(1) NOT NULL DEFAULT 0,
+                \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (\`company_id\`, \`branch_id\`, \`inventory_id\`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
 
@@ -690,8 +723,10 @@ export async function POST(request) {
 
                     await MySqlService.logSyncEvent(options.mode, "Sales history", "completed", sTotal);
                     send({ section: "Sales history", status: "done", details: `Sales sync complete (${sTotal} lines).`, progress: 100 });
+                }
 
-                    // 3.5 PURCHASE ORDERS (Incoming PO Details)
+                // 3.5 PURCHASE ORDERS (Incoming PO Details — runs with inventory or sales sync)
+                if (options.sales || options.inventory) {
                     send({ section: "Incoming PO", details: "Updating purchase order details...", progress: 50 });
                     try {
                         let poStart = options.startDate || "2024-01-01";
@@ -725,12 +760,15 @@ export async function POST(request) {
                                 if (!Array.isArray(details)) details = [];
 
                                 for (const d of details) {
+                                    const orderQty = parseFloat(getAny(d, "OrderQty", "Qty") || 0);
+                                    const receivedQty = parseFloat(getAny(d, "ReceivedQty", "QtyReceived", "ReceivedQuantity") || 0);
                                     lineRows.push({
                                         order_nbr: getF(o, "OrderNbr"),
                                         line_nbr: parseInt(getF(d, "LineNbr") || 0),
                                         inventory_id: getF(d, "InventoryID"),
                                         description: getAny(d, "LineDescription", "Description"),
-                                        qty: parseFloat(getAny(d, "OrderQty", "Qty") || 0),
+                                        qty: orderQty,
+                                        received_qty: receivedQty,
                                         uom: getF(d, "UOM"),
                                         ext_cost: parseFloat(getAny(d, "ExtendedCost", "LineAmount") || 0),
                                         last_sync: new Date()
@@ -812,6 +850,12 @@ export async function POST(request) {
                         send({ section: "Data Enrichment", details: "Calculating vendor performance...", progress: 99 });
                         const vCount = await MySqlService.calculateAndStoreVendorPerformance();
                         await MySqlService.logSyncEvent(options.mode, "Suppliers Performance", "completed", vCount);
+
+                        send({ section: "Replenishment", details: "Building replenishment cache...", progress: 99 });
+                        await MySqlService.ensureReplenishmentCacheTable();
+                        const replResult = await rebuildAllReplenishmentCache("main");
+                        await MySqlService.logSyncEvent(options.mode, "Replenishment", "completed", replResult.totalRows);
+                        send({ section: "Replenishment", status: "done", details: `Replenishment cache built (${replResult.totalRows} rows).`, progress: 100 });
                     } catch (e) {
                         console.error(">>> [Sync API] Enrichment error:", e);
                         await MySqlService.logSyncEvent(options.mode, "Data Enrichment", "error", 0, e.message);
