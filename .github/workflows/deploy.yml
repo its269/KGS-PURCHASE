@@ -34,8 +34,7 @@ jobs:
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\ensure-pm2-env.ps1
           & .\scripts\ensure-node-path.ps1
-          pm2 stop kgs-purchase-http 2>&1 | Out-Null
-          Start-Sleep -Seconds 8
+          & .\scripts\stop-app.ps1
           & .\scripts\backup-next-build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           exit 0
@@ -119,8 +118,7 @@ jobs:
           & .\scripts\ensure-pm2-env.ps1
           & .\scripts\ensure-node-path.ps1
           Write-Host "Rolling back..."
-          pm2 stop kgs-purchase-http 2>&1 | Out-Null
-          Start-Sleep -Seconds 8
+          & .\scripts\stop-app.ps1
           & .\scripts\restore-next-backup.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pm2 reload kgs-purchase-http --update-env
