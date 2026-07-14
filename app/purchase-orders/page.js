@@ -2,14 +2,16 @@
 
 import { Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { DataCache } from "@/lib/data-cache";
+import { loadListWithCache, LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/po.css";
+import "@/styles/inventory-detail.css";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 10;
 
 function isPoCacheUsable(cached) {
     if (!cached?.orders?.length) return false;
@@ -62,6 +64,11 @@ const IconChevronSelect = () => (
         <polyline points="6 9 12 15 18 9" />
     </svg>
 );
+const IconClose = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+);
 
 function poStatusClass(status) {
     const s = (status || "").toLowerCase();
@@ -80,6 +87,205 @@ function fmtDate(d) {
     return date.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
 }
 
+const USER_STATUS_OPTIONS = ["Pending", "In Transit", "Arrived", "Customs", "Delayed", "Cancelled"];
+
+const USER_STATUS_GUIDE = {
+    "": {
+        title: "No status selected",
+        description: "Choose a user status to track shipment progress. Guidance for the selected status will appear here.",
+    },
+    Pending: {
+        title: "Pending",
+        description: "The order is confirmed but has not shipped yet. Verify ETA with the supplier and update the ETA field when a delivery date is available.",
+        tips: ["Confirm production or packing status with the vendor.", "Set ETA once the supplier provides a ship date."],
+    },
+    "In Transit": {
+        title: "In Transit",
+        description: "The shipment has left the supplier and is on the way. Keep container number and ETA up to date for warehouse receiving.",
+        tips: ["Record the container or tracking reference.", "Update ETA if the vessel or freight schedule changes.", "Notify receiving team of the expected arrival window."],
+    },
+    Arrived: {
+        title: "Arrived",
+        description: "The shipment has reached the destination port or warehouse area. Prepare for unloading, inspection, or customs processing.",
+        tips: ["Confirm actual arrival date against ETA.", "Coordinate with warehouse or logistics for receipt.", "Move to Customs if clearance is still required."],
+    },
+    Customs: {
+        title: "Customs",
+        description: "The shipment is undergoing customs clearance. Delays here can push back warehouse availability.",
+        tips: ["Track broker or clearance documents.", "Update remarks with any hold reasons.", "Change to Arrived or Delayed if clearance completes or stalls."],
+    },
+    Delayed: {
+        title: "Delayed",
+        description: "The shipment is behind schedule versus the planned ETA. Document the reason and revised timeline in Remarks.",
+        tips: ["Revise ETA to the new expected date.", "Note the cause of delay for supplier follow-up.", "Alert inventory planning if stock is at risk."],
+    },
+    Cancelled: {
+        title: "Cancelled",
+        description: "This order will not be fulfilled or received. Use this when the PO is voided, replaced, or abandoned in transit.",
+        tips: ["Add remarks explaining why the order was cancelled.", "Confirm ERP status matches your tracking.", "Create a replacement PO if stock is still needed."],
+    },
+};
+
+function UserStatusCell({ value, onChange }) {
+    return (
+        <select
+            className="po-input-text po-user-status-select"
+            value={value || ""}
+            onChange={(e) => onChange(e.target.value)}
+        >
+            <option value="">— Select —</option>
+            {USER_STATUS_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+            ))}
+        </select>
+    );
+}
+
+function UserStatusGuideLightbox({ open, activeTab, onTabChange, onClose, onFilterTable, tableFilter }) {
+    const [search, setSearch] = useState("");
+
+    useEffect(() => {
+        if (open) setSearch("");
+    }, [open]);
+
+    if (!open) return null;
+
+    const query = search.trim().toLowerCase();
+    const filteredOptions = query
+        ? USER_STATUS_OPTIONS.filter((opt) => {
+            const guide = USER_STATUS_GUIDE[opt];
+            const haystack = [
+                opt,
+                guide.title,
+                guide.description,
+                ...(guide.tips || []),
+            ].join(" ").toLowerCase();
+            return haystack.includes(query);
+        })
+        : USER_STATUS_OPTIONS;
+
+    const tab = filteredOptions.includes(activeTab)
+        ? activeTab
+        : filteredOptions[0] || USER_STATUS_OPTIONS[0];
+    const guide = USER_STATUS_GUIDE[tab];
+
+    const handleTabClick = (opt) => {
+        onTabChange(opt);
+    };
+
+    return (
+        <div className="idm-overlay" onClick={onClose} style={{ zIndex: 1100 }}>
+            <div
+                className="idm-modal po-status-lightbox"
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="po-status-lightbox-title"
+            >
+                <button type="button" className="idm-close-btn" onClick={onClose} aria-label="Close">
+                    <IconClose />
+                </button>
+
+                <div className="idm-content po-status-lightbox-content">
+                    <div className="po-status-lightbox-header">
+                        <div className="po-status-lightbox-icon">
+                            <IconInfo />
+                        </div>
+                        <div>
+                            <h2 id="po-status-lightbox-title">User Status Guide</h2>
+                            <p>Browse all user statuses, filter by keyword, and view guidance for each stage.</p>
+                        </div>
+                    </div>
+
+                    <div className="po-status-lightbox-toolbar">
+                        <div className="db-search-wrapper po-status-lightbox-search">
+                            <IconSearch />
+                            <input
+                                className="db-search"
+                                type="text"
+                                placeholder="Filter statuses (e.g. transit, customs, delay)..."
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                            />
+                            {search && (
+                                <button
+                                    type="button"
+                                    className="db-search-clear"
+                                    onClick={() => setSearch("")}
+                                    aria-label="Clear filter"
+                                >
+                                    &times;
+                                </button>
+                            )}
+                        </div>
+                        {tableFilter && (
+                            <span className="po-status-table-filter-badge">
+                                Table filtered: <strong>{tableFilter}</strong>
+                            </span>
+                        )}
+                    </div>
+
+                    <div className="po-status-tabs po-status-tabs--lightbox">
+                        {filteredOptions.length === 0 ? (
+                            <div className="po-status-no-results">
+                                No statuses match &ldquo;{search}&rdquo;. Try another keyword.
+                            </div>
+                        ) : (
+                            <>
+                                <div className="po-status-tabs-bar" role="tablist" aria-label="User status options">
+                                    {filteredOptions.map((opt) => (
+                                        <button
+                                            key={opt}
+                                            type="button"
+                                            role="tab"
+                                            aria-selected={tab === opt}
+                                            className={`po-status-tab ${tab === opt ? "po-status-tab--active" : ""}`}
+                                            onClick={() => handleTabClick(opt)}
+                                        >
+                                            {opt}
+                                        </button>
+                                    ))}
+                                </div>
+                                <div className="po-status-tab-panel" role="tabpanel">
+                                    <div className="po-status-tab-panel-main">
+                                        <h3 className="po-status-tab-title">{guide.title}</h3>
+                                        <p className="po-status-tab-desc">{guide.description}</p>
+                                    </div>
+                                    {guide.tips?.length > 0 && (
+                                        <ul className="po-status-tab-tips">
+                                            {guide.tips.map((tip) => (
+                                                <li key={tip}>{tip}</li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                                <div className="po-status-lightbox-actions">
+                                    <button
+                                        type="button"
+                                        className="po-status-filter-table-btn"
+                                        onClick={() => onFilterTable?.(tab)}
+                                    >
+                                        Filter table by &ldquo;{tab}&rdquo;
+                                    </button>
+                                    {tableFilter === tab && (
+                                        <button
+                                            type="button"
+                                            className="po-status-clear-filter-btn"
+                                            onClick={() => onFilterTable?.("")}
+                                        >
+                                            Clear table filter
+                                        </button>
+                                    )}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 export default function PurchaseOrdersPage() {
     const [orders, setOrders] = useState([]);
     const [page, setPage] = useState(1);
@@ -87,6 +293,7 @@ export default function PurchaseOrdersPage() {
     const [search, setSearch] = useState("");
     const [debSearch, setDebSearch] = useState("");
     const [startDate, setStartDate] = useState("");
+    const [endDate, setEndDate] = useState("");
     const [status, setStatus] = useState("Open");
     const [selectedBranch, setSelectedBranch] = useState("");
     const [branchOptions, setBranchOptions] = useState([]);
@@ -95,7 +302,21 @@ export default function PurchaseOrdersPage() {
     const [expanded, setExpanded] = useState({}); // orderNbr -> bool
     const [selectedId, setSelectedId] = useState(null);
     const [userInputs, setUserInputs] = useState({}); // key -> { eta, userStatus }
+    const [statusGuideTab, setStatusGuideTab] = useState(USER_STATUS_OPTIONS[0]);
+    const [showStatusGuide, setShowStatusGuide] = useState(false);
+    const [userStatusTableFilter, setUserStatusTableFilter] = useState("");
     const [exporting, setExporting] = useState(false);
+
+    const openStatusGuide = useCallback((statusValue) => {
+        const next = USER_STATUS_OPTIONS.includes(statusValue) ? statusValue : USER_STATUS_OPTIONS[0];
+        setStatusGuideTab(next);
+        setShowStatusGuide(true);
+    }, []);
+
+    const handleUserStatusTableFilter = useCallback((statusValue) => {
+        setUserStatusTableFilter(statusValue || "");
+        if (statusValue) setShowStatusGuide(false);
+    }, []);
 
     const handleExport = async () => {
         setExporting(true);
@@ -116,6 +337,7 @@ export default function PurchaseOrdersPage() {
         const savedPage = localStorage.getItem("po_filter_page");
         const savedSearch = localStorage.getItem("po_filter_search");
         const savedStart = localStorage.getItem("po_filter_startDate");
+        const savedEnd = localStorage.getItem("po_filter_endDate");
         const savedStatus = localStorage.getItem("po_filter_status");
         const savedBranch = localStorage.getItem("po_filter_branch") || "";
 
@@ -124,6 +346,7 @@ export default function PurchaseOrdersPage() {
             if (savedPage) setPage(parseInt(savedPage));
             if (savedSearch) setSearch(savedSearch);
             if (savedStart) setStartDate(savedStart);
+            if (savedEnd) setEndDate(savedEnd);
             if (savedStatus) setStatus(savedStatus);
             if (savedBranch) setSelectedBranch(savedBranch);
 
@@ -149,6 +372,7 @@ export default function PurchaseOrdersPage() {
                 page: savedPage || "1",
                 pageSize: String(PAGE_SIZE),
                 startDate: savedStart || "",
+                endDate: savedEnd || "",
                 status: savedStatus || "Open"
             });
             if (savedSearch) params.set("search", savedSearch);
@@ -225,10 +449,11 @@ export default function PurchaseOrdersPage() {
             localStorage.setItem("po_filter_page", page.toString());
             localStorage.setItem("po_filter_search", search);
             localStorage.setItem("po_filter_startDate", startDate);
+            localStorage.setItem("po_filter_endDate", endDate);
             localStorage.setItem("po_filter_status", status);
             localStorage.setItem("po_filter_branch", selectedBranch);
         }
-    }, [page, search, startDate, status, selectedBranch]);
+    }, [page, search, startDate, endDate, status, selectedBranch]);
 
     useEffect(() => {
         const t = setTimeout(() => setDebSearch(search), 350);
@@ -241,7 +466,7 @@ export default function PurchaseOrdersPage() {
             return;
         }
         setPage(1);
-    }, [debSearch, startDate, status, selectedBranch]);
+    }, [debSearch, startDate, endDate, status, selectedBranch]);
 
     const fetchOrders = useCallback(async (isBackground = false) => {
         if (!isBackground) setLoading(true);
@@ -251,6 +476,7 @@ export default function PurchaseOrdersPage() {
                 page: String(page),
                 pageSize: String(PAGE_SIZE),
                 startDate: startDate,
+                endDate: endDate,
                 status: status
             });
             if (debSearch) params.set("search", debSearch);
@@ -272,13 +498,14 @@ export default function PurchaseOrdersPage() {
         } finally {
             setLoading(false);
         }
-    }, [page, debSearch, startDate, status, selectedBranch]);
+    }, [page, debSearch, startDate, endDate, status, selectedBranch]);
 
     useEffect(() => {
         const params = new URLSearchParams({
             page: String(page),
             pageSize: String(PAGE_SIZE),
             startDate: startDate,
+            endDate: endDate,
             status: status
         });
         if (debSearch) params.set("search", debSearch);
@@ -291,13 +518,15 @@ export default function PurchaseOrdersPage() {
                 setOrders(cached.orders ?? []);
                 setHasMore(cached.hasMore ?? false);
                 setLoading(false);
-                fetchOrders(true);
+                if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
+                    fetchOrders(true);
+                }
             }, 0);
         } else {
             if (cached) DataCache.delete(cacheKey);
             setTimeout(() => fetchOrders(false), 0);
         }
-    }, [fetchOrders, page, debSearch, startDate, status, selectedBranch]);
+    }, [fetchOrders, page, debSearch, startDate, endDate, status, selectedBranch]);
 
     const toggleExpand = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -308,23 +537,63 @@ export default function PurchaseOrdersPage() {
         return { totalValue, pendingEtaCount, openCount };
     }, [orders, userInputs]);
 
+    const displayedOrders = useMemo(() => {
+        if (!userStatusTableFilter) return orders;
+        return orders.filter((o) => {
+            const key = `${o.orderType}-${o.orderNbr}`;
+            return (userInputs[key]?.userStatus || "") === userStatusTableFilter;
+        });
+    }, [orders, userInputs, userStatusTableFilter]);
+
     return (
         <div className="po-root">
             <main className="po-main">
-                <div className="db-page-title">
-                    <h1>Purchase Orders</h1>
-                    <p>View and manage all purchase orders live from Acumatica ERP.</p>
+                <div className="db-page-title po-page-title-row">
+                    <div>
+                        <h1>Purchase Orders</h1>
+                        <p>View and manage all purchase orders live from Acumatica ERP.</p>
+                    </div>
+                    <button
+                        type="button"
+                        className="po-status-guide-top-btn"
+                        onClick={() => openStatusGuide(statusGuideTab)}
+                    >
+                        <IconInfo />
+                        User Status Guide
+                    </button>
                 </div>
+
+                {userStatusTableFilter && (
+                    <div className="po-user-status-filter-bar">
+                        <span>
+                            Showing orders with User Status: <strong>{userStatusTableFilter}</strong>
+                        </span>
+                        <button type="button" onClick={() => setUserStatusTableFilter("")}>
+                            Clear filter
+                        </button>
+                    </div>
+                )}
 
                 <div className="po-toolbar">
                     <div className="po-filter-group">
                         <span className="po-filter-label">From:</span>
                         <input
                             type="date"
-                            className="po-select-box"
+                            className="po-select-box po-date-input"
                             style={{ width: '150px' }}
                             value={startDate}
                             onChange={(e) => setStartDate(e.target.value)}
+                        />
+                    </div>
+
+                    <div className="po-filter-group">
+                        <span className="po-filter-label">To:</span>
+                        <input
+                            type="date"
+                            className="po-select-box po-date-input"
+                            style={{ width: '150px' }}
+                            value={endDate}
+                            onChange={(e) => setEndDate(e.target.value)}
                         />
                     </div>
 
@@ -396,22 +665,22 @@ export default function PurchaseOrdersPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap">
+                <div className="db-table-wrap po-table-wrap">
                     <table className="db-table po-table">
                         <thead>
                             <tr>
-                                <th style={{ width: 48 }}></th>
-                                <th style={{ width: 140 }}>Order #</th>
-                                <th style={{ width: 120 }}>Vendor ID</th>
-                                <th>Vendor Name</th>
-                                <th style={{ width: 140 }}>Status</th>
-                                <th>Order Date</th>
-                                <th style={{ width: 160 }}>ETA (Input)</th>
-                                <th style={{ width: 140 }}>ETD</th>
-                                <th style={{ width: 150 }}>Container Number</th>
-                                <th style={{ width: 180 }}>Remarks</th>
-                                <th style={{ width: 160 }}>User Status</th>
-                                <th style={{ textAlign: "right", width: 160 }}>Total Amount</th>
+                                <th className="po-col-expand"></th>
+                                <th className="po-col-order">Order #</th>
+                                <th className="po-col-vendor-id">Vendor ID</th>
+                                <th className="po-col-vendor-name">Vendor Name</th>
+                                <th className="po-col-status">Status</th>
+                                <th className="po-col-date">Order Date</th>
+                                <th className="po-col-eta">ETA (Input)</th>
+                                <th className="po-col-etd">ETD</th>
+                                <th className="po-col-container">Container #</th>
+                                <th className="po-col-remarks">Remarks</th>
+                                <th className="po-col-user-status">User Status</th>
+                                <th className="po-col-amount">Total Amount</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -422,9 +691,13 @@ export default function PurchaseOrdersPage() {
                                         <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Fetching orders...</span>
                                     </div>
                                 </td></tr>
-                            ) : orders.length === 0 ? (
-                                <tr><td colSpan={12} className="si-empty-cell" style={{ padding: '4rem 0' }}>No purchase orders found.</td></tr>
-                            ) : orders.map(po => {
+                            ) : displayedOrders.length === 0 ? (
+                                <tr><td colSpan={12} className="si-empty-cell" style={{ padding: '4rem 0' }}>
+                                    {userStatusTableFilter
+                                        ? `No purchase orders with User Status "${userStatusTableFilter}" on this page.`
+                                        : "No purchase orders found."}
+                                </td></tr>
+                            ) : displayedOrders.map(po => {
                                 const key = `${po.orderType}-${po.orderNbr}`;
                                 const isOpen = !!expanded[key];
                                 const ui = userInputs[key] || {};
@@ -484,20 +757,10 @@ export default function PurchaseOrdersPage() {
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
-                                                <select 
-                                                    className="po-input-text" 
-                                                    style={{ width: '100%' }}
+                                                <UserStatusCell
                                                     value={ui.userStatus || ""}
-                                                    onChange={(e) => handleUserInput(key, 'userStatus', e.target.value)}
-                                                >
-                                                    <option value="">— Select —</option>
-                                                    <option value="Pending">Pending</option>
-                                                    <option value="In Transit">In Transit</option>
-                                                    <option value="Arrived">Arrived</option>
-                                                    <option value="Customs">Customs</option>
-                                                    <option value="Delayed">Delayed</option>
-                                                    <option value="Cancelled">Cancelled</option>
-                                                </select>
+                                                    onChange={(val) => handleUserInput(key, "userStatus", val)}
+                                                />
                                             </td>
                                             <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)', fontSize: '1rem' }}>₱{fmt(po.totalAmount)}</strong></td>
                                         </tr>
@@ -598,7 +861,7 @@ export default function PurchaseOrdersPage() {
                         This module displays all Purchase Orders from Acumatica. You can track their status and manage ETA for upcoming deliveries.
                     </p>
                     <p className="po-info-text" style={{ marginTop: '0.75rem' }}>
-                        Changes to ETA and User Status are persisted locally in your browser.
+                        Changes to ETA, remarks, and User Status are saved to your account and backed up locally in your browser. Use the User Status Guide button at the top to browse statuses and filter the table.
                     </p>
                 </div>
 
@@ -610,6 +873,15 @@ export default function PurchaseOrdersPage() {
             {selectedId && (
                 <InventoryDetailModal inventoryId={selectedId} onClose={() => setSelectedId(null)} />
             )}
+
+            <UserStatusGuideLightbox
+                open={showStatusGuide}
+                activeTab={statusGuideTab}
+                onTabChange={setStatusGuideTab}
+                onClose={() => setShowStatusGuide(false)}
+                onFilterTable={handleUserStatusTableFilter}
+                tableFilter={userStatusTableFilter}
+            />
         </div>
     );
 }

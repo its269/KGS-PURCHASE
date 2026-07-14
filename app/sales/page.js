@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, memo, Fragment, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { DataCache } from "@/lib/data-cache";
+import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 
@@ -52,7 +53,7 @@ export default function SalesPeriodicPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
-    const [pageSize] = useState(15);
+    const [pageSize] = useState(10);
     const [pagination, setPagination] = useState({ totalItems: 0, totalPages: 0 });
     const [metrics, setMetrics] = useState({ overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
 
@@ -178,7 +179,14 @@ export default function SalesPeriodicPage() {
         const cacheKey = `sales_90d_${params.toString()}`;
         const cached = DataCache.get(cacheKey);
         if (cached) {
-            Promise.resolve().then(() => fetchSales(true));
+            setAllSalesData(cached.data || []);
+            setPeriods(cached.months || []);
+            setPagination(cached.pagination || { totalItems: 0, totalPages: 0 });
+            setMetrics(cached.metrics || { overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
+            setLoading(false);
+            if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
+                Promise.resolve().then(() => fetchSales(true));
+            }
         } else {
             Promise.resolve().then(() => fetchSales(false));
         }
@@ -306,7 +314,7 @@ export default function SalesPeriodicPage() {
                 ) : (
                     <>
                         <div className="db-table-wrap">
-                            <table className="db-table">
+                            <table className="db-table db-table--fit">
                                 <thead>
                                     <tr>
                                         <th rowSpan={2} style={{ verticalAlign: 'middle' }}>Inventory ID</th>

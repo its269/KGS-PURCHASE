@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { DataCache } from "@/lib/data-cache";
+import { loadListWithCache } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
 import { DIMENSION_FIELDS } from "@/lib/item-dimensions";
@@ -9,7 +10,7 @@ import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 10;
 
 const IconSearch = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -218,11 +219,18 @@ export default function StockItemsPage() {
         const cacheKey = `${cachePrefix()}${params.toString()}`;
 
         const cached = DataCache.get(cacheKey);
-        if (cached) {
-            Promise.resolve().then(() => fetchItems(true));
-        } else {
-            Promise.resolve().then(() => fetchItems(false));
-        }
+        loadListWithCache({
+            cacheKey,
+            cached,
+            apply: (data) => {
+                setItems(data.items ?? []);
+                setDataSource(data.source || "mysql");
+                setTotalCount(data.totalCount ?? 0);
+                setTotalStock(data.totalStock ?? 0);
+            },
+            setLoading,
+            refetch: fetchItems,
+        });
     }, [fetchItems, page, debouncedSearch]);
 
     const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
@@ -361,13 +369,14 @@ export default function StockItemsPage() {
                 {error && <div className="si-error">{error}</div>}
 
                 <div className="db-table-wrap">
-                    <table className="db-table">
+                    <table className="db-table db-table--fit">
                         <thead>
                             <tr>
                                 <th style={{ width: '180px' }}>Inventory ID</th>
                                 <th>Description</th>
                                 <th style={{ width: '130px' }}>Branch</th>
                                 <th style={{ width: '130px' }}>Item Class</th>
+                                <th style={{ width: '80px', textAlign: 'right' }}>MOQ</th>
                                 <th style={{ width: '100px', textAlign: 'center' }}>Price</th>
                                 <th style={{ width: '80px', textAlign: 'center' }}>Unit</th>
                                 <th style={{ width: '100px', textAlign: 'center' }}>Status</th>
@@ -379,14 +388,14 @@ export default function StockItemsPage() {
                         </thead>
                         <tbody>
                             {loading && items.length === 0 ? (
-                                <tr><td colSpan={11} className="si-loading-cell">
+                                <tr><td colSpan={12} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span>Fetching items...</span>
                                     </div>
                                 </td></tr>
                             ) : items.length === 0 ? (
-                                <tr><td colSpan={11} className="si-empty-cell">No items found matching your search.</td></tr>
+                                <tr><td colSpan={12} className="si-empty-cell">No items found matching your search.</td></tr>
                             ) : items.map(item => (
                                 <tr
                                     key={item.inventoryId}
@@ -403,6 +412,9 @@ export default function StockItemsPage() {
                                         </div>
                                     </td>
                                     <td><span className="db-class-tag">{item.itemClass}</span></td>
+                                    <td className="db-num" style={{ textAlign: 'right' }}>
+                                        {item.moq != null && item.moq !== "" ? Number(item.moq).toLocaleString() : "—"}
+                                    </td>
                                     <td className="db-num">₱{(Number(item.price) || 0).toLocaleString()}</td>
                                     <td style={{ textAlign: 'center' }}>{item.baseUnit}</td>
                                     <td style={{ textAlign: 'center' }}>

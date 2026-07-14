@@ -13,6 +13,7 @@ import {
     sqlOnlyEcomSalesBranches,
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
+import { getCached } from "@/lib/server-cache";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -43,21 +44,25 @@ const purchasePool = mysql.createPool({
 });
 
 async function countWarehouseRows(companyId = "main") {
-    const [[row]] = await pool.query(
-        `SELECT COUNT(*) AS c FROM inventory_items
-         WHERE company_id = ? AND default_warehouse != '__catalog__'`,
-        [companyId]
-    );
-    return Number(row?.c) || 0;
+    return getCached(`wh-count:${companyId}`, 60_000, async () => {
+        const [[row]] = await pool.query(
+            `SELECT COUNT(*) AS c FROM inventory_items
+             WHERE company_id = ? AND default_warehouse != '__catalog__'`,
+            [companyId]
+        );
+        return Number(row?.c) || 0;
+    });
 }
 
 async function countCatalogRows(companyId = "main") {
-    const [[row]] = await pool.query(
-        `SELECT COUNT(*) AS c FROM inventory_items
-         WHERE company_id = ? AND default_warehouse = '__catalog__'`,
-        [companyId]
-    );
-    return Number(row?.c) || 0;
+    return getCached(`cat-count:${companyId}`, 60_000, async () => {
+        const [[row]] = await pool.query(
+            `SELECT COUNT(*) AS c FROM inventory_items
+             WHERE company_id = ? AND default_warehouse = '__catalog__'`,
+            [companyId]
+        );
+        return Number(row?.c) || 0;
+    });
 }
 
 /** warehouse = per-site synced rows; catalog = product master only; catalog-empty = no products yet */
@@ -86,6 +91,14 @@ function inventoryFromClause(layout) {
     return `FROM inventory_items i`;
 }
 
+function inventoryPlanningCols(alias = "c") {
+    return `
+                    ${alias}.vendor_id as VendorID,
+                    ${alias}.lead_time_days as LeadTimeDays,
+                    ${alias}.safety_stock as SafetyStock,
+                    ${alias}.moq as MOQ`;
+}
+
 function inventorySelectCols(layout) {
     if (layout === "warehouse") {
         return `
@@ -96,7 +109,8 @@ function inventorySelectCols(layout) {
                     i.site_id as SiteID,
                     COALESCE(i.on_hand, 0) as OnHand,
                     COALESCE(i.available, 0) as Available,
-                    COALESCE(c.default_price, i.default_price, 0) as DefaultPrice`;
+                    COALESCE(c.default_price, i.default_price, 0) as DefaultPrice,
+                    ${inventoryPlanningCols("c")}`;
     }
     return `
                     i.inventory_id as InventoryID,
@@ -106,7 +120,8 @@ function inventorySelectCols(layout) {
                     i.site_id as SiteID,
                     COALESCE(i.on_hand, 0) as OnHand,
                     COALESCE(i.available, 0) as Available,
-                    i.default_price as DefaultPrice`;
+                    i.default_price as DefaultPrice,
+                    ${inventoryPlanningCols("i")}`;
 }
 
 function netSalesQtySubquery(purchaseDb, salesEx, branch = "") {
@@ -197,7 +212,14 @@ export const MySqlService = {
     /**
      * Fetch purchase orders from MySQL (for Purchase Orders module)
      */
-    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", branch = "", companyId = "main" } = {}) {
+    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main" } = {}) {
+        const cacheKey = `po:${JSON.stringify({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId })}`;
+        return getCached(cacheKey, 30_000, () =>
+            this._getPurchaseOrdersImpl({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId })
+        );
+    },
+
+    async _getPurchaseOrdersImpl({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main" } = {}) {
         const offset = (page - 1) * pageSize;
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
@@ -217,9 +239,19 @@ export const MySqlService = {
                 params.push(startDate);
             }
 
+            if (endDate) {
+                whereClauses.push("h.order_date <= ?");
+                params.push(`${endDate} 23:59:59`);
+            }
+
             if (search) {
                 whereClauses.push("(h.order_nbr LIKE ? OR h.vendor_id LIKE ? OR h.vendor_name LIKE ? OR v.vendor_name LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+            }
+
+            if (vendorId) {
+                whereClauses.push("h.vendor_id = ?");
+                params.push(vendorId);
             }
 
             if (branch) {
@@ -236,21 +268,29 @@ export const MySqlService = {
 
             const wherePart = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
-            const [rows] = await purchasePool.query(
-                `SELECT 
-                    h.order_nbr as orderNbr,
-                    h.vendor_id as vendorId,
-                    COALESCE(NULLIF(TRIM(h.vendor_name), ''), v.vendor_name) as vendorName,
-                    h.status,
-                    h.order_date as date,
-                    h.total_amount as totalAmount
-                 FROM purchase_history h
-                 LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
-                 ${wherePart}
-                 ORDER BY h.order_date DESC, h.order_nbr DESC
-                 LIMIT ${limitInt} OFFSET ${offsetInt}`,
-                params
-            );
+            const [[rows], [[{ total }]]] = await Promise.all([
+                purchasePool.query(
+                    `SELECT 
+                        h.order_nbr as orderNbr,
+                        h.vendor_id as vendorId,
+                        COALESCE(NULLIF(TRIM(h.vendor_name), ''), v.vendor_name) as vendorName,
+                        h.status,
+                        h.order_date as date,
+                        h.total_amount as totalAmount
+                     FROM purchase_history h
+                     LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
+                     ${wherePart}
+                     ORDER BY h.order_date DESC, h.order_nbr DESC
+                     LIMIT ${limitInt} OFFSET ${offsetInt}`,
+                    params
+                ),
+                purchasePool.query(
+                    `SELECT COUNT(*) as total FROM purchase_history h
+                     LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
+                     ${wherePart}`,
+                    params
+                ),
+            ]);
 
             let linesByOrder = new Map();
             if (rows.length > 0) {
@@ -281,13 +321,6 @@ export const MySqlService = {
                 orderType: "Normal",
                 lines: linesByOrder.get(String(order.orderNbr || "").trim()) || [],
             }));
-
-            const [[{ total }]] = await purchasePool.query(
-                `SELECT COUNT(*) as total FROM purchase_history h
-                 LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
-                 ${wherePart}`,
-                params
-            );
 
             return {
                 orders: ordersWithLines,
@@ -579,6 +612,10 @@ export const MySqlService = {
      * Calculate average lead times per vendor (Order Date to Receipt Date)
      */
     async getVendorLeadTimes() {
+        return getCached("vendorLeadTimes", 60_000, () => this._computeVendorLeadTimes());
+    },
+
+    async _computeVendorLeadTimes() {
         try {
             const [rows] = await purchasePool.query(`
                 SELECT 
@@ -660,6 +697,10 @@ export const MySqlService = {
      * Get calculated reliability scores for all vendors
      */
     async getSupplierPerformance() {
+        return getCached("supplierPerformance", 60_000, () => this._computeSupplierPerformance());
+    },
+
+    async _computeSupplierPerformance() {
         try {
             const [rows] = await purchasePool.query(`
                 SELECT 
@@ -704,11 +745,10 @@ export const MySqlService = {
         }
 
         try {
+            await this.ensureInventoryPlanningColumns();
             const layout = await resolveInventoryLayout(effectiveCompanyId);
             const hasWarehouse = layout === "warehouse";
-            // Stock KPIs and branch views always use per-site warehouse rows — never catalog on_hand.
-            const stockMode = hasWarehouse && (branch || filter);
-            const queryLayout = stockMode ? "warehouse" : (hasWarehouse && !branch && !filter ? "catalog" : (hasWarehouse ? "warehouse" : "catalog"));
+            const queryLayout = hasWarehouse ? "warehouse" : "catalog";
 
             if ((branch || filter) && !hasWarehouse) {
                 return { data: [], totalCount: 0, hasMore: false, dataMode: "warehouse-missing" };
@@ -768,8 +808,13 @@ export const MySqlService = {
             const limitInt = parseInt(pageSize, 10);
             const offsetInt = parseInt(offset, 10);
 
-            const salesEx = sqlExcludeSalesBranches("branch_name");
-            const salesParams = [...salesEx.params];
+            const needsSalesJoin = filter === "dead_stock" || filter === "overstock";
+            const salesEx = needsSalesJoin ? sqlExcludeSalesBranches("branch_name") : null;
+            const salesParams = needsSalesJoin ? [...salesEx.params] : [];
+            const salesJoin = needsSalesJoin
+                ? `LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx)} s ON i.inventory_id = s.inventory_id`
+                : "";
+            const qtySoldSelect = needsSalesJoin ? "COALESCE(s.total_qty, 0) as QtySold" : "0 as QtySold";
 
             const fromClause = inventoryFromClause(queryLayout);
             const selectCols = inventorySelectCols(queryLayout);
@@ -777,9 +822,9 @@ export const MySqlService = {
             const query = `
                 SELECT 
                     ${selectCols},
-                    COALESCE(s.total_qty, 0) as QtySold
+                    ${qtySoldSelect}
                  ${fromClause}
-                 LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx)} s ON i.inventory_id = s.inventory_id
+                 ${salesJoin}
                  ${wherePart} 
                  ORDER BY i.inventory_id ASC 
                  LIMIT ${limitInt} OFFSET ${offsetInt}`;
@@ -789,7 +834,7 @@ export const MySqlService = {
             const [[{ total }]] = await pool.query(
                 `SELECT COUNT(*) as total 
                  ${fromClause}
-                 LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx)} s ON i.inventory_id = s.inventory_id
+                 ${salesJoin}
                  ${wherePart}`,
                 [...salesParams, ...params]
             );
@@ -804,6 +849,10 @@ export const MySqlService = {
                 Available: { value: item.Available },
                 DefaultPrice: { value: item.DefaultPrice || 0 },
                 ItemClass: { value: item.ItemClass || "" },
+                VendorID: { value: item.VendorID || "" },
+                LeadTimeDays: { value: item.LeadTimeDays },
+                SafetyStock: { value: item.SafetyStock },
+                MOQ: { value: item.MOQ },
                 QtySold: { value: item.QtySold }
             }));
 
@@ -835,6 +884,8 @@ export const MySqlService = {
      * List products from catalog rows when warehouse levels have not been synced yet.
      */
     async getInventoryFromCatalog({ page, pageSize, search, companyId, offset, purchaseDb }) {
+        await this.ensureInventoryPlanningColumns();
+
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
         const whereParts = ["i.company_id = ?", "i.default_warehouse = '__catalog__'"];
@@ -860,6 +911,10 @@ export const MySqlService = {
                 COALESCE(i.on_hand, 0) as OnHand,
                 COALESCE(i.available, 0) as Available,
                 i.default_price as DefaultPrice,
+                i.vendor_id as VendorID,
+                i.lead_time_days as LeadTimeDays,
+                i.safety_stock as SafetyStock,
+                i.moq as MOQ,
                 COALESCE(s.total_qty, 0) as QtySold
              FROM inventory_items i
              LEFT JOIN ${netSalesQtySubquery(db, salesEx)} s ON i.inventory_id = s.inventory_id
@@ -882,6 +937,10 @@ export const MySqlService = {
             Available: { value: item.Available },
             DefaultPrice: { value: item.DefaultPrice || 0 },
             ItemClass: { value: item.ItemClass || "" },
+            VendorID: { value: item.VendorID || "" },
+            LeadTimeDays: { value: item.LeadTimeDays },
+            SafetyStock: { value: item.SafetyStock },
+            MOQ: { value: item.MOQ },
             QtySold: { value: item.QtySold },
         }));
 
@@ -897,6 +956,11 @@ export const MySqlService = {
      * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
     async getGlobalStats(branch = "", search = "", companyId = "main") {
+        const cacheKey = `global-stats:${companyId}:${branch}:${search}`;
+        return getCached(cacheKey, 45_000, () => this._computeGlobalStats(branch, search, companyId));
+    },
+
+    async _computeGlobalStats(branch = "", search = "", companyId = "main") {
         try {
             const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
             const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
@@ -1107,7 +1171,6 @@ export const MySqlService = {
 
             const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
 
-            // 1. Fetch items from Inventory database with summed stock and list of branches
             const query = `
                 SELECT 
                     TRIM(i.inventory_id) as inventoryId, 
@@ -1116,6 +1179,7 @@ export const MySqlService = {
                     MAX(i.item_status) as itemStatus,
                     MAX(i.base_unit) as baseUnit,
                     MAX(i.default_price) as price,
+                    MAX(i.moq) as moq,
                     SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand,
                     GROUP_CONCAT(DISTINCT CASE WHEN i.default_warehouse != '__catalog__' AND i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
                  FROM inventory_items i
@@ -1124,20 +1188,23 @@ export const MySqlService = {
                  ORDER BY i.inventory_id ASC 
                  LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
-            const [rows] = await pool.query(query, params);
+            const [[rows], [[{ total, overallStock }]]] = await Promise.all([
+                pool.query(query, params),
+                pool.query(
+                    `SELECT 
+                        COUNT(DISTINCT TRIM(i.inventory_id)) as total,
+                        SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as overallStock
+                     FROM inventory_items i ${whereClause}`,
+                    params
+                ),
+            ]);
 
-            const [[{ total, overallStock }]] = await pool.query(
-                `SELECT 
-                    COUNT(DISTINCT TRIM(i.inventory_id)) as total,
-                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as overallStock
-                 FROM inventory_items i ${whereClause}`,
-                params
-            );
+            const pageIds = rows.map((r) => r.inventoryId);
+            const [salesMap, dimSet] = await Promise.all([
+                this.getPeriodicSalesSummaryForIds({ ids: pageIds, branch }),
+                this.getDimensionIdSet(pageIds),
+            ]);
 
-            // 2. Fetch sales summary from Purchase database
-            const salesMap = await this.getPeriodicSalesSummary({ search, branch });
-
-            // 3. Merge
             const enriched = rows.map(r => {
                 const key = (r.inventoryId || "").toUpperCase().trim();
                 const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
@@ -1149,7 +1216,6 @@ export const MySqlService = {
                 };
             });
 
-            const dimSet = await this.getDimensionIdSet(enriched.map((r) => r.inventoryId));
             const withDims = enriched.map((r) => ({
                 ...r,
                 hasDimensions: dimSet.has((r.inventoryId || "").toUpperCase().trim()),
@@ -1203,6 +1269,7 @@ export const MySqlService = {
                 i.item_status as itemStatus,
                 i.base_unit as baseUnit,
                 i.default_price as price,
+                i.moq as moq,
                 0 as totalOnHand,
                 '' as branches
              FROM inventory_items i
@@ -1216,7 +1283,11 @@ export const MySqlService = {
             params
         );
 
-        const salesMap = await this.getPeriodicSalesSummary({ search });
+        const pageIds = rows.map((r) => r.inventoryId);
+        const [salesMap, dimSet] = await Promise.all([
+            this.getPeriodicSalesSummaryForIds({ ids: pageIds }),
+            this.getDimensionIdSet(pageIds),
+        ]);
         const enriched = rows.map((r) => {
             const key = (r.inventoryId || "").toUpperCase().trim();
             const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
@@ -1228,7 +1299,6 @@ export const MySqlService = {
             };
         });
 
-        const dimSet = await this.getDimensionIdSet(enriched.map((r) => r.inventoryId));
         const withDims = enriched.map((r) => ({
             ...r,
             hasDimensions: dimSet.has((r.inventoryId || "").toUpperCase().trim()),
@@ -1613,11 +1683,42 @@ export const MySqlService = {
         }
     },
 
+    async ensureInventoryPlanningColumns() {
+        if (MySqlService._planningColsReady) return true;
+
+        const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+        const cols = [
+            { name: "vendor_id", def: "VARCHAR(100) NULL" },
+            { name: "lead_time_days", def: "INT NULL" },
+            { name: "safety_stock", def: "DECIMAL(18,4) NULL" },
+            { name: "moq", def: "DECIMAL(18,4) NULL" },
+        ];
+        try {
+            for (const c of cols) {
+                const [[row]] = await pool.query(
+                    `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND COLUMN_NAME=?`,
+                    [inventoryDb, c.name]
+                );
+                if (row.cnt === 0) {
+                    await pool.query(`ALTER TABLE inventory_items ADD COLUMN \`${c.name}\` ${c.def}`);
+                }
+            }
+            MySqlService._planningColsReady = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureInventoryPlanningColumns Error]", err);
+            return false;
+        }
+    },
+    _planningColsReady: false,
+
     /**
      * Bulk-update catalog fields on existing inventory_items rows.
      */
     async upsertInventoryItems(items, companyId = "main") {
         if (!items.length) return;
+        await this.ensureInventoryPlanningColumns();
         const CHUNK = 200;
         const now = new Date();
         const safeNum = (v) => { const n = Number(v); return (isNaN(n) ? null : n); };
@@ -1626,7 +1727,7 @@ export const MySqlService = {
             await connection.beginTransaction();
             for (let i = 0; i < items.length; i += CHUNK) {
                 const chunk = items.slice(i, i + CHUNK);
-                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?)').join(',');
+                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
                 const values = chunk.flatMap(item => [
                     String(item.inventory_id || "").trim(),
                     companyId,
@@ -1638,12 +1739,17 @@ export const MySqlService = {
                     item.base_unit || '',
                     item.item_type || '',
                     item.posting_class || '',
+                    item.vendor_id || null,
+                    item.lead_time_days != null ? parseInt(item.lead_time_days, 10) : null,
+                    safeNum(item.safety_stock),
+                    safeNum(item.moq),
                     now,
                 ]);
                 await connection.query(
                     `INSERT INTO inventory_items
                         (inventory_id, company_id, default_warehouse, inventory_name, item_class,
-                        default_price, item_status, base_unit, type, posting_class, last_sync)
+                        default_price, item_status, base_unit, type, posting_class,
+                        vendor_id, lead_time_days, safety_stock, moq, last_sync)
                     VALUES ${placeholders}
                     ON DUPLICATE KEY UPDATE
                         inventory_name = VALUES(inventory_name),
@@ -1653,6 +1759,10 @@ export const MySqlService = {
                         base_unit      = VALUES(base_unit),
                         type           = COALESCE(NULLIF(VALUES(type),''), type),
                         posting_class  = COALESCE(NULLIF(VALUES(posting_class),''), posting_class),
+                        vendor_id      = COALESCE(NULLIF(VALUES(vendor_id),''), vendor_id),
+                        lead_time_days = COALESCE(VALUES(lead_time_days), lead_time_days),
+                        safety_stock   = COALESCE(VALUES(safety_stock), safety_stock),
+                        moq            = COALESCE(VALUES(moq), moq),
                         last_sync      = VALUES(last_sync)`,
                     values
                 );
@@ -2139,6 +2249,11 @@ export const MySqlService = {
      * Get 90-day comparative sales analysis from MySQL (3 x 30-day periods)
      */
     async getSalesAnalysis({ branch = "", periods = [] }) {
+        const cacheKey = `salesAnalysis:${branch}:${periods.map((p) => `${p.key}:${p.start}:${p.end}`).join("|")}`;
+        return getCached(cacheKey, 60_000, () => this._computeSalesAnalysis({ branch, periods }));
+    },
+
+    async _computeSalesAnalysis({ branch = "", periods = [] }) {
         try {
             console.log(`[MySQL getSalesAnalysis] Params: branch="${branch}", periodsCount=${periods.length}`);
             if (periods.length === 0) return { data: [], metrics: {} };
@@ -2227,6 +2342,74 @@ export const MySqlService = {
         } catch (err) {
             console.error("[MySQL getSalesAnalysis Error]", err);
             throw err;
+        }
+    },
+
+    /**
+     * Aggregate periodic sales for specific inventory IDs only (fast path for paginated lists).
+     */
+    async getPeriodicSalesSummaryForIds({ ids = [], branch = "", lookbackDays = SALES_LOOKBACK_DAYS } = {}) {
+        const normalized = [...new Set(
+            ids.map((id) => String(id || "").toUpperCase().trim()).filter(Boolean)
+        )];
+        if (!normalized.length) return new Map();
+
+        const cacheKey = `salesIds:${lookbackDays}:${branch}:${normalized.slice().sort().join(",")}`;
+        return getCached(cacheKey, 45_000, () =>
+            this._queryPeriodicSalesForIds(normalized, branch, lookbackDays)
+        );
+    },
+
+    async _queryPeriodicSalesForIds(normalized, branch, lookbackDays) {
+        try {
+            if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
+                return new Map();
+            }
+
+            const whereClauses = [salesLookbackSql(lookbackDays)];
+            const params = [];
+
+            const salesEx = sqlExcludeSalesBranches("branch_name");
+            whereClauses.push(salesEx.clause);
+            params.push(...salesEx.params);
+
+            if (branch && branch !== "All Branches") {
+                const branchNames = await this.resolveSalesBranchNames(branch);
+                const placeholders = branchNames.map(() => "TRIM(UPPER(?))").join(", ");
+                whereClauses.push(`TRIM(UPPER(branch_name)) IN (${placeholders})`);
+                params.push(...branchNames);
+            }
+
+            const idPlaceholders = normalized.map(() => "?").join(", ");
+            whereClauses.push(`UPPER(TRIM(inventory_id)) IN (${idPlaceholders})`);
+            params.push(...normalized);
+
+            const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
+
+            const [rows] = await purchasePool.query(
+                `SELECT
+                    UPPER(TRIM(inventory_id)) AS inventory_id,
+                    SUM(${SQL_NET_QTY}) AS qty_sold,
+                    SUM(${SQL_NET_AMOUNT}) AS total_sales
+                 FROM product_periodic_sales
+                 ${wherePart}
+                 GROUP BY UPPER(TRIM(inventory_id))`,
+                params
+            );
+
+            const map = new Map();
+            for (const r of rows) {
+                if (r.inventory_id) {
+                    map.set(r.inventory_id, {
+                        qty_sold: netQtySold(r.qty_sold),
+                        total_sales: Math.max(0, Number(r.total_sales) || 0),
+                    });
+                }
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getPeriodicSalesSummaryForIds Error]", err);
+            return new Map();
         }
     },
 

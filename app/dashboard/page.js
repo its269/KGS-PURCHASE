@@ -70,8 +70,9 @@ const IconClose = memo(() => (
 IconClose.displayName = "IconClose";
 
 /* ── Constants ────────────────────────────────────────────── */
-const ROWS_PER_PAGE = 15;
+const ROWS_PER_PAGE = 10;
 const LOW_STOCK_THRESHOLD = 10;
+const CACHE_FRESH_MS = 60_000;
 const EMPTY_GLOBAL_STATS = {
     totalStock: 0,
     totalValue: 0,
@@ -97,17 +98,41 @@ const cellNum = (row, key) => {
 };
 
 /* ── Table Row Component ───────────────────────────────────── */
-const InventoryRow = memo(({ row }) => (
-    <tr>
-        <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
-        <td className="db-desc">{cellVal(row, "Description")}</td>
-        <td><span className="db-class-tag">{cellVal(row, "Category")}</span></td>
-        <td>{cellVal(row, "SupplierID")}</td>
-        <td className="db-num">{cellNum(row, "LeadTimeDays")}</td>
-        <td className="db-num">{cellNum(row, "SafetyStock")}</td>
-        <td className="db-num">{cellNum(row, "MOQ")}</td>
-    </tr>
-));
+const InventoryRow = memo(({ row }) => {
+    const onHand = Number(row.OnHand?.value);
+    const available = Number(row.Available?.value);
+    const stockClass = !Number.isFinite(onHand) || onHand <= 0
+        ? "db-status-out"
+        : onHand < LOW_STOCK_THRESHOLD
+        ? "db-status-low"
+        : "db-badge-green";
+
+    return (
+        <tr>
+            <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
+            <td className="db-desc">{cellVal(row, "Description")}</td>
+            <td><span className="db-class-tag">{cellVal(row, "ItemClass") || cellVal(row, "Category")}</span></td>
+            <td>
+                {cellVal(row, "Branch") !== "—" ? (
+                    <span className="db-branch-tag">{cellVal(row, "Branch")}</span>
+                ) : (
+                    "—"
+                )}
+            </td>
+            <td className="db-num">
+                {Number.isFinite(onHand) ? (
+                    <span className={`db-badge ${stockClass}`}>{onHand.toLocaleString()}</span>
+                ) : (
+                    cellNum(row, "OnHand")
+                )}
+            </td>
+            <td className="db-num">
+                {Number.isFinite(available) ? available.toLocaleString() : cellNum(row, "Available")}
+            </td>
+            <td className="db-num">{cellNum(row, "SafetyStock")}</td>
+        </tr>
+    );
+});
 InventoryRow.displayName = "InventoryRow";
 
 export default function DashboardPage() {
@@ -130,12 +155,27 @@ export default function DashboardPage() {
     const [branchOptions, setBranchOptions] = useState([]);
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [loading, setLoading] = useState(true);
+    const [statsLoading, setStatsLoading] = useState(true);
     const [companyLabel, setCompanyLabel] = useState("KGSC");
 
     const inventoryCachePrefix = () =>
         `inventory_${localStorage.getItem("activeCompanyId") || "main"}_`;
 
-    const clearInventoryCache = () => DataCache.deleteByPrefix(inventoryCachePrefix());
+    const cacheFreshnessRef = useRef({});
+
+    const clearInventoryCache = () => {
+        DataCache.deleteByPrefix(inventoryCachePrefix());
+        cacheFreshnessRef.current = {};
+    };
+
+    const isCacheFresh = (key) => {
+        const ts = cacheFreshnessRef.current[key];
+        return ts && Date.now() - ts < CACHE_FRESH_MS;
+    };
+
+    const markCacheFresh = (key) => {
+        cacheFreshnessRef.current[key] = Date.now();
+    };
 
     const shouldUseCachedStats = (stats) =>
         stats && stats.dataMode !== "warehouse-missing";
@@ -153,21 +193,39 @@ export default function DashboardPage() {
             if (p > 1) setPage(p);
             if (u !== "User") setUserName(u);
 
-            const params = new URLSearchParams({
+            const tableParams = new URLSearchParams({
                 page: String(p),
                 pageSize: String(ROWS_PER_PAGE),
                 search: s,
                 branch: b,
                 count: "true",
-                stats: "true",
+                stats: "false",
+                enrich: "false",
                 source: "mysql"
             });
-            const cached = DataCache.get(`${inventoryCachePrefix()}${params.toString()}`);
-            if (cached) {
-                setAllInventory(cached.data || []);
-                setTotalCount(cached.totalCount || 0);
-                setHasMore(!!cached.hasMore);
-                if (shouldUseCachedStats(cached.globalStats)) setGlobalStats(cached.globalStats);
+            const statsParams = new URLSearchParams({
+                search: s,
+                branch: b,
+                statsOnly: "true",
+                source: "mysql"
+            });
+            const tableCacheKey = `${inventoryCachePrefix()}${tableParams.toString()}`;
+            const statsCacheKey = `${inventoryCachePrefix()}${statsParams.toString()}`;
+
+            const cachedTable = DataCache.get(tableCacheKey);
+            if (cachedTable) {
+                setAllInventory(cachedTable.data || []);
+                setTotalCount(cachedTable.totalCount || 0);
+                setHasMore(!!cachedTable.hasMore);
+                if (cachedTable.source) setDataSource(cachedTable.source);
+                markCacheFresh(tableCacheKey);
+            }
+
+            const cachedStats = DataCache.get(statsCacheKey);
+            if (cachedStats?.globalStats && shouldUseCachedStats(cachedStats.globalStats)) {
+                setGlobalStats(cachedStats.globalStats);
+                setStatsLoading(false);
+                markCacheFresh(statsCacheKey);
             }
         });
     }, []);
@@ -260,10 +318,19 @@ export default function DashboardPage() {
     }, []);
 
     /* ── Fetch Data ───────────────────────────────────────── */
-    const fetchInventory = useCallback(async (isBackground = false) => {
+    const fetchInventoryTable = useCallback(async (isBackground = false) => {
         if (!isBackground) setLoading(true);
         try {
-            const dataParams = new URLSearchParams({ page: String(page), pageSize: String(ROWS_PER_PAGE), search: debouncedSearch, branch: selectedBranch, count: "true", stats: "true", source: "mysql" });
+            const dataParams = new URLSearchParams({
+                page: String(page),
+                pageSize: String(ROWS_PER_PAGE),
+                search: debouncedSearch,
+                branch: selectedBranch,
+                count: "true",
+                stats: "false",
+                enrich: "false",
+                source: "mysql",
+            });
             const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
 
             const res = await fetchWithAuth(`/api/inventory?${dataParams.toString()}`);
@@ -273,14 +340,38 @@ export default function DashboardPage() {
                 setDataSource(result.source || "mysql");
                 setTotalCount(result.totalCount || 0);
                 setHasMore(!!result.hasMore);
-                if (result.globalStats) setGlobalStats(result.globalStats);
                 DataCache.set(cacheKey, result);
+                markCacheFresh(cacheKey);
             }
-        } catch (e) { 
-            if (e.message !== "Unauthorized") console.error("Fetch error", e); 
+        } catch (e) {
+            if (e.message !== "Unauthorized") console.error("Fetch error", e);
         }
         setLoading(false);
     }, [page, debouncedSearch, selectedBranch]);
+
+    const fetchInventoryStats = useCallback(async (isBackground = false) => {
+        if (!isBackground) setStatsLoading(true);
+        try {
+            const statsParams = new URLSearchParams({
+                search: debouncedSearch,
+                branch: selectedBranch,
+                statsOnly: "true",
+                source: "mysql",
+            });
+            const cacheKey = `${inventoryCachePrefix()}${statsParams.toString()}`;
+
+            const res = await fetchWithAuth(`/api/inventory?${statsParams.toString()}`);
+            if (res.ok) {
+                const result = await res.json();
+                if (result.globalStats) setGlobalStats(result.globalStats);
+                DataCache.set(cacheKey, result);
+                markCacheFresh(cacheKey);
+            }
+        } catch (e) {
+            if (e.message !== "Unauthorized") console.error("Stats fetch error", e);
+        }
+        setStatsLoading(false);
+    }, [debouncedSearch, selectedBranch]);
 
     useEffect(() => {
         clearTimeout(searchTimer.current);
@@ -292,7 +383,16 @@ export default function DashboardPage() {
     }, [search]);
 
     useEffect(() => {
-        const dataParams = new URLSearchParams({ page: String(page), pageSize: String(ROWS_PER_PAGE), search: debouncedSearch, branch: selectedBranch, count: "true", stats: "true", source: "mysql" });
+        const dataParams = new URLSearchParams({
+            page: String(page),
+            pageSize: String(ROWS_PER_PAGE),
+            search: debouncedSearch,
+            branch: selectedBranch,
+            count: "true",
+            stats: "false",
+            enrich: "false",
+            source: "mysql",
+        });
         const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
 
         const cached = DataCache.get(cacheKey);
@@ -300,13 +400,36 @@ export default function DashboardPage() {
             setAllInventory(cached.data || []);
             setTotalCount(cached.totalCount || 0);
             setHasMore(!!cached.hasMore);
-            if (shouldUseCachedStats(cached.globalStats)) setGlobalStats(cached.globalStats);
-            // Re-fetch in background
-            Promise.resolve().then(() => fetchInventory(true));
+            if (cached.source) setDataSource(cached.source);
+            setLoading(false);
+            if (!isCacheFresh(cacheKey)) {
+                Promise.resolve().then(() => fetchInventoryTable(true));
+            }
         } else {
-            Promise.resolve().then(() => fetchInventory(false));
+            Promise.resolve().then(() => fetchInventoryTable(false));
         }
-    }, [page, debouncedSearch, selectedBranch, fetchInventory]);
+    }, [page, debouncedSearch, selectedBranch, fetchInventoryTable]);
+
+    useEffect(() => {
+        const statsParams = new URLSearchParams({
+            search: debouncedSearch,
+            branch: selectedBranch,
+            statsOnly: "true",
+            source: "mysql",
+        });
+        const cacheKey = `${inventoryCachePrefix()}${statsParams.toString()}`;
+
+        const cached = DataCache.get(cacheKey);
+        if (cached?.globalStats && shouldUseCachedStats(cached.globalStats)) {
+            setGlobalStats(cached.globalStats);
+            setStatsLoading(false);
+            if (!isCacheFresh(cacheKey)) {
+                Promise.resolve().then(() => fetchInventoryStats(true));
+            }
+        } else {
+            Promise.resolve().then(() => fetchInventoryStats(false));
+        }
+    }, [debouncedSearch, selectedBranch, fetchInventoryStats]);
 
     const isStale = globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000;
 
@@ -316,7 +439,7 @@ export default function DashboardPage() {
             <main className="db-main">
                 <div className="db-page-title">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <h1>Inventory Dashboard</h1>
+                        <h1>Inventory</h1>
                         <span className="db-company-badge">{companyLabel}</span>
                         <span className={`db-data-source ${dataSource === "mysql" || dataSource === "mysql-catalog" ? "db-data-source-live" : "db-data-source-fallback"}`} suppressHydrationWarning>
                             {dataSource === "mysql"
@@ -330,7 +453,7 @@ export default function DashboardPage() {
                                 : "Live from ERP"}
                         </span>
                     </div>
-                    <p>Manage and monitor stock levels across all locations.</p>
+                    <p>View stock on hand, availability, and safety levels by item and branch.</p>
                     {globalStats.dataMode === "warehouse-missing" && (
                         <p className="db-catalog-hint">
                             Branch stock has not been loaded yet. Run a full Inventory sync from Sync Center to populate warehouse totals.
@@ -341,12 +464,12 @@ export default function DashboardPage() {
                 <div className="db-stats">
                 <div className="db-stat-card">
                     <span className="db-stat-label">Total Stocks</span>
-                    <span className="db-stat-value">{(globalStats.totalStock || 0).toLocaleString()}</span>
+                    <span className="db-stat-value">{statsLoading ? "..." : (globalStats.totalStock || 0).toLocaleString()}</span>
                     <span className="db-stat-sub">{(globalStats.count ?? totalCount).toLocaleString()} products in {selectedBranch || "all branches"}</span>
                 </div>
                 <div className="db-stat-card">
                     <span className="db-stat-label">Total Value</span>
-                    <span className="db-stat-value">₱{(globalStats.totalValue || 0).toLocaleString("en-PH", { minimumFractionDigits: 0 })}</span>
+                    <span className="db-stat-value">{statsLoading ? "..." : `₱${(globalStats.totalValue || 0).toLocaleString("en-PH", { minimumFractionDigits: 0 })}`}</span>
                     <span className="db-stat-sub">Estimated inventory value</span>
                 </div>
                 <div className="db-stat-card db-stat-warn db-stat-clickable" onClick={() => setActiveFilter("low_stock")}>
@@ -394,28 +517,39 @@ export default function DashboardPage() {
                         </div>
                     </div>
                     <div className="db-toolbar-right">
-                        <button className="db-refresh-btn" onClick={() => { clearInventoryCache(); fetchInventory(); }}><IconRefresh /> <span>Refresh</span></button>
+                        <button className="db-refresh-btn" onClick={() => { clearInventoryCache(); fetchInventoryTable(); fetchInventoryStats(); }}><IconRefresh /> <span>Refresh</span></button>
                     </div>
                 </div>
 
-                <div className="db-table-wrap">
+                <div className="db-table-section">
+                    <div className="db-table-section-header">
+                        <h2>Inventory</h2>
+                        <p>Stock records by inventory ID, branch, and quantity on hand.</p>
+                    </div>
+                    <div className="db-table-wrap">
                     {loading ? (
-                        <div className="db-loading"><div className="db-spinner" /><span>Loading data...</span></div>
+                        <div className="db-loading"><div className="db-spinner" /><span>Loading inventory...</span></div>
                     ) : (
-                        <table className="db-table">
+                        <table className="db-table db-table--inventory db-table--fit">
                             <thead>
                                 <tr>
                                     <th>Inventory ID</th>
                                     <th>Description</th>
-                                    <th>Category</th>
-                                    <th>SupplierID</th>
-                                    <th className="db-num">LeadTimeDays</th>
-                                    <th className="db-num">SafetyStock</th>
-                                    <th className="db-num">MOQ</th>
+                                    <th>Item Class</th>
+                                    <th>Branch</th>
+                                    <th className="db-num">On Hand</th>
+                                    <th className="db-num">Available</th>
+                                    <th className="db-num">Safety Stock</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {allInventory.map((row, i) => (
+                                {allInventory.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={7} className="db-empty-cell">
+                                            No inventory records found. Try another branch or run a full Inventory sync.
+                                        </td>
+                                    </tr>
+                                ) : allInventory.map((row, i) => (
                                     <InventoryRow
                                         key={`${row.InventoryID?.value ?? "row"}-${row.Branch?.value ?? ""}-${i}`}
                                         row={row}
@@ -424,6 +558,7 @@ export default function DashboardPage() {
                             </tbody>
                         </table>
                     )}
+                    </div>
                 </div>
 
                 <div className="db-pagination">

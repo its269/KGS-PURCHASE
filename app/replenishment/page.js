@@ -2,11 +2,12 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import { DataCache } from "@/lib/data-cache";
+import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/replenishment.css";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 10;
 
 const IconSearch = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -333,8 +334,15 @@ export default function ReplenishmentPage() {
         const cached = DataCache.get(cacheKey);
 
         (async () => {
-            if (cached && active) applyPayload(cached);
-            if (active) await fetchRecommendations(!!cached, activeBranch);
+            if (cached && active) {
+                applyPayload(cached);
+                setLoading(false);
+                if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
+                    await fetchRecommendations(true, activeBranch);
+                }
+            } else if (active) {
+                await fetchRecommendations(false, activeBranch);
+            }
         })();
 
         return () => { active = false; };
@@ -578,7 +586,7 @@ export default function ReplenishmentPage() {
                 {error && <div className="si-error">{error}</div>}
 
                 <div className="db-table-wrap">
-                    <table className="db-table repl-table">
+                    <table className="db-table db-table--fit repl-table">
                         <thead>
                             <tr>
                                 <th style={{ width: "90px" }}>Status</th>

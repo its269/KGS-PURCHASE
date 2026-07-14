@@ -8,8 +8,9 @@
     gap: 2rem;
     align-items: flex-start;
     padding: 2rem;
-    max-width: 1800px;
-    margin: 0 auto;
+    max-width: none;
+    width: 100%;
+    margin: 0;
 }
 
 .po-main {
@@ -18,6 +19,76 @@
     display: flex;
     flex-direction: column;
     gap: 2rem;
+}
+
+.po-page-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.po-status-guide-top-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    height: 42px;
+    padding: 0 1.15rem;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    border-radius: var(--radius-lg);
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--accent-primary);
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    flex-shrink: 0;
+}
+
+.po-status-guide-top-btn:hover {
+    background: rgba(59, 130, 246, 0.16);
+    border-color: rgba(59, 130, 246, 0.5);
+    transform: translateY(-1px);
+}
+
+.po-status-guide-top-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.po-user-status-filter-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    margin-top: -1rem;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: var(--radius-lg);
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+
+.po-user-status-filter-bar strong {
+    color: var(--accent-primary);
+}
+
+.po-user-status-filter-bar button {
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.po-user-status-filter-bar button:hover {
+    color: var(--text-primary);
+    border-color: var(--border-dark);
 }
 
 /* ── Toolbar Refinements ────────────────────────────────── */
@@ -134,9 +205,262 @@ select.po-select-box:focus {
 }
 
 /* ── Table & Rows ───────────────────────────────────────── */
+.po-table-wrap {
+    overflow-x: auto;
+    overflow-y: visible;
+}
+
 .po-table th,
 .po-table td {
+    font-size: 0.78rem;
+    padding: 0.55rem 0.5rem;
+    vertical-align: top;
+    overflow: visible;
+    word-break: break-word;
+}
+
+.po-table {
+    table-layout: fixed;
+    width: 100%;
+    min-width: 1280px;
+}
+
+.po-col-expand { width: 44px; }
+.po-col-order { width: 110px; }
+.po-col-vendor-id { width: 90px; }
+.po-col-vendor-name { width: 150px; }
+.po-col-status { width: 100px; }
+.po-col-date { width: 105px; }
+.po-col-eta { width: 130px; }
+.po-col-etd { width: 130px; }
+.po-col-container { width: 120px; }
+.po-col-remarks { width: 150px; }
+.po-col-user-status { width: 140px; min-width: 140px; }
+.po-col-amount { width: 120px; text-align: right; }
+
+.po-table .po-vendor-name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.po-table .po-input-date,
+.po-table .po-input-text {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.po-user-status-select {
+    width: 100%;
+    min-width: 0;
+}
+
+/* ── User Status Guide Lightbox ─────────────────────────── */
+.po-status-lightbox {
+    max-width: 760px;
+}
+
+.po-status-lightbox-content {
+    padding: 1.75rem 1.75rem 1.5rem;
+}
+
+.po-status-lightbox-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+    padding-right: 2rem;
+}
+
+.po-status-lightbox-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    flex-shrink: 0;
+    border-radius: 12px;
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--accent-primary);
+}
+
+.po-status-lightbox-header h2 {
+    margin: 0 0 0.35rem;
+    font-size: 1.25rem;
+    color: var(--text-primary);
+}
+
+.po-status-lightbox-header p {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.po-status-lightbox-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    margin-bottom: 1rem;
+}
+
+.po-status-lightbox-search {
+    width: 100%;
+}
+
+.po-status-table-filter-badge {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.po-status-table-filter-badge strong {
+    color: var(--accent-primary);
+}
+
+.po-status-no-results {
+    padding: 2rem 1.25rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.po-status-lightbox-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.85rem 1.35rem 1.15rem;
+    border-top: 1px solid var(--border-light);
+    background: var(--bg-surface);
+}
+
+.po-status-filter-table-btn,
+.po-status-clear-filter-btn {
+    padding: 0.5rem 0.85rem;
+    border-radius: var(--radius-md);
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.po-status-filter-table-btn {
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--accent-primary);
+}
+
+.po-status-filter-table-btn:hover {
+    background: rgba(59, 130, 246, 0.16);
+}
+
+.po-status-clear-filter-btn {
+    border: 1px solid var(--border-medium);
+    background: var(--bg-main);
+    color: var(--text-secondary);
+}
+
+.po-status-clear-filter-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-dark);
+}
+
+.po-status-tabs {
+    background: var(--bg-main);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.po-status-tabs--lightbox .po-status-tabs-bar {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 0;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-surface);
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+.po-status-tabs--lightbox .po-status-tab {
+    flex: 1 1 0;
+    min-width: max-content;
+    padding: 0.7rem 1rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.po-status-tab:hover {
+    color: var(--text-secondary);
+    background: rgba(59, 130, 246, 0.04);
+}
+
+.po-status-tab--active {
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
+    background: var(--bg-main);
+}
+
+.po-status-tabs--lightbox .po-status-tab-panel {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem 1.75rem;
+    align-items: start;
+    padding: 1.25rem 1.35rem;
+}
+
+.po-status-tab-panel-main {
+    min-width: 0;
+}
+
+.po-status-tab-title {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+    font-weight: 800;
+    color: var(--text-primary);
+}
+
+.po-status-tab-desc {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+.po-status-tab-tips {
+    margin: 0;
+    padding-left: 1.15rem;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    color: var(--text-muted);
+    border-left: 2px solid var(--border-light);
+}
+
+.po-status-tab-tips li + li {
+    margin-top: 0.4rem;
+}
+
+@media (max-width: 700px) {
+    .po-status-tabs--lightbox .po-status-tab-panel {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+
+    .po-status-tab-tips {
+        border-left: none;
+        padding-left: 1.15rem;
+    }
 }
 
 .po-row-expanded {
@@ -266,6 +590,52 @@ select.po-select-box:focus {
 }
 
 /* ── Custom Inputs ─────────────────────────────────────── */
+.po-date-input,
+.po-input-date,
+input.po-select-box[type="date"] {
+    position: relative;
+    background-image: var(--date-calendar-icon);
+    background-repeat: no-repeat;
+    background-position: right 0.55rem center;
+    background-size: 16px 16px;
+    padding-right: 2.35rem !important;
+}
+
+:root,
+:root[data-theme='light'] {
+    .po-date-input,
+    .po-input-date,
+    input.po-select-box[type="date"] {
+        color-scheme: light;
+    }
+}
+
+[data-theme='dark'] .po-date-input,
+[data-theme='dark'] .po-input-date,
+[data-theme='dark'] input.po-select-box[type="date"] {
+    color-scheme: dark;
+}
+
+.po-date-input::-webkit-calendar-picker-indicator,
+.po-input-date::-webkit-calendar-picker-indicator,
+input.po-select-box[type="date"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 2.5rem;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    opacity: 0;
+}
+
+.po-date-input:focus,
+.po-input-date:focus,
+input.po-select-box[type="date"]:focus {
+    background-image: var(--date-calendar-icon);
+}
+
 .po-input-date,
 .po-input-text {
     height: 36px;
@@ -274,10 +644,18 @@ select.po-select-box:focus {
     border-radius: var(--radius-md);
     font-size: 0.8rem;
     font-weight: 600;
-    background: var(--bg-input);
+    background-color: var(--bg-input);
     color: var(--text-primary);
     outline: none;
     transition: all 0.2s;
+}
+
+.po-input-date {
+    background-image: var(--date-calendar-icon);
+    background-repeat: no-repeat;
+    background-position: right 0.55rem center;
+    background-size: 16px 16px;
+    padding-right: 2.35rem !important;
 }
 
 select.po-input-text {
@@ -295,8 +673,16 @@ select.po-input-text {
 .po-input-date:focus,
 .po-input-text:focus {
     border-color: var(--accent-primary);
-    background: var(--bg-surface);
+    background-color: var(--bg-surface);
     box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+}
+
+.po-input-date:focus {
+    background-image: var(--date-calendar-icon);
+}
+
+input.po-select-box[type="date"] {
+    background-color: var(--bg-main);
 }
 
 /* ── Right Sidebar / Summary Panel ─────────────────────── */

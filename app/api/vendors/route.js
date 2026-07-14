@@ -10,15 +10,17 @@ export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
         const page = Math.max(1, parseInt(searchParams.get("page") || "1"));
-        const pageSize = Math.min(100, parseInt(searchParams.get("pageSize") || "50"));
+        const pageSize = Math.min(100, parseInt(searchParams.get("pageSize") || "10"));
         const search = (searchParams.get("search") || "").trim();
         const source = searchParams.get("source") || "mysql";
 
         if (source === "mysql") {
             try {
-                const result = await MySqlService.getVendors({ page, pageSize, search });
-                const performance = await MySqlService.getSupplierPerformance();
-                const leadTimes = await MySqlService.getVendorLeadTimes();
+                const [result, performance, leadTimes] = await Promise.all([
+                    MySqlService.getVendors({ page, pageSize, search }),
+                    MySqlService.getSupplierPerformance(),
+                    MySqlService.getVendorLeadTimes(),
+                ]);
                 
                 if (result.data.length > 0) {
                     return NextResponse.json({ 

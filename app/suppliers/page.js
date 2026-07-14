@@ -2,12 +2,14 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { DataCache } from "@/lib/data-cache";
+import { loadListWithCache } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/inventory-detail.css";
+import "@/styles/po.css";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 10;
 
 function formatReliabilityScore(score) {
     if (score == null || !Number.isFinite(Number(score))) return "N/A";
@@ -59,6 +61,26 @@ const IconClose = () => (
     </svg>
 );
 
+function fmtAmount(n) {
+    return Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtOrderDate(d) {
+    if (!d) return "—";
+    const date = new Date(d);
+    if (isNaN(date.getTime())) return d;
+    return date.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function poStatusClass(status) {
+    const s = (status || "").toLowerCase();
+    if (s === "open") return "po-status-open";
+    if (s === "closed") return "po-status-closed";
+    if (s === "completed") return "po-status-completed";
+    if (s === "cancelled" || s === "canceled") return "po-status-cancelled";
+    return "po-status-default";
+}
+
 export default function SuppliersPage() {
     /* ── State ────────────────────────────────────────────── */
     const [vendors, setVendors] = useState([]);
@@ -70,6 +92,10 @@ export default function SuppliersPage() {
     const [error, setError] = useState(null);
     const [leadTimes, setLeadTimes] = useState({});
     const [showReliabilityInfo, setShowReliabilityInfo] = useState(false);
+    const [selectedVendor, setSelectedVendor] = useState(null);
+    const [supplierOrders, setSupplierOrders] = useState([]);
+    const [ordersLoading, setOrdersLoading] = useState(false);
+    const [ordersError, setOrdersError] = useState(null);
 
     const isInitialMount = useRef(true);
     const saveTimeoutRef = useRef({});
@@ -191,11 +217,16 @@ export default function SuppliersPage() {
         const cacheKey = `vendors_v2_${params.toString()}`;
 
         const cached = DataCache.get(cacheKey);
-        if (cached) {
-            Promise.resolve().then(() => fetchVendors(true));
-        } else {
-            Promise.resolve().then(() => fetchVendors(false));
-        }
+        loadListWithCache({
+            cacheKey,
+            cached,
+            apply: (data) => {
+                setVendors(data.vendors ?? []);
+                setHasMore(data.hasMore ?? false);
+            },
+            setLoading,
+            refetch: fetchVendors,
+        });
     }, [fetchVendors, page, debouncedSearch]);
 
     const stats = useMemo(() => {
@@ -203,6 +234,41 @@ export default function SuppliersPage() {
         const withLeadTime = Object.keys(leadTimes).filter(id => vendors.some(v => v.vendorId === id)).length;
         return { total, withLeadTime };
     }, [vendors, leadTimes]);
+
+    const openSupplierOrders = useCallback(async (vendor) => {
+        setSelectedVendor(vendor);
+        setSupplierOrders([]);
+        setOrdersError(null);
+        setOrdersLoading(true);
+
+        try {
+            const params = new URLSearchParams({
+                page: "1",
+                pageSize: "50",
+                vendorId: vendor.vendorId,
+                status: "",
+            });
+            const res = await fetchWithAuth(`/api/po?${params}`);
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.message || `HTTP ${res.status}`);
+            }
+            const data = await res.json();
+            setSupplierOrders(data.orders ?? []);
+        } catch (err) {
+            if (err.message !== "Unauthorized") {
+                setOrdersError(err.message || "Failed to load purchase orders for this supplier.");
+            }
+        } finally {
+            setOrdersLoading(false);
+        }
+    }, []);
+
+    const closeSupplierOrders = () => {
+        setSelectedVendor(null);
+        setSupplierOrders([]);
+        setOrdersError(null);
+    };
 
     return (
         <div className="db-root">
@@ -214,7 +280,7 @@ export default function SuppliersPage() {
                         </div>
                         <h1 style={{ margin: 0 }}>Suppliers Directory</h1>
                     </div>
-                    <p>Manage your external suppliers and track average delivery lead times.</p>
+                    <p>Manage your external suppliers and track average delivery lead times. Click a supplier row to view their purchase orders.</p>
                 </div>
 
                 <div className="db-stats" style={{ marginBottom: '2rem' }}>
@@ -270,7 +336,7 @@ export default function SuppliersPage() {
                 {error && <div className="si-error">{error}</div>}
 
                 <div className="db-table-wrap" style={{ borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border-light)', boxShadow: 'var(--shadow-md)' }}>
-                    <table className="db-table">
+                    <table className="db-table db-table--fit">
                         <thead style={{ background: 'var(--bg-main)' }}>
                             <tr>
                                 <th style={{ width: '200px', padding: '1.25rem' }}>Supplier ID</th>
@@ -313,7 +379,11 @@ export default function SuppliersPage() {
                             ) : vendors.length === 0 ? (
                                 <tr><td colSpan={4} className="si-empty-cell" style={{ padding: '4rem' }}>No suppliers found matching your criteria.</td></tr>
                             ) : vendors.map(v => (
-                                <tr key={v.vendorId} className="db-clickable-row">
+                                <tr
+                                    key={v.vendorId}
+                                    className={`db-clickable-row ${selectedVendor?.vendorId === v.vendorId ? "si-row-selected" : ""}`}
+                                    onClick={() => openSupplierOrders(v)}
+                                >
                                     <td style={{ padding: '1.25rem' }}>
                                         <span className="db-inv-id" style={{ background: 'var(--bg-main)', color: 'var(--text-secondary)', border: '1px solid var(--border-light)' }}>{v.vendorId}</span>
                                     </td>
@@ -344,7 +414,7 @@ export default function SuppliersPage() {
                                             </div>
                                         )}
                                     </td>
-                                    <td style={{ padding: '1.25rem' }}>
+                                    <td style={{ padding: '1.25rem' }} onClick={(e) => e.stopPropagation()}>
                                         <div className="sup-lead-time-input">
                                             <IconClock />
                                             <input
@@ -477,6 +547,103 @@ export default function SuppliersPage() {
                                 }}
                             >
                                 Got it
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Supplier Orders Lightbox ── */}
+            {selectedVendor && (
+                <div className="idm-overlay" onClick={closeSupplierOrders} style={{ zIndex: 1000 }}>
+                    <div className="idm-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "900px", width: "95vw" }}>
+                        <button className="idm-close-btn" onClick={closeSupplierOrders} aria-label="Close">
+                            <IconClose />
+                        </button>
+
+                        <div className="idm-content" style={{ padding: "2rem" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.25rem" }}>
+                                <div style={{ background: "rgba(59, 130, 246, 0.1)", color: "var(--accent-primary)", padding: "0.75rem", borderRadius: "12px" }}>
+                                    <IconTruck />
+                                </div>
+                                <div>
+                                    <h2 style={{ margin: 0, fontSize: "1.35rem", color: "var(--text-primary)" }}>
+                                        {selectedVendor.vendorName}
+                                    </h2>
+                                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                                        Supplier ID: <strong>{selectedVendor.vendorId}</strong>
+                                        {selectedVendor.reliabilityScore != null && (
+                                            <> · Reliability: <strong>{formatReliabilityScore(selectedVendor.reliabilityScore)}</strong></>
+                                        )}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+                                Purchase orders linked to this supplier only.
+                            </p>
+
+                            {ordersLoading ? (
+                                <div style={{ padding: "3rem", textAlign: "center" }}>
+                                    <div className="db-spinner" style={{ margin: "0 auto 1rem" }} />
+                                    <p style={{ fontWeight: 600, color: "var(--text-secondary)" }}>Loading orders...</p>
+                                </div>
+                            ) : ordersError ? (
+                                <div style={{ padding: "2rem", textAlign: "center", color: "var(--status-danger)" }}>{ordersError}</div>
+                            ) : supplierOrders.length === 0 ? (
+                                <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)" }}>
+                                    No purchase orders found for this supplier.
+                                </div>
+                            ) : (
+                                <div className="db-table-wrap" style={{ maxHeight: "420px", overflow: "auto" }}>
+                                    <table className="db-table" style={{ fontSize: "0.82rem" }}>
+                                        <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
+                                            <tr>
+                                                <th>Order #</th>
+                                                <th>Status</th>
+                                                <th>Order Date</th>
+                                                <th style={{ textAlign: "right" }}>Total Amount</th>
+                                                <th style={{ textAlign: "right" }}>Line Items</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {supplierOrders.map((order) => (
+                                                <tr key={`${order.orderType || "PO"}-${order.orderNbr}`}>
+                                                    <td><span className="db-inv-id">{order.orderNbr}</span></td>
+                                                    <td>
+                                                        <span className={`db-badge ${poStatusClass(order.status)}`}>
+                                                            {order.status || "—"}
+                                                        </span>
+                                                    </td>
+                                                    <td>{fmtOrderDate(order.date)}</td>
+                                                    <td style={{ textAlign: "right", fontWeight: 700 }}>
+                                                        ₱{fmtAmount(order.totalAmount)}
+                                                    </td>
+                                                    <td style={{ textAlign: "right" }}>
+                                                        {order.lines?.length ?? 0}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+
+                            <button
+                                onClick={closeSupplierOrders}
+                                style={{
+                                    width: "100%",
+                                    marginTop: "1.5rem",
+                                    padding: "0.75rem",
+                                    background: "var(--text-primary)",
+                                    color: "var(--text-inverse)",
+                                    border: "none",
+                                    borderRadius: "8px",
+                                    fontWeight: 600,
+                                    cursor: "pointer",
+                                }}
+                            >
+                                Close
                             </button>
                         </div>
                     </div>

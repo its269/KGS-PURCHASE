@@ -12,8 +12,9 @@
 
 /* ── Main ──────────────────────────────────────────────── */
 .db-main {
-    max-width: 1600px;
-    margin: 0 auto;
+    max-width: none;
+    width: 100%;
+    margin: 0;
     padding: 2rem;
     display: flex;
     flex-direction: column;
@@ -287,38 +288,121 @@
     border: 1px solid var(--border-light);
     border-radius: var(--radius-xl);
     box-shadow: var(--shadow-md);
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    overflow-x: hidden;
+    width: 100%;
 }
 
 .db-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.9rem;
-    min-width: 800px;
+    font-size: 0.8125rem;
+    min-width: 0;
+    table-layout: fixed;
 }
 
-/* Responsive Table Column Hiding */
+/* Fit all columns on screen — no horizontal scroll */
+.db-table--fit {
+    table-layout: fixed;
+    width: 100%;
+    min-width: 0;
+}
+
+.db-table--fit thead th {
+    padding: 0.55rem 0.4rem;
+    white-space: normal;
+    line-height: 1.2;
+    font-size: 0.65rem;
+    word-break: break-word;
+    overflow: hidden;
+}
+
+.db-table--fit tbody td {
+    padding: 0.45rem 0.4rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: top;
+    line-height: 1.25;
+}
+
+.db-table--fit .db-desc,
+.db-table--fit td.db-desc {
+    white-space: normal;
+    word-break: break-word;
+    overflow: visible;
+    text-overflow: unset;
+}
+
+.db-table--fit .db-inv-id {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.35rem;
+    word-break: break-all;
+    white-space: normal;
+    display: inline-block;
+    max-width: 100%;
+}
+
+.db-table--inventory th:nth-child(1),
+.db-table--inventory td:nth-child(1) { width: 12%; }
+.db-table--inventory th:nth-child(2),
+.db-table--inventory td:nth-child(2) { width: 26%; }
+.db-table--inventory th:nth-child(3),
+.db-table--inventory td:nth-child(3) { width: 11%; }
+.db-table--inventory th:nth-child(4),
+.db-table--inventory td:nth-child(4) { width: 10%; }
+.db-table--inventory th:nth-child(5),
+.db-table--inventory td:nth-child(5) { width: 11%; }
+.db-table--inventory th:nth-child(6),
+.db-table--inventory td:nth-child(6) { width: 11%; }
+.db-table--inventory th:nth-child(7),
+.db-table--inventory td:nth-child(7) { width: 11%; }
+
+.db-table-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.db-table-section-header h2 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: var(--text-primary);
+}
+
+.db-table-section-header p {
+    margin: 0.25rem 0 0;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+
+.db-empty-cell {
+    padding: 2.5rem 1rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.db-table thead th {
+    background: var(--bg-main);
+    padding: 0.65rem 0.5rem;
+    text-align: left;
+    font-size: 0.68rem;
+    font-weight: 800;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 2px solid var(--border-light);
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* Legacy min-width removed — tables fit viewport */
 @media (max-width: 1200px) {
     .col-tablet-hide { display: none; }
 }
 
 @media (max-width: 768px) {
     .col-mobile-hide { display: none; }
-    .db-table { min-width: auto; }
-}
-
-.db-table thead th {
-    background: var(--bg-main);
-    padding: 1.25rem;
-    text-align: left;
-    font-size: 0.75rem;
-    font-weight: 800;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    border-bottom: 2px solid var(--border-light);
-    white-space: nowrap;
 }
 
 .db-table tbody tr {
@@ -335,7 +419,7 @@
 }
 
 .db-table tbody td {
-    padding: 1.1rem 1.25rem;
+    padding: 0.55rem 0.5rem;
     color: var(--text-secondary);
     vertical-align: middle;
 }

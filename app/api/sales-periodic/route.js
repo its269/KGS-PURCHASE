@@ -31,7 +31,7 @@ export async function GET(request) {
         const branch = searchParams.get("branch") || "";
         const asOfStr = searchParams.get("asOfDate") || new Date().toISOString().split('T')[0];
         const page = parseInt(searchParams.get("page") || "1");
-        const pageSize = parseInt(searchParams.get("pageSize") || "15");
+        const pageSize = parseInt(searchParams.get("pageSize") || "10", 10);
 
         const asOf = new Date(asOfStr);
         if (isNaN(asOf.getTime())) {

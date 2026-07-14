@@ -6,7 +6,7 @@ import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/sessio
 export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
-    const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10)));
+    const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "10", 10)));
     const search = searchParams.get("search") || "";
     const companyId = getActiveCompanyFromRequest(request) || "main";
 

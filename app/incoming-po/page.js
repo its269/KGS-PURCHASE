@@ -2,13 +2,14 @@
 
 import { Fragment, useState, useEffect, useCallback, useRef } from "react";  
 import { DataCache } from "@/lib/data-cache";
+import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/po.css";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 10;
 
 function isPoCacheUsable(cached) {
     if (!cached?.orders?.length) return false;
@@ -162,7 +163,10 @@ export default function IncomingPOPage() {
         if (cached && isPoCacheUsable(cached)) {
             setOrders(cached.orders ?? []);
             setHasMore(cached.hasMore ?? false);
-            Promise.resolve().then(() => fetchOrders(true));
+            setLoading(false);
+            if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
+                Promise.resolve().then(() => fetchOrders(true));
+            }
         } else {
             if (cached) DataCache.delete(cacheKey);
             Promise.resolve().then(() => fetchOrders(false));
@@ -248,7 +252,7 @@ export default function IncomingPOPage() {
                 {error && <div className="si-error">{error}</div>}
 
                 <div className="db-table-wrap">
-                    <table className="db-table po-table">
+                    <table className="db-table db-table--fit po-table">
                         <thead>
                             <tr>
                                 <th style={{ width: 48 }}></th>

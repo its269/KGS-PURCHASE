@@ -244,6 +244,10 @@ export async function POST(request) {
             { name: "default_price", def: "DECIMAL(18, 4) DEFAULT 0" },
             { name: "inventory_name", def: "VARCHAR(255) NULL" },
             { name: "company_id", def: "VARCHAR(50) NOT NULL DEFAULT 'main'" },
+            { name: "vendor_id", def: "VARCHAR(100) NULL" },
+            { name: "lead_time_days", def: "INT NULL" },
+            { name: "safety_stock", def: "DECIMAL(18,4) NULL" },
+            { name: "moq", def: "DECIMAL(18,4) NULL" },
         ];
 
         for (const c of cols) {
@@ -257,9 +261,10 @@ export async function POST(request) {
             }
         }
 
+        await MySqlService.ensureInventoryPlanningColumns();
+
         await conn.query(
             `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\`
-             MODIFY COLUMN \`type\` VARCHAR(50) NULL DEFAULT '',
              MODIFY COLUMN \`base_unit\` VARCHAR(50) NULL DEFAULT '',
              MODIFY COLUMN \`posting_class\` VARCHAR(100) NULL DEFAULT ''`
         ).catch((e) => console.warn(">>> [Sync API] Column default migration:", e.message));
@@ -598,16 +603,7 @@ export async function POST(request) {
                                     const catalog = extractStockItemCatalog(item);
                                     if (!catalog) continue;
                                     batchItemIds.push(catalog.inventory_id);
-                                    catalogs.push({
-                                        inventory_id: catalog.inventory_id,
-                                        description: catalog.description,
-                                        item_class: catalog.item_class,
-                                        default_price: catalog.default_price,
-                                        item_status: catalog.item_status,
-                                        base_unit: catalog.base_unit,
-                                        item_type: catalog.item_type,
-                                        posting_class: catalog.posting_class,
-                                    });
+                                    catalogs.push({ ...catalog });
                                     const catalogFields = {
                                         description: catalog.description,
                                         item_class: catalog.item_class,

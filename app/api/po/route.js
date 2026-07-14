@@ -98,17 +98,19 @@ export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
         const page = Math.max(1, parseInt(searchParams.get("page") || "1"));
-        const pageSize = Math.min(100, parseInt(searchParams.get("pageSize") || "50"));
+        const pageSize = Math.min(100, parseInt(searchParams.get("pageSize") || "10"));
         const search = (searchParams.get("search") || "").trim();
         const startDate = searchParams.get("startDate") || "";
+        const endDate = searchParams.get("endDate") || "";
         const status = searchParams.get("status") || "";
         const branch = (searchParams.get("branch") || "").trim();
+        const vendorId = (searchParams.get("vendorId") || "").trim();
         const source = searchParams.get("source") || "mysql";
         const userCred = getSessionFromRequest(request);
         const poCred = await resolvePoCredential(request);
         const companyId = getActiveCompanyFromRequest(request) || "main";
 
-        const fetchParams = { page, pageSize, search, startDate, status, branch, companyId };
+        const fetchParams = { page, pageSize, search, startDate, endDate, status, branch, vendorId, companyId };
 
         if (source === "mysql") {
             try {

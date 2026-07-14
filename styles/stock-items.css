@@ -9,7 +9,8 @@
 }
 
 .si-main {
-    max-width: 1600px;
+    max-width: none;
+    width: 100%;
     margin: 0 auto;
     padding: 2rem;
     display: flex;

@@ -32,6 +32,12 @@ const getAny = (obj, ...keys) => {
 };
 
 /** Catalog fields shared across all warehouse rows for one StockItem */
+function parsePlanningNumber(raw) {
+    if (raw === "" || raw === null || raw === undefined) return null;
+    const n = parseFloat(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 export function extractStockItemCatalog(item) {
     const invId = String(getF(item, "InventoryID")).trim();
     if (!invId) return null;
@@ -44,6 +50,10 @@ export function extractStockItemCatalog(item) {
         base_unit: String(getF(item, "BaseUnit") || ""),
         item_type: String(getF(item, "ItemType") || ""),
         posting_class: String(getF(item, "PostingClass") || ""),
+        vendor_id: String(getAny(item, "PreferredVendorID", "DefaultVendorID", "VendorID", "LastVendorID")).trim() || null,
+        lead_time_days: parsePlanningNumber(getAny(item, "LeadTimeDays", "LeadTime", "PurchLeadTime", "VendorLeadTime")),
+        safety_stock: parsePlanningNumber(getAny(item, "SafetyStock", "SafetyStockQty", "ReorderPoint")),
+        moq: parsePlanningNumber(getAny(item, "MinOrderQty", "MOQ", "MinimumOrderQuantity", "MinQty")),
     };
 }
 
@@ -329,6 +339,10 @@ export const AcumaticaService = {
                     ItemClass: { value: getF(item, "ItemClass") },
                     ItemStatus: { value: getF(item, "ItemStatus") },
                     BaseUnit: { value: getF(item, "BaseUnit") },
+                    VendorID: { value: getAny(item, "PreferredVendorID", "DefaultVendorID", "VendorID") },
+                    LeadTimeDays: { value: parsePlanningNumber(getAny(item, "LeadTimeDays", "LeadTime", "PurchLeadTime")) },
+                    SafetyStock: { value: parsePlanningNumber(getAny(item, "SafetyStock", "SafetyStockQty", "ReorderPoint")) },
+                    MOQ: { value: parsePlanningNumber(getAny(item, "MinOrderQty", "MOQ", "MinimumOrderQuantity")) },
                 });
             }
         }
@@ -591,7 +605,7 @@ export const AcumaticaService = {
     },
 
     /** ── PURCHASE ORDERS ── */
-    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", cookie, startDate = "", status = "" }) {
+    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", cookie, startDate = "", endDate = "", status = "" }) {
         const skip = (page - 1) * pageSize;
         const top = pageSize + 1;
 
@@ -607,6 +621,9 @@ export const AcumaticaService = {
         }
         if (startDate) {
             filterArr.push(`Date ge datetimeoffset'${startDate}T00:00:00Z'`);
+        }
+        if (endDate) {
+            filterArr.push(`Date le datetimeoffset'${endDate}T23:59:59Z'`);
         }
 
         let queryParams = [
