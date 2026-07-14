@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 
+# portable Node.js download used by self-hosted Windows deploy
+.tools/
+
 # debug
 npm-debug.log*
 yarn-debug.log*

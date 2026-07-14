@@ -3,6 +3,13 @@ REM Use before npm commands in cmd.exe on this server.
 REM Searches candidate Node.js directories in priority order.
 
 set "NODE_TOOLS="
+set "REPO=%~dp0.."
+
+REM 0. Project-local portable Node (installed by ensure-node-path.ps1)
+if exist "%REPO%\.tools\node-v20.18.1-win-x64\npm.cmd" (
+    set "NODE_TOOLS=%REPO%\.tools\node-v20.18.1-win-x64"
+    goto :found
+)
 
 REM 1. Standard system-wide installer path
 if exist "C:\Program Files\nodejs\npm.cmd" (
@@ -34,7 +41,7 @@ for /D %%P in ("C:\Users\Administrator\Desktop\Github\*") do (
     )
 )
 
-echo ERROR: npm not found. Check ensure-node-path.ps1 for supported search paths.
+echo ERROR: npm not found. Run: powershell -File "%~dp0ensure-node-path.ps1"
 exit /b 1
 
 :found
