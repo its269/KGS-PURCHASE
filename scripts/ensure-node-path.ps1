@@ -1,14 +1,22 @@
 # Ensures npm/node are on PATH for this Windows server.
-# Program Files\nodejs only has node.exe; full npm lives in KelinConnect tools.
+# Program Files\nodejs may only include node.exe on this host.
 
-$nodeTools = 'C:\Users\Administrator\Desktop\Github\KelinConnect\kelin-connect-nextjs\.tools\node-v20.10.0-win-x64'
+$defaultNodeTools = 'C:\Users\Administrator\Desktop\Github\KelinConnect\kelin-connect-nextjs\.tools\node-v20.10.0-win-x64'
 $npmRoaming = Join-Path $env:APPDATA 'npm'
 
-if (-not (Test-Path -LiteralPath (Join-Path $nodeTools 'npm.cmd'))) {
-    throw "npm.cmd not found at $nodeTools"
+$hasBundledNpm = $false
+try {
+    $hasBundledNpm = Test-Path -LiteralPath (Join-Path $defaultNodeTools 'npm.cmd') -ErrorAction Stop
+} catch {
+    $hasBundledNpm = $false
 }
 
-$prefix = "$nodeTools;$npmRoaming;"
-if ($env:Path -notlike "*$nodeTools*") {
-    $env:Path = $prefix + $env:Path
+if ($hasBundledNpm -and $env:Path -notlike "*$defaultNodeTools*") {
+    $env:Path = "$defaultNodeTools;$npmRoaming;$env:Path"
+} elseif ($env:Path -notlike "*$npmRoaming*") {
+    $env:Path = "$npmRoaming;$env:Path"
+}
+
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "npm command is not available for this runner account."
 }
