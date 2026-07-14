@@ -1,19 +1,34 @@
 # Ensures npm/node are on PATH for this Windows server.
-# Program Files\nodejs may only include node.exe on this host.
+# Searches standard installation paths and a bundled tools fallback.
 
-$defaultNodeTools = 'C:\Users\Administrator\Desktop\Github\KelinConnect\kelin-connect-nextjs\.tools\node-v20.10.0-win-x64'
-$npmRoaming = Join-Path $env:APPDATA 'npm'
+$candidateNodeDirs = @(
+    'C:\Program Files\nodejs',
+    'C:\Program Files (x86)\nodejs',
+    'C:\Users\Administrator\Desktop\Github\KelinConnect\kelin-connect-nextjs\.tools\node-v20.10.0-win-x64'
+)
 
-$hasBundledNpm = $false
-try {
-    $hasBundledNpm = Test-Path -LiteralPath (Join-Path $defaultNodeTools 'npm.cmd') -ErrorAction Stop
-} catch {
-    $hasBundledNpm = $false
+# nvm-managed versions live under APPDATA\nvm
+$nvmRoot = if ($env:NVM_HOME) { $env:NVM_HOME } else { Join-Path $env:APPDATA 'nvm' }
+if (Test-Path $nvmRoot -ErrorAction SilentlyContinue) {
+    Get-ChildItem $nvmRoot -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { $candidateNodeDirs += $_.FullName }
 }
 
-if ($hasBundledNpm -and $env:Path -notlike "*$defaultNodeTools*") {
-    $env:Path = "$defaultNodeTools;$npmRoaming;$env:Path"
-} elseif ($env:Path -notlike "*$npmRoaming*") {
+foreach ($dir in $candidateNodeDirs) {
+    if (-not $dir) { continue }
+    $hasNpm = (Test-Path (Join-Path $dir 'npm.cmd') -ErrorAction SilentlyContinue) -or
+              (Test-Path (Join-Path $dir 'npm')     -ErrorAction SilentlyContinue)
+    if ($hasNpm -and $env:Path -notlike "*$dir*") {
+        $env:Path = "$dir;$env:Path"
+        Write-Host "Added to PATH: $dir"
+        break
+    }
+}
+
+# Always ensure the user-roaming npm prefix (pm2, etc.) is on PATH
+$npmRoaming = if ($env:APPDATA) { Join-Path $env:APPDATA 'npm' } else { $null }
+if ($npmRoaming -and $env:Path -notlike "*$npmRoaming*") {
     $env:Path = "$npmRoaming;$env:Path"
 }
 
