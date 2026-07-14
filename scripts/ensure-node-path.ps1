@@ -10,6 +10,10 @@ $candidateNodeDirs = @(
     'C:\Program Files\nodejs',
     'C:\Program Files (x86)\nodejs',
     (Join-Path $localData 'Programs\nodejs'),
+    # Hardcoded Administrator profile fallbacks — needed when the runner service runs as
+    # NETWORK SERVICE and $env:LOCALAPPDATA resolves to the service account profile instead
+    # of the Administrator profile where Node.js is actually installed.
+    'C:\Users\Administrator\AppData\Local\Programs\nodejs',
     'C:\Users\Administrator\Desktop\Github\KelinConnect\kelin-connect-nextjs\.tools\node-v20.10.0-win-x64'
 )
 
@@ -18,6 +22,9 @@ $nvmRoots = @()
 if ($env:NVM_HOME) { $nvmRoots += $env:NVM_HOME }
 $nvmRoots += (Join-Path $appData    'nvm')
 $nvmRoots += (Join-Path $userProfile 'AppData\Roaming\nvm')
+# Hardcoded Administrator profile nvm root — needed when runner service account differs from
+# the Administrator account where nvm was installed.
+$nvmRoots += 'C:\Users\Administrator\AppData\Roaming\nvm'
 $nvmRoots += 'C:\nvm'
 $nvmRoots += 'C:\nvm-windows'
 
@@ -46,6 +53,11 @@ foreach ($dir in $candidateNodeDirs) {
 $npmRoaming = Join-Path $appData 'npm'
 if ($env:Path -notlike "*$npmRoaming*") {
     $env:Path = "$npmRoaming;$env:Path"
+}
+# Hardcoded Administrator roaming npm — needed when runner service account differs
+$adminNpmRoaming = 'C:\Users\Administrator\AppData\Roaming\npm'
+if ($env:Path -notlike "*$adminNpmRoaming*") {
+    $env:Path = "$adminNpmRoaming;$env:Path"
 }
 
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
