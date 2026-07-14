@@ -63,7 +63,31 @@ jobs:
           $env:NEXT_TELEMETRY_DISABLED = '1'
           $env:NODE_OPTIONS = '--max-old-space-size=8192'
           $env:NEXT_PUBLIC_BASE_PATH = '/kgs-purchase'
-          npm run build
+          $buildSucceeded = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Running build (attempt $attempt/3)..."
+            $buildOutput = & npm run build 2>&1
+            $buildExitCode = $LASTEXITCODE
+            $buildOutput | ForEach-Object { Write-Host $_ }
+
+            if ($buildExitCode -eq 0) {
+              $buildSucceeded = $true
+              break
+            }
+
+            $buildText = ($buildOutput | Out-String)
+            $isStandaloneLock = $buildText -match 'EBUSY: resource busy or locked, rmdir .*\\.next\\+standalone'
+            if (-not $isStandaloneLock -or $attempt -eq 3) {
+              exit $buildExitCode
+            }
+
+            Write-Host "Detected transient lock in .next\\standalone. Retrying in 8 seconds..."
+            Start-Sleep -Seconds 8
+          }
+
+          if (-not $buildSucceeded) {
+            throw "Build did not succeed after retries."
+          }
 
       - name: Copy standalone assets
         shell: powershell
