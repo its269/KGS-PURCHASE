@@ -2,7 +2,7 @@
 # Searches standard installation paths and project tool folders,
 # then auto-downloads a portable Node.js into the repo .tools folder if nothing is found.
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 
 # Resolve user-specific base paths robustly (may be unset in service/CI accounts)
 $userProfile = if ($env:USERPROFILE) { $env:USERPROFILE } else { 'C:\Users\Administrator' }
@@ -23,7 +23,17 @@ function Test-NpmDir([string]$dir) {
 
 function Add-PathFront([string]$dir) {
     if (-not $dir) { return }
-    if (-not (Test-Path -LiteralPath $dir)) { return }
+
+    # Access-denied on AppData is common for the GitHub Actions service account —
+    # never treat Test-Path failures as fatal.
+    $exists = $false
+    try {
+        $exists = Test-Path -LiteralPath $dir -ErrorAction Stop
+    } catch {
+        Write-Host "WARN: cannot probe path '$dir' ($($_.Exception.Message)). Adding to PATH anyway."
+        $exists = $true
+    }
+    if (-not $exists) { return }
 
     # Remove any existing occurrence, then prepend so this install wins over stale PATH entries
     $parts = $env:Path -split ';' | Where-Object {
@@ -143,6 +153,7 @@ Add-PathFront $npmRoaming
 # Hardcoded Administrator roaming npm — needed when runner service account differs
 Add-PathFront 'C:\Users\Administrator\AppData\Roaming\npm'
 
+# Always still throw if we somehow have no npm after searches/install
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw "npm not found after PATH setup. Tried: $($candidateNodeDirs -join '; ')"
 }
