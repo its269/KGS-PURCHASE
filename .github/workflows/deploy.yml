@@ -33,6 +33,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\ensure-pm2-env.ps1
+          & .\scripts\ensure-node-path.ps1
           pm2 stop kgs-purchase-http 2>&1 | Out-Null
           Start-Sleep -Seconds 8
           & .\scripts\backup-next-build.ps1
