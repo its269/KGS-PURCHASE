@@ -18,8 +18,8 @@ jobs:
         shell: cmd
         run: |
           cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          git fetch origin main
-          git reset --hard origin/main
+          git -c safe.directory=C:/Users/Administrator/Desktop/Github/KGS-PURCHASE fetch origin main
+          git -c safe.directory=C:/Users/Administrator/Desktop/Github/KGS-PURCHASE reset --hard origin/main
 
       - name: Verify production .env
         shell: powershell
