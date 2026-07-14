@@ -14,6 +14,13 @@ $candidateNodeDirs = @(
     # NETWORK SERVICE and $env:LOCALAPPDATA resolves to the service account profile instead
     # of the Administrator profile where Node.js is actually installed.
     'C:\Users\Administrator\AppData\Local\Programs\nodejs',
+    # Chocolatey and Scoop package manager paths
+    'C:\ProgramData\chocolatey\bin',
+    'C:\tools\nodejs',
+    # Volta version manager
+    (Join-Path $userProfile '.volta\bin'),
+    'C:\Users\Administrator\.volta\bin',
+    # Previously bundled node for KelinConnect project (kept for compatibility)
     'C:\Users\Administrator\Desktop\Github\KelinConnect\kelin-connect-nextjs\.tools\node-v20.10.0-win-x64'
 )
 
@@ -27,12 +34,39 @@ $nvmRoots += (Join-Path $userProfile 'AppData\Roaming\nvm')
 $nvmRoots += 'C:\Users\Administrator\AppData\Roaming\nvm'
 $nvmRoots += 'C:\nvm'
 $nvmRoots += 'C:\nvm-windows'
+# System-wide NVM for Windows installation path
+$nvmRoots += 'C:\Program Files\nvm'
 
 foreach ($nvmRoot in ($nvmRoots | Select-Object -Unique)) {
     if (Test-Path $nvmRoot -ErrorAction SilentlyContinue) {
         Get-ChildItem $nvmRoot -Directory -ErrorAction SilentlyContinue |
             Sort-Object Name -Descending |
             ForEach-Object { $candidateNodeDirs += $_.FullName }
+    }
+}
+
+# Broad scan: find any bundled node-v*-win-x64 distribution under Desktop\Github projects.
+# This handles version upgrades and new project .tools folders without script changes.
+$githubRoot = 'C:\Users\Administrator\Desktop\Github'
+if (Test-Path $githubRoot -ErrorAction SilentlyContinue) {
+    Get-ChildItem $githubRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $proj = $_.FullName
+        # Check .tools directly in each project root
+        $toolsDir = Join-Path $proj '.tools'
+        if (Test-Path $toolsDir -ErrorAction SilentlyContinue) {
+            Get-ChildItem $toolsDir -Directory -Filter 'node-v*-win-x64' -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending |
+                ForEach-Object { $candidateNodeDirs += $_.FullName }
+        }
+        # Also check one level deeper (e.g. Github\Org\repo\.tools\node-v*)
+        Get-ChildItem $proj -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $subToolsDir = Join-Path $_.FullName '.tools'
+            if (Test-Path $subToolsDir -ErrorAction SilentlyContinue) {
+                Get-ChildItem $subToolsDir -Directory -Filter 'node-v*-win-x64' -ErrorAction SilentlyContinue |
+                    Sort-Object Name -Descending |
+                    ForEach-Object { $candidateNodeDirs += $_.FullName }
+            }
+        }
     }
 }
 
