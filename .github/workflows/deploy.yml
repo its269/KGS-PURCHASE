@@ -59,14 +59,19 @@ jobs:
         shell: powershell
         run: |
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          $ErrorActionPreference = 'Continue'
           & .\scripts\ensure-node-path.ps1
+          & .\scripts\ensure-next-swc.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           $env:NEXT_TELEMETRY_DISABLED = '1'
           $env:NODE_OPTIONS = '--max-old-space-size=8192'
           $env:NEXT_PUBLIC_BASE_PATH = '/kgs-purchase'
           $buildSucceeded = $false
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             Write-Host "Running build (attempt $attempt/3)..."
-            $buildOutput = & npm run build 2>&1
+            # Capture stdout/stderr as plain text so SWC warnings don't become terminating NativeCommandError
+            $buildOutput = cmd /c "npm run build 2>&1"
             $buildExitCode = $LASTEXITCODE
             $buildOutput | ForEach-Object { Write-Host $_ }
 
@@ -77,6 +82,13 @@ jobs:
 
             $buildText = ($buildOutput | Out-String)
             $isStandaloneLock = $buildText -match 'EBUSY: resource busy or locked, rmdir .*\\.next\\+standalone'
+            $isSwcBinary = $buildText -match 'swc-win32-x64-msvc|not a valid Win32 application|Failed to load SWC'
+            if ($isSwcBinary -and $attempt -lt 3) {
+              Write-Host "Detected SWC binary failure. Repairing and retrying..."
+              & .\scripts\ensure-next-swc.ps1
+              Start-Sleep -Seconds 3
+              continue
+            }
             if (-not $isStandaloneLock -or $attempt -eq 3) {
               exit $buildExitCode
             }

@@ -23,10 +23,14 @@ function Test-NpmDir([string]$dir) {
 
 function Add-PathFront([string]$dir) {
     if (-not $dir) { return }
-    if ($env:Path -notlike "*$dir*") {
-        $env:Path = "$dir;$env:Path"
-        Write-Host "Added to PATH: $dir"
+    if (-not (Test-Path -LiteralPath $dir)) { return }
+
+    # Remove any existing occurrence, then prepend so this install wins over stale PATH entries
+    $parts = $env:Path -split ';' | Where-Object {
+        $_ -and $_.TrimEnd('\') -ne $dir.TrimEnd('\')
     }
+    $env:Path = ($dir + ';' + ($parts -join ';')).TrimEnd(';')
+    Write-Host "Added to PATH: $dir"
 }
 
 function Install-PortableNode {
@@ -58,9 +62,10 @@ function Install-PortableNode {
 }
 
 $candidateNodeDirs = @(
-    $portableNodeDir,
+    # Prefer the system install when present (avoids stale portable Node + broken native bindings)
     'C:\Program Files\nodejs',
     'C:\Program Files (x86)\nodejs',
+    $portableNodeDir,
     (Join-Path $localData 'Programs\nodejs'),
     # Hardcoded Administrator profile fallbacks — needed when the runner service runs as
     # NETWORK SERVICE and $env:LOCALAPPDATA resolves to the service account profile instead
