@@ -1,5 +1,6 @@
 # Mirrors the current .next production build to .next-backup for rollback.
 # Uses robocopy + cmd rmdir, which is more reliable than Remove-Item on Windows CI runners.
+# Incomplete builds (no BUILD_ID) are skipped so deploy can continue.
 
 $ErrorActionPreference = 'Continue'
 
@@ -26,7 +27,7 @@ function Clear-BuildDir {
         return $true
     }
 
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
         cmd /c "rmdir /s /q `"$Path`"" 2>&1 | Out-Null
         if (-not (Test-Path -LiteralPath $Path)) {
             return $true
@@ -37,8 +38,10 @@ function Clear-BuildDir {
     $staleName = "$(Split-Path -Leaf $Path)-stale-$(Get-Date -Format 'yyyyMMddHHmmss')"
     try {
         Rename-Item -LiteralPath $Path -NewName $staleName -Force
+        Write-Host "Renamed locked folder to $staleName"
         return $true
     } catch {
+        Write-Host "WARN: could not clear $Path - $($_.Exception.Message)"
         return $false
     }
 }
@@ -62,7 +65,8 @@ if (-not (Test-Path -LiteralPath '.next')) {
 
 $sourceBuildId = Get-BuildIdPath '.next'
 if (-not $sourceBuildId) {
-    throw 'Cannot backup: BUILD_ID missing in .next'
+    Write-Host 'WARN: current .next has no BUILD_ID (incomplete/corrupt). Skipping backup and keeping existing .next-backup if present.'
+    exit 0
 }
 
 $backupExists = Test-Path -LiteralPath '.next-backup'
