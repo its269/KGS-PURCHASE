@@ -13,7 +13,7 @@ import {
     sqlOnlyEcomSalesBranches,
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
-import { getCached } from "@/lib/server-cache";
+import { getCached, invalidateCache } from "@/lib/server-cache";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -957,7 +957,7 @@ export const MySqlService = {
      */
     async getGlobalStats(branch = "", search = "", companyId = "main") {
         const cacheKey = `global-stats:${companyId}:${branch}:${search}`;
-        return getCached(cacheKey, 45_000, () => this._computeGlobalStats(branch, search, companyId));
+        return getCached(cacheKey, 120_000, () => this._computeGlobalStats(branch, search, companyId));
     },
 
     async _computeGlobalStats(branch = "", search = "", companyId = "main") {
@@ -2250,7 +2250,7 @@ export const MySqlService = {
      */
     async getSalesAnalysis({ branch = "", periods = [] }) {
         const cacheKey = `salesAnalysis:${branch}:${periods.map((p) => `${p.key}:${p.start}:${p.end}`).join("|")}`;
-        return getCached(cacheKey, 60_000, () => this._computeSalesAnalysis({ branch, periods }));
+        return getCached(cacheKey, 300_000, () => this._computeSalesAnalysis({ branch, periods }));
     },
 
     async _computeSalesAnalysis({ branch = "", periods = [] }) {
@@ -2840,6 +2840,7 @@ export const MySqlService = {
     },
 
     async ensureReplenishmentCacheTable() {
+        return getCached("replenishment:table-ready", 3_600_000, async () => {
         try {
             await purchasePool.query(`
                 CREATE TABLE IF NOT EXISTS replenishment_cache (
@@ -2875,6 +2876,49 @@ export const MySqlService = {
         } catch (err) {
             console.error("[MySQL ensureReplenishmentCacheTable Error]", err);
             return false;
+        }
+        });
+    },
+
+    /** Fast SQL rollup of branch demand for MAIN warehouse planning. */
+    async getBranchOrderQtyFromCache(companyId = "main") {
+        await this.ensureReplenishmentCacheTable();
+        try {
+            const [rows] = await purchasePool.query(
+                `SELECT UPPER(TRIM(inventory_id)) AS inventoryId,
+                        SUM(COALESCE(suggested_qty, 0)) AS qty
+                 FROM replenishment_cache
+                 WHERE company_id = ?
+                   AND UPPER(TRIM(branch_id)) != 'MAIN'
+                   AND COALESCE(suggested_qty, 0) > 0
+                 GROUP BY UPPER(TRIM(inventory_id))`,
+                [companyId]
+            );
+            const map = new Map();
+            for (const r of rows) {
+                const key = String(r.inventoryId || "").trim();
+                if (key) map.set(key, Number(r.qty) || 0);
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getBranchOrderQtyFromCache Error]", err);
+            return new Map();
+        }
+    },
+
+    async getCachedReplenishmentBranchIds(companyId = "main") {
+        await this.ensureReplenishmentCacheTable();
+        try {
+            const [rows] = await purchasePool.query(
+                `SELECT DISTINCT branch_id AS branchId
+                 FROM replenishment_cache
+                 WHERE company_id = ? AND UPPER(TRIM(branch_id)) != 'MAIN'`,
+                [companyId]
+            );
+            return new Set(rows.map((r) => String(r.branchId || "").trim()).filter(Boolean));
+        } catch (err) {
+            console.error("[MySQL getCachedReplenishmentBranchIds Error]", err);
+            return new Set();
         }
     },
 
@@ -2914,14 +2958,16 @@ export const MySqlService = {
         ];
     },
 
-    cacheRowToRecommendation(row, index) {
+    cacheRowToRecommendation(row, index, { slim = false } = {}) {
         let aiInsights = null;
-        try {
-            aiInsights = row.ai_insights_json
-                ? (typeof row.ai_insights_json === "string" ? JSON.parse(row.ai_insights_json) : row.ai_insights_json)
-                : null;
-        } catch {
-            aiInsights = null;
+        if (!slim && row.ai_insights_json) {
+            try {
+                aiInsights = typeof row.ai_insights_json === "string"
+                    ? JSON.parse(row.ai_insights_json)
+                    : row.ai_insights_json;
+            } catch {
+                aiInsights = null;
+            }
         }
         if (!aiInsights) {
             aiInsights = {
@@ -2963,6 +3009,90 @@ export const MySqlService = {
         return rec;
     },
 
+    async getReplenishmentCacheStats(companyId, branchId) {
+        await this.ensureReplenishmentCacheTable();
+        const [[row]] = await purchasePool.query(
+            `SELECT
+                COUNT(*) AS itemCount,
+                MAX(updated_at) AS updatedAt,
+                SUM(CASE WHEN priority_level = 'High' THEN 1 ELSE 0 END) AS urgentCount,
+                SUM(CASE WHEN priority_level = 'Medium' THEN 1 ELSE 0 END) AS soonCount,
+                SUM(COALESCE(suggested_qty, 0)) AS totalSuggested,
+                MAX(sales_scope) AS salesScope
+             FROM replenishment_cache
+             WHERE company_id = ? AND branch_id = ?`,
+            [companyId, branchId]
+        );
+        return {
+            itemCount: Number(row?.itemCount) || 0,
+            updatedAt: row?.updatedAt || null,
+            urgentCount: Number(row?.urgentCount) || 0,
+            soonCount: Number(row?.soonCount) || 0,
+            totalSuggested: Number(row?.totalSuggested) || 0,
+            salesScope: row?.salesScope || null,
+        };
+    },
+
+    /**
+     * Paginated cache read — used for ultra-fast first paint (default slim, no heavy JSON).
+     */
+    async getReplenishmentFromCachePage(companyId, branchId, { page = 1, pageSize = 10, slim = true } = {}) {
+        await this.ensureReplenishmentCacheTable();
+        try {
+            const stats = await this.getReplenishmentCacheStats(companyId, branchId);
+            if (!stats.itemCount) return null;
+
+            const safePage = Math.max(1, page);
+            const limit = Math.max(1, Math.min(pageSize, 5000));
+            const offset = (safePage - 1) * limit;
+            const cols = slim
+                ? `inventory_id, description, current_stock, qty_sold_90, sales_velocity, days_remaining,
+                   suggested_qty, priority_level, lead_time_days, vendor_id, branch_order_qty,
+                   main_inventory, coming_po, total_branch_replenishment, sales_scope, restock_source,
+                   what_to_do, ai_preview, is_main_warehouse_view, updated_at, branch_id`
+                : `*`;
+
+            const [rows] = await purchasePool.query(
+                `SELECT ${cols}
+                 FROM replenishment_cache
+                 WHERE company_id = ? AND branch_id = ?
+                 ORDER BY FIELD(priority_level, 'High', 'Medium', 'Low'), suggested_qty DESC, inventory_id ASC
+                 LIMIT ? OFFSET ?`,
+                [companyId, branchId, limit, offset]
+            );
+
+            const recommendations = rows.map((row, i) =>
+                this.cacheRowToRecommendation(row, offset + i, { slim })
+            );
+
+            return {
+                recommendations,
+                meta: {
+                    branch: branchId,
+                    generatedAt: stats.updatedAt,
+                    itemCount: stats.itemCount,
+                    cacheSource: "mysql",
+                    salesScope: stats.salesScope,
+                    salesMode: "gross",
+                    pagination: {
+                        page: safePage,
+                        pageSize: limit,
+                        totalItems: stats.itemCount,
+                        totalPages: Math.max(1, Math.ceil(stats.itemCount / limit)),
+                    },
+                    stats: {
+                        urgent: stats.urgentCount,
+                        soon: stats.soonCount,
+                        totalSuggested: stats.totalSuggested,
+                    },
+                },
+            };
+        } catch (err) {
+            console.error("[MySQL getReplenishmentFromCachePage Error]", err);
+            return null;
+        }
+    },
+
     async upsertReplenishmentCache(companyId, branchId, recommendations = []) {
         await this.ensureReplenishmentCacheTable();
         const connection = await purchasePool.getConnection();
@@ -2975,6 +3105,8 @@ export const MySqlService = {
 
             if (!recommendations.length) {
                 await connection.commit();
+                invalidateCache(`replenishment:full:${companyId}:${branchId}`);
+                invalidateCache(`replenishment:page:${companyId}:${branchId}`);
                 return 0;
             }
 
@@ -2990,8 +3122,14 @@ export const MySqlService = {
             const values = recommendations.map((rec) =>
                 this.recommendationToCacheRow(companyId, branchId, rec)
             );
-            await connection.query(sql, [values]);
+            // Insert in chunks to avoid huge packets
+            const CHUNK = 400;
+            for (let i = 0; i < values.length; i += CHUNK) {
+                await connection.query(sql, [values.slice(i, i + CHUNK)]);
+            }
             await connection.commit();
+            invalidateCache(`replenishment:full:${companyId}:${branchId}`);
+            invalidateCache(`replenishment:page:${companyId}:${branchId}`);
             return values.length;
         } catch (err) {
             await connection.rollback();
@@ -3003,46 +3141,10 @@ export const MySqlService = {
     },
 
     async getReplenishmentFromCache(companyId, branchId) {
-        await this.ensureReplenishmentCacheTable();
-        try {
-            const [rows] = await purchasePool.query(
-                `SELECT * FROM replenishment_cache
-                 WHERE company_id = ? AND branch_id = ?
-                 ORDER BY FIELD(priority_level, 'High', 'Medium', 'Low'), suggested_qty DESC`,
-                [companyId, branchId]
-            );
-            if (!rows.length) return null;
-
-            const [[meta]] = await purchasePool.query(
-                `SELECT MAX(updated_at) AS updated_at, COUNT(*) AS item_count
-                 FROM replenishment_cache WHERE company_id = ? AND branch_id = ?`,
-                [companyId, branchId]
-            );
-
-            const recommendations = rows.map((row, i) => this.cacheRowToRecommendation(row, i));
-            const sampleScope = rows.find((r) => r.sales_scope)?.sales_scope;
-            let lookbackDays = null;
-            try {
-                const firstAi = rows[0]?.ai_insights_json;
-                const parsed = typeof firstAi === "string" ? JSON.parse(firstAi) : firstAi;
-                lookbackDays = parsed?.lookbackDays ?? null;
-            } catch { /* ignore */ }
-
-            return {
-                recommendations,
-                meta: {
-                    branch: branchId,
-                    generatedAt: meta?.updated_at,
-                    itemCount: meta?.item_count || rows.length,
-                    cacheSource: "mysql",
-                    salesScope: sampleScope || null,
-                    salesMode: "gross",
-                    salesLookbackDays: lookbackDays,
-                },
-            };
-        } catch (err) {
-            console.error("[MySQL getReplenishmentFromCache Error]", err);
-            return null;
-        }
+        return this.getReplenishmentFromCachePage(companyId, branchId, {
+            page: 1,
+            pageSize: 100000,
+            slim: true,
+        });
     },
 };

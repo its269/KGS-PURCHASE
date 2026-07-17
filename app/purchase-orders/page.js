@@ -491,7 +491,7 @@ export default function PurchaseOrdersPage() {
             const data = await res.json();
             setOrders(data.orders ?? []);
             setHasMore(data.hasMore ?? false);
-            DataCache.set(cacheKey, data);
+            DataCache.set(cacheKey, data, { persist: false });
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (!isBackground) setError(err.message || "Failed to load purchase orders.");
@@ -645,11 +645,13 @@ export default function PurchaseOrdersPage() {
                             onChange={e => setSearch(e.target.value)}
                         />
                         {search && (
-                            <button 
+                            <button
+                                type="button"
                                 className="db-search-clear"
                                 onClick={() => setSearch("")}
+                                aria-label="Clear search"
                             >
-                                &times;
+                                ×
                             </button>
                         )}
                     </div>

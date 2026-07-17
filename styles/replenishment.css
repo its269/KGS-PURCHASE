@@ -105,6 +105,55 @@
     border-left: 1px solid var(--border-light);
 }
 
+.repl-filter-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.repl-filter-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    border: 1px solid var(--border-light);
+    border-radius: 999px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.45rem 0.9rem;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.repl-filter-tab:hover {
+    background: var(--bg-main);
+    color: var(--text-primary);
+}
+
+.repl-filter-tab.active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: #fff;
+}
+
+.repl-filter-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.35rem;
+    height: 1.35rem;
+    padding: 0 0.35rem;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.08);
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.repl-filter-tab.active .repl-filter-tab-count {
+    background: rgba(255, 255, 255, 0.2);
+}
+
 .repl-branch-field .db-select,
 .repl-priority-field .db-select {
     min-width: 140px;

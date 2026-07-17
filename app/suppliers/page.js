@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { loadListWithCache } from "@/lib/list-cache";
+import { prefetchRemainingPages } from "@/lib/progressive-load";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
@@ -85,10 +86,12 @@ export default function SuppliersPage() {
     /* ── State ────────────────────────────────────────────── */
     const [vendors, setVendors] = useState([]);
     const [hasMore, setHasMore] = useState(false);
+    const [totalCount, setTotalCount] = useState(0);
     const [page, setPage] = useState(1);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [loading, setLoading] = useState(true);
+    const [backgroundLoading, setBackgroundLoading] = useState(false);
     const [error, setError] = useState(null);
     const [leadTimes, setLeadTimes] = useState({});
     const [showReliabilityInfo, setShowReliabilityInfo] = useState(false);
@@ -98,7 +101,18 @@ export default function SuppliersPage() {
     const [ordersError, setOrdersError] = useState(null);
 
     const isInitialMount = useRef(true);
+    const prefetchAbortRef = useRef(null);
     const saveTimeoutRef = useRef({});
+
+    const vendorParamsFor = useCallback((pageNum) => {
+        const params = new URLSearchParams({ page: String(pageNum), pageSize: String(PAGE_SIZE) });
+        if (debouncedSearch) params.set("search", debouncedSearch);
+        return params;
+    }, [debouncedSearch]);
+
+    const vendorCacheKeyFor = useCallback((pageNum) => {
+        return `vendors_v2_${vendorParamsFor(pageNum).toString()}`;
+    }, [vendorParamsFor]);
 
     // Initial restoration & Hydration fix
     useEffect(() => {
@@ -138,6 +152,7 @@ export default function SuppliersPage() {
             if (cached) {
                 setVendors(cached.vendors ?? []);
                 setHasMore(cached.hasMore ?? false);
+                setTotalCount(cached.totalCount ?? 0);
             }
             
             isInitialMount.current = false;
@@ -186,13 +201,12 @@ export default function SuppliersPage() {
         Promise.resolve().then(() => setPage(1));
     }, [debouncedSearch]);
 
-    const fetchVendors = useCallback(async (isBackground = false) => {
-        if (!isBackground) setLoading(true);
-        setError(null);
+    const fetchVendors = useCallback(async (pageNum = page, { background = false } = {}) => {
+        if (!background) setLoading(true);
+        if (!background) setError(null);
         try {
-            const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
-            if (debouncedSearch) params.set("search", debouncedSearch);
-            const cacheKey = `vendors_v2_${params.toString()}`;
+            const params = vendorParamsFor(pageNum);
+            const cacheKey = vendorCacheKeyFor(pageNum);
 
             const res = await fetchWithAuth(`/api/vendors?${params}`);
             if (!res.ok) {
@@ -200,21 +214,38 @@ export default function SuppliersPage() {
                 throw new Error(body.message || `HTTP ${res.status}`);
             }
             const data = await res.json();
-            setVendors(data.vendors ?? []);
-            setHasMore(data.hasMore ?? false);
-            DataCache.set(cacheKey, data);
+            if (!background || pageNum === page) {
+                setVendors(data.vendors ?? []);
+                setHasMore(data.hasMore ?? false);
+                setTotalCount(data.totalCount ?? 0);
+            }
+            DataCache.set(cacheKey, data, { persist: false });
+
+            if (pageNum === 1 && !background) {
+                prefetchAbortRef.current?.();
+                const total = data.totalCount ?? 0;
+                if (total > PAGE_SIZE) {
+                    setBackgroundLoading(true);
+                    prefetchAbortRef.current = prefetchRemainingPages({
+                        pageSize: PAGE_SIZE,
+                        totalCount: total,
+                        cacheKeyForPage: vendorCacheKeyFor,
+                        fetchPage: (p) => fetchVendors(p, { background: true }),
+                        onComplete: () => setBackgroundLoading(false),
+                    });
+                }
+            }
         } catch (err) {
             if (err.message === "Unauthorized") return;
-            if (!isBackground) setError(err.message || "Failed to load suppliers. Please try again.");
+            if (!background) setError(err.message || "Failed to load suppliers. Please try again.");
         } finally {
-            setLoading(false);
+            if (!background) setLoading(false);
         }
-    }, [page, debouncedSearch]);
+    }, [page, vendorParamsFor, vendorCacheKeyFor]);
 
     useEffect(() => {
-        const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
-        if (debouncedSearch) params.set("search", debouncedSearch);
-        const cacheKey = `vendors_v2_${params.toString()}`;
+        prefetchAbortRef.current?.();
+        const cacheKey = vendorCacheKeyFor(page);
 
         const cached = DataCache.get(cacheKey);
         loadListWithCache({
@@ -223,11 +254,23 @@ export default function SuppliersPage() {
             apply: (data) => {
                 setVendors(data.vendors ?? []);
                 setHasMore(data.hasMore ?? false);
+                setTotalCount(data.totalCount ?? 0);
             },
             setLoading,
-            refetch: fetchVendors,
+            refetch: () => fetchVendors(page, { background: false }),
         });
-    }, [fetchVendors, page, debouncedSearch]);
+
+        if (page === 1 && cached?.totalCount > PAGE_SIZE) {
+            setBackgroundLoading(true);
+            prefetchAbortRef.current = prefetchRemainingPages({
+                pageSize: PAGE_SIZE,
+                totalCount: cached.totalCount,
+                cacheKeyForPage: vendorCacheKeyFor,
+                fetchPage: (p) => fetchVendors(p, { background: true }),
+                onComplete: () => setBackgroundLoading(false),
+            });
+        }
+    }, [fetchVendors, page, debouncedSearch, vendorCacheKeyFor]);
 
     const stats = useMemo(() => {
         const total = vendors.length;
@@ -309,24 +352,13 @@ export default function SuppliersPage() {
                                 style={{ height: '42px' }}
                             />
                             {search && (
-                                <button 
+                                <button
+                                    type="button"
                                     className="db-search-clear"
                                     onClick={() => setSearch("")}
-                                    style={{ 
-                                        position: 'absolute', 
-                                        right: '1rem', 
-                                        background: 'none', 
-                                        border: 'none', 
-                                        color: 'var(--text-muted)', 
-                                        cursor: 'pointer',
-                                        fontSize: '1.2rem',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        padding: '4px'
-                                    }}
+                                    aria-label="Clear search"
                                 >
-                                    &times;
+                                    ×
                                 </button>
                             )}
                         </div>
@@ -439,6 +471,13 @@ export default function SuppliersPage() {
                         </tbody>
                     </table>
                 </div>
+
+                {backgroundLoading && (
+                    <div className="db-bg-loading">
+                        <div className="db-spinner" />
+                        Loading remaining rows in the background…
+                    </div>
+                )}
 
                 {!loading && (
                     <div className="db-pagination" style={{ marginTop: '2rem' }}>

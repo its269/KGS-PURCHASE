@@ -68,13 +68,22 @@ export async function GET(request) {
                 periods
             });
 
-            if (mysqlResult && mysqlResult.data && mysqlResult.data.length > 0) {
+            if (mysqlResult && mysqlResult.data) {
+                const totalItems = mysqlResult.data.length;
+                const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+                const safePage = Math.min(Math.max(page, 1), totalPages);
+                const start = (safePage - 1) * pageSize;
+                const pageData = mysqlResult.data.slice(start, start + pageSize);
+
                 return NextResponse.json({
                     ...mysqlResult,
+                    data: pageData,
                     months: periods.map(p => ({ key: p.key, label: p.label, range: p.range })),
                     pagination: {
-                        totalItems: mysqlResult.data.length,
-                        totalPages: Math.ceil(mysqlResult.data.length / pageSize)
+                        page: safePage,
+                        pageSize,
+                        totalItems,
+                        totalPages,
                     },
                     source: "mysql"
                 });

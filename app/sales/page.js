@@ -6,6 +6,7 @@ import { DataCache } from "@/lib/data-cache";
 import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
+import "@/styles/sales.css";
 
 /* ── SVG Icons ───────────────────────────────────── */
 const CalendarIcon = () => (
@@ -51,6 +52,7 @@ export default function SalesPeriodicPage() {
     const [allSalesData, setAllSalesData] = useState([]);
     const [periods, setPeriods] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize] = useState(10);
@@ -81,12 +83,8 @@ export default function SalesPeriodicPage() {
         });
     }, []);
 
-    // Derived state: current page slice
-    const salesData = useMemo(() => {
-        const start = (currentPage - 1) * pageSize;
-        const end = start + pageSize;
-        return allSalesData.slice(start, end);
-    }, [allSalesData, currentPage, pageSize]);
+    // Server returns one page; no client-side slice needed
+    const salesData = allSalesData;
 
     // Save filters to localStorage when they change
     useEffect(() => {
@@ -131,22 +129,23 @@ export default function SalesPeriodicPage() {
     }, []);
 
     /* ── Fetch sales analysis ───────────────────────────── */
-    const fetchSales = useCallback(async (isBackground = false) => {
-        if (!isBackground) {
+    const fetchSales = useCallback(async (isBackground = false, pageOverride = currentPage) => {
+        if (!isBackground && allSalesData.length === 0) {
             setLoading(true);
+        }
+        setRefreshing(true);
+        if (!isBackground) {
             setError("");
-            setAllSalesData([]);
-            setPeriods([]);
-            setCurrentPage(1);
-
             if (typeof window !== "undefined") {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+                window.scrollTo({ top: 0, behavior: "smooth" });
             }
         }
         try {
             const params = new URLSearchParams({
                 branch: selectedBranch,
                 asOfDate: targetDate,
+                page: String(pageOverride),
+                pageSize: String(pageSize),
             });
             const cacheKey = `sales_90d_${params.toString()}`;
 
@@ -161,20 +160,28 @@ export default function SalesPeriodicPage() {
             setPeriods(result.months || []);
             setPagination(result.pagination || { totalItems: 0, totalPages: 0 });
             setMetrics(result.metrics || { overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
-            DataCache.set(cacheKey, result);
+            DataCache.set(cacheKey, result, { persist: false });
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (!isBackground) setError("Unable to connect to the server.");
         } finally {
             setLoading(false);
+            setRefreshing(false);
         }
-    }, [selectedBranch, targetDate]);
+    }, [selectedBranch, targetDate, currentPage, pageSize, allSalesData.length]);
+
+    useEffect(() => {
+        if (!mounted) return;
+        setCurrentPage(1);
+    }, [selectedBranch, targetDate, mounted]);
 
     useEffect(() => {
         if (!mounted) return;
         const params = new URLSearchParams({
             branch: selectedBranch,
-            asOfDate: targetDate
+            asOfDate: targetDate,
+            page: String(currentPage),
+            pageSize: String(pageSize),
         });
         const cacheKey = `sales_90d_${params.toString()}`;
         const cached = DataCache.get(cacheKey);
@@ -185,43 +192,60 @@ export default function SalesPeriodicPage() {
             setMetrics(cached.metrics || { overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
             setLoading(false);
             if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
-                Promise.resolve().then(() => fetchSales(true));
+                Promise.resolve().then(() => fetchSales(true, currentPage));
             }
         } else {
-            Promise.resolve().then(() => fetchSales(false));
+            Promise.resolve().then(() => fetchSales(false, currentPage));
         }
-    }, [fetchSales, selectedBranch, targetDate, mounted]);
+    }, [fetchSales, selectedBranch, targetDate, currentPage, mounted, pageSize]);
 
     /* ── Export CSV ─────────────────────────────────────── */
-    const exportCSV = useCallback(() => {
-        const headers = ["Inventory ID", "Branch Name", "Description"];
-        periods.forEach(p => {
-            headers.push(`${p.label} Qty`);
-            headers.push(`${p.label} Sales`);
-        });
-        headers.push("90-Day Total Qty");
-        headers.push("90-Day Total Sales");
-
-        const rows = allSalesData.map((r) => {
-            const row = [r.inventoryId, r.branchName, r.description];
-            periods.forEach(p => {
-                row.push(r.monthlyData[p.key]?.qty || 0);
-                row.push(r.monthlyData[p.key]?.sales || 0);
+    const exportCSV = useCallback(async () => {
+        try {
+            const params = new URLSearchParams({
+                branch: selectedBranch,
+                asOfDate: targetDate,
+                page: "1",
+                pageSize: "50000",
             });
-            row.push(r.totalQty);
-            row.push(r.totalSales);
-            return row.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
-        });
+            const res = await fetchWithAuth(`/api/sales-periodic?${params.toString()}`);
+            if (!res.ok) return;
+            const result = await res.json();
+            const rows = result.data || [];
+            const exportPeriods = result.months || periods;
+            if (!rows.length) return;
 
-        const csv = [headers.join(","), ...rows].join("\n");
-        const blob = new Blob([csv], { type: "text/csv" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `sales-90days-${selectedBranch || "all"}-${targetDate}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
-    }, [allSalesData, selectedBranch, targetDate, periods]);
+            const headers = ["Inventory ID", "Branch Name", "Description"];
+            exportPeriods.forEach(p => {
+                headers.push(`${p.label} Qty`);
+                headers.push(`${p.label} Sales`);
+            });
+            headers.push("90-Day Total Qty");
+            headers.push("90-Day Total Sales");
+
+            const csvRows = rows.map((r) => {
+                const row = [r.inventoryId, r.branchName, r.description];
+                exportPeriods.forEach(p => {
+                    row.push(r.monthlyData[p.key]?.qty || 0);
+                    row.push(r.monthlyData[p.key]?.sales || 0);
+                });
+                row.push(r.totalQty);
+                row.push(r.totalSales);
+                return row.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
+            });
+
+            const csv = [headers.join(","), ...csvRows].join("\n");
+            const blob = new Blob([csv], { type: "text/csv" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `sales-90days-${selectedBranch || "all"}-${targetDate}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch {
+            /* ignore export errors */
+        }
+    }, [selectedBranch, targetDate, periods]);
 
     return (
         <div className="db-root">
@@ -232,7 +256,7 @@ export default function SalesPeriodicPage() {
                             <h1>90-Day Sales Analysis</h1>
                             <p>Comparative sales performance over the last 90 days, divided into three 30-day blocks.</p>
                         </div>
-                        <button className="db-action-btn" onClick={exportCSV} disabled={allSalesData.length === 0}>
+                        <button className="db-action-btn" onClick={exportCSV} disabled={pagination.totalItems === 0}>
                             <DownloadIcon /> Export CSV
                         </button>
                     </div>
@@ -261,59 +285,57 @@ export default function SalesPeriodicPage() {
                     </div>
                 </div>
 
-                <section className="db-toolbar" style={{ height: 'auto', padding: '1.25rem' }}>
-                    <div className="db-toolbar-left" style={{ flexWrap: 'wrap', gap: '1.5rem' }}>
-                        <div className="db-sales3m-filter-group">
+                <section className="db-toolbar sales-toolbar">
+                    <div className="db-toolbar-left" style={{ flexWrap: "wrap", gap: "1.5rem" }}>
+                        <div className="sales-filter-group">
                             <label><CalendarIcon /> As of Date</label>
-                            <div className="db-date-wrapper" style={{ minWidth: '200px' }}>
-                                <input 
-                                    type="date" 
-                                    className="db-select" 
-                                    style={{ padding: '0.65rem 1rem' }}
+                            <div className="sales-date-wrap">
+                                <input
+                                    type="date"
+                                    className="sales-date-input"
                                     value={targetDate}
                                     onChange={(e) => setTargetDate(e.target.value)}
                                 />
                             </div>
                         </div>
 
-                        <div className="db-sales3m-filter-group">
+                        <div className="sales-filter-group">
                             <label><BranchIcon /> Branch / Warehouse</label>
-                            <div className="db-select-wrapper" style={{ minWidth: '220px' }}>
-                                <select className="db-select" value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)}>
+                            <div className="sales-select-wrap">
+                                <select className="sales-select" value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)}>
                                     <option value="">All Branches</option>
                                     {branchOptions.map((b) => (
                                         <option key={b.id || b} value={b.id || b}>{b.name || b}</option>
                                     ))}
                                 </select>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ right: '0.9rem' }}><path d="m6 9 6 6 6-9" /></svg>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-9" /></svg>
                             </div>
                         </div>
                     </div>
 
-                    <div className="db-toolbar-right" style={{ alignSelf: 'flex-end' }}>
+                    <div className="db-toolbar-right">
                         <button
                             type="button"
-                            className="db-btn-run-analysis"
-                            onClick={() => fetchSales()}
-                            disabled={loading}
-                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', minWidth: '160px' }}
+                            className="sales-run-btn"
+                            onClick={() => fetchSales(false, currentPage)}
+                            disabled={loading || refreshing}
                         >
-                            {loading && <div className="db-spinner" style={{ width: '16px', height: '16px', borderWidth: '2.5px', borderTopColor: 'var(--text-inverse)' }}></div>}
-                            <span>{loading ? "Analyzing..." : "Run Analysis"}</span>
+                            {refreshing && <div className="db-spinner" style={{ width: "16px", height: "16px", borderWidth: "2.5px" }} />}
+                            <span>{refreshing ? "Analyzing..." : "Run Analysis"}</span>
                         </button>
                     </div>
                 </section>
 
-                {error && <div className="db-error-card"><div className="db-error-body"><div className="db-error-title">Error</div><div className="db-error-msg">{error}</div></div></div>}
+                {error && <div className="sales-error">{error}</div>}
 
                 {loading && allSalesData.length === 0 ? (
-                    <div className="db-loading">
+                    <div className="sales-loading">
                         <div className="db-spinner db-spinner-lg"></div>
                         <p>Aggregating 90-day data from database...</p>
                     </div>
                 ) : (
                     <>
-                        <div className="db-table-wrap">
+                        <div className={`db-table-wrap ${refreshing ? "sales-table-loading" : ""}`}>
                             <table className="db-table db-table--fit">
                                 <thead>
                                     <tr>
@@ -321,9 +343,9 @@ export default function SalesPeriodicPage() {
                                         <th rowSpan={2} style={{ verticalAlign: 'middle' }}>Branch</th>
                                         <th rowSpan={2} style={{ verticalAlign: 'middle', width: '300px' }}>Description</th>
                                         {periods.map(p => (
-                                            <th key={p.key} colSpan={2} className="db-centered-header" style={{ textAlign: 'center' }}>
-                                                <div style={{ fontSize: '0.85rem' }}>{p.label}</div>
-                                                <div style={{ fontSize: '0.65rem', fontWeight: '500', color: 'var(--text-secondary)', marginTop: '2px' }}>{p.range}</div>
+                                            <th key={p.key} colSpan={2} className="sales-centered-header">
+                                                <div style={{ fontSize: "0.85rem" }}>{p.label}</div>
+                                                <div style={{ fontSize: "0.65rem", fontWeight: "500", color: "var(--text-secondary)", marginTop: "2px" }}>{p.range}</div>
                                             </th>
                                         ))}
                                         <th rowSpan={2} className="db-num" style={{ verticalAlign: 'middle', fontWeight: '800' }}>90-DAY QTY</th>
@@ -341,7 +363,7 @@ export default function SalesPeriodicPage() {
                                 <tbody>
                                     {salesData.length === 0 ? (
                                         <tr>
-                                            <td colSpan={5 + (periods.length * 2)} className="db-empty" style={{ textAlign: 'center', padding: '4rem' }}>
+                                            <td colSpan={5 + (periods.length * 2)} className="sales-empty">
                                                 <p>No data found for the 90-day period ending on {targetDate}.</p>
                                                 <span>Try syncing more history or selecting a different date.</span>
                                             </td>
@@ -371,29 +393,29 @@ export default function SalesPeriodicPage() {
                             </table>
                         </div>
 
-                        {allSalesData.length > 0 && pagination.totalPages > 1 && (
+                        {pagination.totalItems > 0 && pagination.totalPages > 1 && (
                             <div className="db-pagination">
                                 <span className="db-page-info">
                                     Showing <strong>{((currentPage - 1) * pageSize) + 1}</strong> to <strong>{Math.min(currentPage * pageSize, pagination.totalItems)}</strong> of <strong>{pagination.totalItems}</strong> unique items
                                 </span>
                                 <div className="db-page-btns">
-                                    <button 
-                                        className="db-page-btn" 
-                                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))} 
-                                        disabled={currentPage === 1}
+                                    <button
+                                        className="db-page-btn"
+                                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                        disabled={currentPage === 1 || refreshing}
                                         title="Previous Page"
                                     >
                                         <IconChevronLeft />
                                     </button>
-                                    
-                                    <span className="db-page-dots" style={{ minWidth: '100px' }}>
+
+                                    <span className="db-page-dots" style={{ minWidth: "100px" }}>
                                         Page {currentPage} of {pagination.totalPages}
                                     </span>
 
-                                    <button 
-                                        className="db-page-btn" 
-                                        onClick={() => setCurrentPage(p => Math.min(pagination.totalPages, p + 1))} 
-                                        disabled={currentPage === pagination.totalPages}
+                                    <button
+                                        className="db-page-btn"
+                                        onClick={() => setCurrentPage((p) => Math.min(pagination.totalPages, p + 1))}
+                                        disabled={currentPage === pagination.totalPages || refreshing}
                                         title="Next Page"
                                     >
                                         <IconChevronRight />

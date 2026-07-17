@@ -7,6 +7,7 @@ import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { useTheme } from "./ThemeProvider";
 import { withBasePath } from "@/lib/base-path";
+import { APP_VERSION } from "@/lib/app-version";
 import "@/styles/sidebar.css";
 /* ── SVG Icons ─────────────────────────────────────────── */
 const IconInventory = () => (
@@ -298,6 +299,9 @@ export default function Sidebar() {
         </button>
 
         <div className="sidebar-footer">
+          <div className="sidebar-version" title={`System version ${APP_VERSION}`}>
+            v{APP_VERSION}
+          </div>
           <button
             className="sidebar-logout"
             onClick={() => {

@@ -204,7 +204,7 @@ export default function StockItemsPage() {
             setDataSource(data.source || "mysql");
             setTotalCount(data.totalCount ?? 0);
             setTotalStock(data.totalStock ?? 0);
-            DataCache.set(cacheKey, data);
+            DataCache.set(cacheKey, data, { persist: false });
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (!isBackground) setError(err.message || "Failed to load stock items. Please try again.");
@@ -374,7 +374,6 @@ export default function StockItemsPage() {
                             <tr>
                                 <th style={{ width: '180px' }}>Inventory ID</th>
                                 <th>Description</th>
-                                <th style={{ width: '130px' }}>Branch</th>
                                 <th style={{ width: '130px' }}>Item Class</th>
                                 <th style={{ width: '80px', textAlign: 'right' }}>MOQ</th>
                                 <th style={{ width: '100px', textAlign: 'center' }}>Price</th>
@@ -388,14 +387,14 @@ export default function StockItemsPage() {
                         </thead>
                         <tbody>
                             {loading && items.length === 0 ? (
-                                <tr><td colSpan={12} className="si-loading-cell">
+                                <tr><td colSpan={11} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span>Fetching items...</span>
                                     </div>
                                 </td></tr>
                             ) : items.length === 0 ? (
-                                <tr><td colSpan={12} className="si-empty-cell">No items found matching your search.</td></tr>
+                                <tr><td colSpan={11} className="si-empty-cell">No items found matching your search.</td></tr>
                             ) : items.map(item => (
                                 <tr
                                     key={item.inventoryId}
@@ -404,13 +403,6 @@ export default function StockItemsPage() {
                                 >
                                     <td><span className="db-inv-id">{item.inventoryId}</span></td>
                                     <td className="db-desc" style={{ fontWeight: '500' }}>{item.description}</td>
-                                    <td>
-                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                            {item.branches ? item.branches.split(', ').map(b => (
-                                                <span key={b} className="db-branch-tag" style={{ fontSize: '0.65rem' }}>{b}</span>
-                                            )) : <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>No Stock</span>}
-                                        </div>
-                                    </td>
                                     <td><span className="db-class-tag">{item.itemClass}</span></td>
                                     <td className="db-num" style={{ textAlign: 'right' }}>
                                         {item.moq != null && item.moq !== "" ? Number(item.moq).toLocaleString() : "—"}

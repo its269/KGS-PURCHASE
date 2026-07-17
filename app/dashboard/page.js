@@ -340,7 +340,7 @@ export default function DashboardPage() {
                 setDataSource(result.source || "mysql");
                 setTotalCount(result.totalCount || 0);
                 setHasMore(!!result.hasMore);
-                DataCache.set(cacheKey, result);
+                DataCache.set(cacheKey, result, { persist: false });
                 markCacheFresh(cacheKey);
             }
         } catch (e) {
@@ -364,7 +364,7 @@ export default function DashboardPage() {
             if (res.ok) {
                 const result = await res.json();
                 if (result.globalStats) setGlobalStats(result.globalStats);
-                DataCache.set(cacheKey, result);
+                DataCache.set(cacheKey, result, { persist: false });
                 markCacheFresh(cacheKey);
             }
         } catch (e) {

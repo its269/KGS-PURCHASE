@@ -183,7 +183,9 @@ function ReplenishmentRows({ recs, expandedAi, setExpandedAi, isMain }) {
                     <td className="repl-num">{hasSales ? fmtNum(ads) : "—"}</td>
                     <td className="repl-num">{hasSales ? `${fmtNum(days)} days` : "—"}</td>
                     <td className="repl-num">{leadTime > 0 ? `${fmtNum(leadTime)} days` : "—"}</td>
-                    <td className="repl-num repl-order-qty">+{fmtNum(rec.suggestedQty)}</td>
+                    <td className="repl-num repl-order-qty">
+                        {Number(rec.suggestedQty) > 0 ? `+${fmtNum(rec.suggestedQty)}` : fmtNum(rec.suggestedQty ?? 0)}
+                    </td>
                     <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
                     <td className="repl-ai-cell">
                         <p className="repl-ai-preview">{how.preview || "Tap Explain to see how this was calculated."}</p>
@@ -234,10 +236,12 @@ export default function ReplenishmentPage() {
     const [priorityFilter, setPriorityFilter] = useState("all");
     const [search, setSearch] = useState("");
     const [loading, setLoading] = useState(true);
+    const [backgroundLoading, setBackgroundLoading] = useState(false);
     const [error, setError] = useState(null);
     const [expandedAi, setExpandedAi] = useState({});
     const [openColumnInfo, setOpenColumnInfo] = useState(null);
     const [page, setPage] = useState(1);
+    const fetchGenRef = useRef(0);
 
     const retailBranches = useMemo(
         () => branches.filter((b) => {
@@ -259,13 +263,14 @@ export default function ReplenishmentPage() {
 
     const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = activeBranch, forceRefresh = false) => {
         if (!branchToFetch) return;
+        const gen = ++fetchGenRef.current;
         if (!isBackground) setLoading(true);
         setError(null);
-        try {
+
+        const load = async (qs) => {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 120000);
-            const refreshParam = forceRefresh ? "&refresh=1" : "";
-            const res = await fetchWithAuth(`/api/replenishment?branch=${branchToFetch}${refreshParam}`, {
+            const res = await fetchWithAuth(`/api/replenishment?branch=${encodeURIComponent(branchToFetch)}${qs}`, {
                 signal: controller.signal,
             });
             clearTimeout(timeout);
@@ -273,9 +278,33 @@ export default function ReplenishmentPage() {
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.message || `HTTP ${res.status}`);
             }
-            const data = await res.json();
-            applyPayload(data);
-            DataCache.set(`replenishment_recs_v3_${branchToFetch}`, data);
+            return res.json();
+        };
+
+        try {
+            const refreshParam = forceRefresh ? "&refresh=1" : "";
+
+            // 1) Ultra-fast first paint: only 10 rows
+            const first = await load(`&page=1&pageSize=${PAGE_SIZE}${refreshParam}`);
+            if (gen !== fetchGenRef.current) return;
+            applyPayload(first);
+            setLoading(false);
+
+            const totalItems = first.meta?.pagination?.totalItems
+                ?? first.meta?.itemCount
+                ?? first.recommendations?.length
+                ?? 0;
+
+            // 2) Background: load the rest so filters/pagination feel instant
+            if (totalItems > PAGE_SIZE) {
+                setBackgroundLoading(true);
+                const full = await load(`&page=1&pageSize=0${refreshParam}`);
+                if (gen !== fetchGenRef.current) return;
+                applyPayload(full);
+                DataCache.set(`replenishment_recs_v5_${branchToFetch}`, full, { persist: false });
+            } else {
+                DataCache.set(`replenishment_recs_v5_${branchToFetch}`, first, { persist: false });
+            }
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (err.name === "AbortError") {
@@ -284,7 +313,10 @@ export default function ReplenishmentPage() {
                 setError(err.message || "Failed to load recommendations.");
             }
         } finally {
-            setLoading(false);
+            if (gen === fetchGenRef.current) {
+                setLoading(false);
+                setBackgroundLoading(false);
+            }
         }
     }, [activeBranch, applyPayload]);
 
@@ -310,10 +342,18 @@ export default function ReplenishmentPage() {
 
     useEffect(() => {
         let active = true;
+        const cacheKey = "replenishment_branches_v1";
+        const cached = DataCache.get(cacheKey);
+        if (cached?.length) setBranches(cached);
+
         (async () => {
             try {
                 const res = await fetchWithAuth("/api/branches?source=mysql&for=replenishment");
-                if (res.ok && active) setBranches(await res.json());
+                if (res.ok && active) {
+                    const list = await res.json();
+                    setBranches(list);
+                    DataCache.set(cacheKey, list, { persist: false });
+                }
             } catch (err) {
                 console.error("Failed to load branches", err);
             }
@@ -330,7 +370,7 @@ export default function ReplenishmentPage() {
         let active = true;
         if (!activeBranch) return undefined;
 
-        const cacheKey = `replenishment_recs_v3_${activeBranch}`;
+        const cacheKey = `replenishment_recs_v5_${activeBranch}`;
         const cached = DataCache.get(cacheKey);
 
         (async () => {
@@ -358,17 +398,24 @@ export default function ReplenishmentPage() {
     }, [fetchRecommendations, activeBranch]);
 
     const stats = useMemo(() => {
-        const urgent = recs.filter((r) => r.priorityLevel === "High").length;
-        const soon = recs.filter((r) => r.priorityLevel === "Medium").length;
-        const totalSuggested = recs.reduce((sum, r) => sum + (r.suggestedQty || 0), 0);
-        return { urgent, soon, totalSuggested };
-    }, [recs]);
+        const metaStats = meta?.stats;
+        const urgent = metaStats?.urgent ?? recs.filter((r) => r.priorityLevel === "High").length;
+        const soon = metaStats?.soon ?? recs.filter((r) => r.priorityLevel === "Medium").length;
+        const zeroOrder = recs.filter((r) => (r.suggestedQty ?? 0) === 0).length;
+        const totalSuggested = metaStats?.totalSuggested
+            ?? recs.reduce((sum, r) => sum + (r.suggestedQty || 0), 0);
+        return { urgent, soon, zeroOrder, totalSuggested };
+    }, [recs, meta]);
 
     const filteredRecs = useMemo(() => {
         let list = recs;
-        if (priorityFilter !== "all") {
-            const map = { urgent: "High", soon: "Medium", low: "Low" };
-            list = list.filter((r) => r.priorityLevel === map[priorityFilter]);
+        if (priorityFilter === "urgent") {
+            list = list.filter((r) => r.priorityLevel === "High");
+        } else if (priorityFilter === "soon") {
+            const soonItems = list.filter((r) => r.priorityLevel === "Medium");
+            list = soonItems.length > 0
+                ? soonItems
+                : list.filter((r) => (r.suggestedQty ?? 0) === 0);
         }
         const q = search.trim().toLowerCase();
         if (q) {
@@ -379,6 +426,11 @@ export default function ReplenishmentPage() {
         }
         return list;
     }, [recs, priorityFilter, search]);
+
+    const showingSoonFallback = useMemo(() => {
+        if (priorityFilter !== "soon") return false;
+        return recs.filter((r) => r.priorityLevel === "Medium").length === 0;
+    }, [recs, priorityFilter]);
 
     useEffect(() => {
         setPage(1);
@@ -485,6 +537,33 @@ export default function ReplenishmentPage() {
                     </div>
                 </div>
 
+                <div className="repl-filter-tabs">
+                    <button
+                        type="button"
+                        className={`repl-filter-tab ${priorityFilter === "all" ? "active" : ""}`}
+                        onClick={() => setPriorityFilter("all")}
+                    >
+                        All items
+                        <span className="repl-filter-tab-count">{recs.length}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className={`repl-filter-tab ${priorityFilter === "soon" ? "active" : ""}`}
+                        onClick={() => setPriorityFilter("soon")}
+                    >
+                        Order soon
+                        <span className="repl-filter-tab-count">{stats.soon}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className={`repl-filter-tab ${priorityFilter === "urgent" ? "active" : ""}`}
+                        onClick={() => setPriorityFilter("urgent")}
+                    >
+                        Urgent
+                        <span className="repl-filter-tab-count">{stats.urgent}</span>
+                    </button>
+                </div>
+
                 <div className="db-toolbar">
                     <div className="db-toolbar-left">
                         <div className="repl-view-field">
@@ -529,33 +608,25 @@ export default function ReplenishmentPage() {
                             </div>
                         )}
 
-                        <div className="repl-priority-field">
-                            <label htmlFor="repl-priority">Show</label>
-                            <div className="db-select-wrapper">
-                                <select
-                                    id="repl-priority"
-                                    className="db-select"
-                                    value={priorityFilter}
-                                    onChange={(e) => setPriorityFilter(e.target.value)}
-                                >
-                                    <option value="all">All items ({recs.length})</option>
-                                    <option value="urgent">Urgent only ({stats.urgent})</option>
-                                    <option value="soon">Order soon ({stats.soon})</option>
-                                    <option value="low">Low priority ({recs.filter((r) => r.priorityLevel === "Low").length})</option>
-                                </select>
-                                <IconChevron />
-                            </div>
-                        </div>
-
                         <div className="db-search-wrapper repl-search">
                             <IconSearch />
                             <input
                                 className="db-search"
-                                type="search"
+                                type="text"
                                 placeholder="Search product..."
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                             />
+                            {search && (
+                                <button
+                                    type="button"
+                                    className="db-search-clear"
+                                    onClick={() => setSearch("")}
+                                    aria-label="Clear search"
+                                >
+                                    ×
+                                </button>
+                            )}
                         </div>
                     </div>
 
@@ -571,7 +642,7 @@ export default function ReplenishmentPage() {
                             className="db-refresh-btn"
                             onClick={() => {
                                 if (!activeBranch) return;
-                                DataCache.delete(`replenishment_recs_v3_${activeBranch}`);
+                                DataCache.delete(`replenishment_recs_v5_${activeBranch}`);
                                 fetchRecommendations(false, activeBranch, true);
                             }}
                             disabled={loading || !activeBranch}
@@ -581,11 +652,21 @@ export default function ReplenishmentPage() {
                     </div>
                 </div>
 
-                <p className="repl-branch-hint">{branchHint}</p>
+                <p className="repl-branch-hint">
+                    {branchHint}
+                    {showingSoonFallback && " Showing items with no order quantity because nothing is marked order soon."}
+                </p>
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap">
+                {backgroundLoading && (
+                    <div className="db-bg-loading">
+                        <div className="db-spinner" />
+                        Loading remaining items in the background…
+                    </div>
+                )}
+
+                <div className={`db-table-wrap ${backgroundLoading ? "is-bg-loading" : ""}`}>
                     <table className="db-table db-table--fit repl-table">
                         <thead>
                             <tr>
@@ -651,11 +732,15 @@ export default function ReplenishmentPage() {
                             ) : filteredRecs.length === 0 ? (
                                 <tr>
                                     <td colSpan={isMain ? 11 : 9} className="repl-table-empty">
-                                        {recs.length === 0
-                                            ? isMain
-                                                ? "No vendor orders needed at MAIN. Branch demand is covered."
-                                                : `No restock needed at ${selectedBranch}. Stock looks good based on recent sales.`
-                                            : "No items match your search or filter."}
+                                        {priorityFilter === "urgent"
+                                            ? "No urgent items right now."
+                                            : priorityFilter === "soon"
+                                                ? "No items need ordering soon, and no zero-order items to show."
+                                            : recs.length === 0
+                                                ? isMain
+                                                    ? "No items found for MAIN warehouse planning."
+                                                    : `No items found for ${selectedBranch}.`
+                                                : "No items match your search."}
                                     </td>
                                 </tr>
                             ) : (
