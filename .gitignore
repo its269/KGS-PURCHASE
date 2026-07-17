@@ -50,3 +50,9 @@ next-env.d.ts
 # gemini
 .gemini/settings.json
 emv*
+
+# local deploy / runner artifacts (never commit)
+actions-runner/
+deploy-output.log
+.next-backup/
+.next-stale-*/
