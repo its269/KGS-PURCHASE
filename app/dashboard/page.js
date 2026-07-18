@@ -100,10 +100,12 @@ const cellNum = (row, key) => {
 /* ── Table Row Component ───────────────────────────────────── */
 const InventoryRow = memo(({ row }) => {
     const onHand = Number(row.OnHand?.value);
-    const available = Number(row.Available?.value);
-    const stockClass = !Number.isFinite(onHand) || onHand <= 0
+    const onHandVal = Number.isFinite(onHand) ? onHand : NaN;
+    let available = Number(row.Available?.value);
+    if (!Number.isFinite(available) && Number.isFinite(onHandVal)) available = onHandVal;
+    const stockClass = !Number.isFinite(onHandVal) || onHandVal <= 0
         ? "db-status-out"
-        : onHand < LOW_STOCK_THRESHOLD
+        : onHandVal < LOW_STOCK_THRESHOLD
         ? "db-status-low"
         : "db-badge-green";
 
@@ -120,8 +122,8 @@ const InventoryRow = memo(({ row }) => {
                 )}
             </td>
             <td className="db-num">
-                {Number.isFinite(onHand) ? (
-                    <span className={`db-badge ${stockClass}`}>{onHand.toLocaleString()}</span>
+                {Number.isFinite(onHandVal) ? (
+                    <span className={`db-badge ${stockClass}`}>{onHandVal.toLocaleString()}</span>
                 ) : (
                     cellNum(row, "OnHand")
                 )}

@@ -183,6 +183,8 @@ export async function POST(request) {
                 \`qty\` DECIMAL(18,4),
                 \`received_qty\` DECIMAL(18,4) DEFAULT 0,
                 \`uom\` VARCHAR(50),
+                \`warehouse_id\` VARCHAR(100) NULL,
+                \`branch_id\` VARCHAR(100) NULL,
                 \`ext_cost\` DECIMAL(18,4),
                 \`last_sync\` DATETIME,
                 UNIQUE KEY \`uq_po_line\` (\`order_nbr\`, \`line_nbr\`)
@@ -190,6 +192,7 @@ export async function POST(request) {
         `);
 
         await MySqlService.ensureReceivedQtyColumn();
+        await MySqlService.ensurePoWarehouseColumns();
 
         await conn.query(`
             CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`replenishment_cache\` (
@@ -598,6 +601,7 @@ export async function POST(request) {
                             const allLevels = [];
                             const catalogs = [];
                             const batchItemIds = [];
+                            const prepared = [];
                             for (const item of items) {
                                 try {
                                     const catalog = extractStockItemCatalog(item);
@@ -613,9 +617,27 @@ export async function POST(request) {
                                         item_type: catalog.item_type,
                                         posting_class: catalog.posting_class,
                                     };
-                                    allLevels.push(...extractWarehouseLevels(item, catalogFields));
+                                    prepared.push({ item, catalogFields });
                                 } catch (itemErr) {
                                     console.error(`>>> [Sync API] Item Processing Error:`, itemErr);
+                                }
+                            }
+
+                            // Inventory Summary per item so DAMAGE / DISCOUNTED locations are excluded
+                            try {
+                                const levels = await AcumaticaService.resolveWarehouseLevelsBatch(
+                                    prepared,
+                                    invCookie,
+                                    8
+                                );
+                                allLevels.push(...levels);
+                            } catch (summaryErr) {
+                                console.warn(
+                                    ">>> [Sync API] Location summary batch failed; falling back to WarehouseDetails:",
+                                    summaryErr.message
+                                );
+                                for (const { item, catalogFields } of prepared) {
+                                    allLevels.push(...extractWarehouseLevels(item, catalogFields));
                                 }
                             }
 
@@ -758,6 +780,12 @@ export async function POST(request) {
                                 for (const d of details) {
                                     const orderQty = parseFloat(getAny(d, "OrderQty", "Qty") || 0);
                                     const receivedQty = parseFloat(getAny(d, "ReceivedQty", "QtyReceived", "ReceivedQuantity") || 0);
+                                    const headerBranch = String(
+                                        getAny(o, "BranchID", "Branch", "DestinationBranchID") || ""
+                                    ).trim();
+                                    const warehouseId = String(
+                                        getAny(d, "WarehouseID", "SiteID", "BranchID", "Branch", "DestinationWarehouseID") || headerBranch || ""
+                                    ).trim();
                                     lineRows.push({
                                         order_nbr: getF(o, "OrderNbr"),
                                         line_nbr: parseInt(getF(d, "LineNbr") || 0),
@@ -766,6 +794,8 @@ export async function POST(request) {
                                         qty: orderQty,
                                         received_qty: receivedQty,
                                         uom: getF(d, "UOM"),
+                                        warehouse_id: warehouseId,
+                                        branch_id: warehouseId,
                                         ext_cost: parseFloat(getAny(d, "ExtendedCost", "LineAmount") || 0),
                                         last_sync: new Date()
                                     });
@@ -809,19 +839,36 @@ export async function POST(request) {
                         const items = data.value || [];
                         const levels = [];
                         const batchItemIds = [];
+                        const prepared = [];
                         for (const item of items) {
                             const catalog = extractStockItemCatalog(item);
                             if (!catalog) continue;
                             batchItemIds.push(catalog.inventory_id);
-                            levels.push(...extractWarehouseLevels(item, {
-                                description: catalog.description,
-                                item_class: catalog.item_class,
-                                default_price: catalog.default_price,
-                                item_status: catalog.item_status,
-                                base_unit: catalog.base_unit,
-                                item_type: catalog.item_type,
-                                posting_class: catalog.posting_class,
-                            }));
+                            prepared.push({
+                                item,
+                                catalogFields: {
+                                    description: catalog.description,
+                                    item_class: catalog.item_class,
+                                    default_price: catalog.default_price,
+                                    item_status: catalog.item_status,
+                                    base_unit: catalog.base_unit,
+                                    item_type: catalog.item_type,
+                                    posting_class: catalog.posting_class,
+                                },
+                            });
+                        }
+                        try {
+                            levels.push(
+                                ...(await AcumaticaService.resolveWarehouseLevelsBatch(
+                                    prepared,
+                                    effectiveCookie,
+                                    8
+                                ))
+                            );
+                        } catch {
+                            for (const { item, catalogFields } of prepared) {
+                                levels.push(...extractWarehouseLevels(item, catalogFields));
+                            }
                         }
                         const { main: mainLevels, ecommerce: ecomLevels } = splitLevelsByCompany(levels);
                         if (batchItemIds.length > 0) {

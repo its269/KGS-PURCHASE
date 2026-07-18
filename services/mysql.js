@@ -108,7 +108,7 @@ function inventorySelectCols(layout) {
                     i.branch_id as Branch,
                     i.site_id as SiteID,
                     COALESCE(i.on_hand, 0) as OnHand,
-                    COALESCE(i.available, 0) as Available,
+                    COALESCE(i.available, i.on_hand, 0) as Available,
                     COALESCE(c.default_price, i.default_price, 0) as DefaultPrice,
                     ${inventoryPlanningCols("c")}`;
     }
@@ -119,7 +119,7 @@ function inventorySelectCols(layout) {
                     i.branch_id as Branch,
                     i.site_id as SiteID,
                     COALESCE(i.on_hand, 0) as OnHand,
-                    COALESCE(i.available, 0) as Available,
+                    COALESCE(i.available, i.on_hand, 0) as Available,
                     i.default_price as DefaultPrice,
                     ${inventoryPlanningCols("i")}`;
 }
@@ -255,15 +255,17 @@ export const MySqlService = {
             }
 
             if (branch) {
+                // Filter by PO destination warehouse/branch (from Acumatica line Site/Warehouse),
+                // not by whether the SKU currently has stock at that branch.
                 whereClauses.push(`EXISTS (
                     SELECT 1 FROM purchase_order_details d
-                    INNER JOIN \`${inventoryDb}\`.inventory_items i
-                        ON UPPER(TRIM(d.inventory_id)) = UPPER(TRIM(i.inventory_id))
                     WHERE d.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr
-                      AND i.company_id = ?
-                      AND UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))
+                      AND (
+                        UPPER(TRIM(COALESCE(d.warehouse_id, ''))) = UPPER(TRIM(?))
+                        OR UPPER(TRIM(COALESCE(d.branch_id, ''))) = UPPER(TRIM(?))
+                      )
                 )`);
-                params.push(companyId, branch);
+                params.push(branch, branch);
             }
 
             const wherePart = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
@@ -297,7 +299,8 @@ export const MySqlService = {
                 const orderNbrs = rows.map(r => r.orderNbr);
                 const placeholders = orderNbrs.map(() => "?").join(",");
                 const [lineRows] = await purchasePool.query(
-                    `SELECT order_nbr, line_nbr as lineNbr, inventory_id as inventoryId, description, qty, uom, ext_cost as extCost
+                    `SELECT order_nbr, line_nbr as lineNbr, inventory_id as inventoryId, description, qty, uom,
+                            ext_cost as extCost, warehouse_id as warehouseId, branch_id as branchId
                      FROM purchase_order_details
                      WHERE order_nbr COLLATE utf8mb4_unicode_ci IN (${placeholders})
                      ORDER BY line_nbr ASC`,
@@ -312,6 +315,8 @@ export const MySqlService = {
                         qty: line.qty,
                         uom: line.uom,
                         extCost: line.extCost,
+                        warehouseId: line.warehouseId || line.branchId || "",
+                        branchId: line.branchId || line.warehouseId || "",
                     });
                 }
             }
@@ -367,34 +372,6 @@ export const MySqlService = {
         }
     },
 
-    async upsertPurchaseOrderDetails(rows) {
-        if (!rows.length) return;
-        await this.ensureReceivedQtyColumn();
-        const connection = await purchasePool.getConnection();
-        try {
-            const sql = `
-                INSERT INTO purchase_order_details
-                (order_nbr, line_nbr, inventory_id, description, qty, received_qty, uom, ext_cost, last_sync)
-                VALUES ?
-                ON DUPLICATE KEY UPDATE
-                inventory_id = VALUES(inventory_id),
-                description = VALUES(description),
-                qty = VALUES(qty),
-                received_qty = VALUES(received_qty),
-                uom = VALUES(uom),
-                ext_cost = VALUES(ext_cost),
-                last_sync = VALUES(last_sync)
-            `;
-            const values = rows.map(r => [
-                r.order_nbr, r.line_nbr, r.inventory_id, r.description, r.qty,
-                r.received_qty ?? 0, r.uom, r.ext_cost, r.last_sync
-            ]);
-            await connection.query(sql, [values]);
-        } finally {
-            connection.release();
-        }
-    },
-
     async ensureReceivedQtyColumn() {
         try {
             const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
@@ -412,6 +389,72 @@ export const MySqlService = {
         } catch (err) {
             console.error("[MySQL ensureReceivedQtyColumn Error]", err);
             return false;
+        }
+    },
+
+    /** Ensure PO detail warehouse/branch columns exist for Acumatica-accurate branch filtering. */
+    async ensurePoWarehouseColumns() {
+        try {
+            const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+            for (const col of [
+                { name: "warehouse_id", def: "VARCHAR(100) NULL AFTER uom" },
+                { name: "branch_id", def: "VARCHAR(100) NULL AFTER warehouse_id" },
+            ]) {
+                const [[row]] = await purchasePool.query(
+                    `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='purchase_order_details' AND COLUMN_NAME=?`,
+                    [purchaseDb, col.name]
+                );
+                if (Number(row?.cnt) === 0) {
+                    await purchasePool.query(
+                        `ALTER TABLE purchase_order_details ADD COLUMN ${col.name} ${col.def}`
+                    );
+                }
+            }
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensurePoWarehouseColumns Error]", err);
+            return false;
+        }
+    },
+
+    async upsertPurchaseOrderDetails(rows) {
+        if (!rows.length) return;
+        await this.ensureReceivedQtyColumn();
+        await this.ensurePoWarehouseColumns();
+        const connection = await purchasePool.getConnection();
+        try {
+            const sql = `
+                INSERT INTO purchase_order_details
+                (order_nbr, line_nbr, inventory_id, description, qty, received_qty, uom, warehouse_id, branch_id, ext_cost, last_sync)
+                VALUES ?
+                ON DUPLICATE KEY UPDATE
+                inventory_id = VALUES(inventory_id),
+                description = VALUES(description),
+                qty = VALUES(qty),
+                received_qty = VALUES(received_qty),
+                uom = VALUES(uom),
+                warehouse_id = COALESCE(NULLIF(VALUES(warehouse_id), ''), warehouse_id),
+                branch_id = COALESCE(NULLIF(VALUES(branch_id), ''), branch_id),
+                ext_cost = VALUES(ext_cost),
+                last_sync = VALUES(last_sync)
+            `;
+            const values = rows.map(r => [
+                r.order_nbr,
+                r.line_nbr,
+                r.inventory_id,
+                r.description,
+                r.qty,
+                r.received_qty ?? 0,
+                r.uom,
+                r.warehouse_id || r.branch_id || null,
+                r.branch_id || r.warehouse_id || null,
+                r.ext_cost,
+                r.last_sync,
+            ]);
+            await connection.query(sql, [values]);
+        } finally {
+            connection.release();
         }
     },
 
@@ -770,7 +813,7 @@ export const MySqlService = {
             params.push(...branchEx.params);
 
             if (branch && queryLayout === "warehouse") {
-                whereClauses.push("i.branch_id = ?");
+                whereClauses.push("UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))");
                 params.push(branch);
             }
 
@@ -840,21 +883,29 @@ export const MySqlService = {
             );
 
             // Transform rows to match the BFF structure (objects with .value)
-            const transformed = rows.map(item => ({
-                InventoryID: { value: item.InventoryID },
-                Description: { value: item.Description || "—" },
-                SiteID: { value: item.SiteID },
-                Branch: { value: item.Branch },
-                OnHand: { value: item.OnHand },
-                Available: { value: item.Available },
-                DefaultPrice: { value: item.DefaultPrice || 0 },
-                ItemClass: { value: item.ItemClass || "" },
-                VendorID: { value: item.VendorID || "" },
-                LeadTimeDays: { value: item.LeadTimeDays },
-                SafetyStock: { value: item.SafetyStock },
-                MOQ: { value: item.MOQ },
-                QtySold: { value: item.QtySold }
-            }));
+            const transformed = rows.map(item => {
+                const onHand = Number(item.OnHand);
+                const onHandVal = Number.isFinite(onHand) ? onHand : 0;
+                let available = item.Available == null || item.Available === ""
+                    ? NaN
+                    : Number(item.Available);
+                if (!Number.isFinite(available)) available = onHandVal;
+                return {
+                    InventoryID: { value: item.InventoryID },
+                    Description: { value: item.Description || "—" },
+                    SiteID: { value: item.SiteID },
+                    Branch: { value: item.Branch },
+                    OnHand: { value: onHandVal },
+                    Available: { value: available },
+                    DefaultPrice: { value: item.DefaultPrice || 0 },
+                    ItemClass: { value: item.ItemClass || "" },
+                    VendorID: { value: item.VendorID || "" },
+                    LeadTimeDays: { value: item.LeadTimeDays },
+                    SafetyStock: { value: item.SafetyStock },
+                    MOQ: { value: item.MOQ },
+                    QtySold: { value: item.QtySold }
+                };
+            });
 
             if (total === 0 && !branch && !filter && layout === "catalog-empty") {
                 const catalog = await this.getInventoryFromCatalog({
@@ -909,7 +960,7 @@ export const MySqlService = {
                 i.branch_id as Branch,
                 i.site_id as SiteID,
                 COALESCE(i.on_hand, 0) as OnHand,
-                COALESCE(i.available, 0) as Available,
+                COALESCE(i.available, i.on_hand, 0) as Available,
                 i.default_price as DefaultPrice,
                 i.vendor_id as VendorID,
                 i.lead_time_days as LeadTimeDays,
@@ -928,21 +979,29 @@ export const MySqlService = {
             params
         );
 
-        const transformed = rows.map((item) => ({
-            InventoryID: { value: item.InventoryID },
-            Description: { value: item.Description || "—" },
-            SiteID: { value: item.SiteID },
-            Branch: { value: item.Branch },
-            OnHand: { value: item.OnHand },
-            Available: { value: item.Available },
-            DefaultPrice: { value: item.DefaultPrice || 0 },
-            ItemClass: { value: item.ItemClass || "" },
-            VendorID: { value: item.VendorID || "" },
-            LeadTimeDays: { value: item.LeadTimeDays },
-            SafetyStock: { value: item.SafetyStock },
-            MOQ: { value: item.MOQ },
-            QtySold: { value: item.QtySold },
-        }));
+        const transformed = rows.map((item) => {
+            const onHand = Number(item.OnHand);
+            const onHandVal = Number.isFinite(onHand) ? onHand : 0;
+            let available = item.Available == null || item.Available === ""
+                ? NaN
+                : Number(item.Available);
+            if (!Number.isFinite(available)) available = onHandVal;
+            return {
+                InventoryID: { value: item.InventoryID },
+                Description: { value: item.Description || "—" },
+                SiteID: { value: item.SiteID },
+                Branch: { value: item.Branch },
+                OnHand: { value: onHandVal },
+                Available: { value: available },
+                DefaultPrice: { value: item.DefaultPrice || 0 },
+                ItemClass: { value: item.ItemClass || "" },
+                VendorID: { value: item.VendorID || "" },
+                LeadTimeDays: { value: item.LeadTimeDays },
+                SafetyStock: { value: item.SafetyStock },
+                MOQ: { value: item.MOQ },
+                QtySold: { value: item.QtySold },
+            };
+        });
 
         return {
             data: transformed,
@@ -990,7 +1049,7 @@ export const MySqlService = {
             params.push(...branchEx.params);
 
             if (branch) {
-                whereClauses.push("i.branch_id = ?");
+                whereClauses.push("UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))");
                 params.push(branch);
             }
 

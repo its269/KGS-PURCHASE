@@ -7,7 +7,10 @@ Run on the production server as Administrator.
 
 Creates:
   - KGS-Purchase-AutoSync-Incremental (every 30 minutes)
-  - KGS-Purchase-AutoSync-Full (daily at 2:00 AM)
+  - KGS-Purchase-AutoSync-Full (daily at 12:00 AM / midnight)
+
+IMPORTANT: Set the Windows server timezone to (UTC+08:00) Asia/Manila
+so "00:00" equals Philippine midnight.
 #>
 param(
     [string]$RepoPath = $PSScriptRoot + "\..",
@@ -57,7 +60,8 @@ $actionIncremental = New-ScheduledTaskAction -Execute $wrapperIncremental -Worki
 $actionFull = New-ScheduledTaskAction -Execute $wrapperFull -WorkingDirectory $RepoPath
 
 $triggerIncremental = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration ([TimeSpan]::MaxValue)
-$triggerFull = New-ScheduledTaskTrigger -Daily -At "02:00"
+# 12:00 AM Philippine Time when the OS timezone is Asia/Manila
+$triggerFull = New-ScheduledTaskTrigger -Daily -At "00:00"
 
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
@@ -65,8 +69,11 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName $incrementalName -Action $actionIncremental -Trigger $triggerIncremental -Principal $principal -Settings $settings -Force | Out-Null
 Register-ScheduledTask -TaskName $fullName -Action $actionFull -Trigger $triggerFull -Principal $principal -Settings $settings -Force | Out-Null
 
+$tz = [System.TimeZoneInfo]::Local.DisplayName
 Write-Host "Registered scheduled tasks:" -ForegroundColor Green
 Write-Host "  $incrementalName — every 30 minutes"
-Write-Host "  $fullName — daily at 2:00 AM"
+Write-Host "  $fullName — daily at 12:00 AM (server local time)"
+Write-Host "  Server timezone: $tz"
 Write-Host ""
-Write-Host "Ensure .env in $RepoPath has SYNC_SECRET and NEXT_PUBLIC_BASE_URL=http://localhost:3001/kgs-purchase"
+Write-Host "For Philippine midnight, set Windows timezone to Asia/Manila, then re-run this script."
+Write-Host "Ensure .env in $RepoPath has SYNC_SECRET and NEXT_PUBLIC_BASE_URL (or SYNC_BASE_URL)."

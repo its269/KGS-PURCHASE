@@ -5,6 +5,7 @@ import {
     aggregateBranchGrossSales,
     invoicesToPeriodicSalesRows,
 } from "@/lib/acumatica-sales-aggregate";
+import { isExcludedBranchAlias, isExcludedLocationAlias } from "@/lib/companies";
 const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
 // Bypasses 'CERT_HAS_EXPIRED' error for Acumatica connections
@@ -76,10 +77,14 @@ export function extractWarehouseLevels(item, catalogFields = {}) {
         ).trim();
         const warehouseId = String(getAny(wh, "WarehouseID") || siteId).trim();
         if (!siteId) continue;
+        // Never persist Damage / Discounted (and similar) into MySQL stock totals
+        if (isExcludedBranchAlias(siteId) || isExcludedBranchAlias(warehouseId)) continue;
 
         const onHand = parseFloat(getAny(wh, "QtyOnHand", "OnHand", "Qty") || 0);
-        let available = parseFloat(getAny(wh, "QtyAvailable", "Available", "QtyAvail", "AvailableQty") || 0);
         const onHandVal = Number.isNaN(onHand) ? 0 : onHand;
+        // When QtyAvailable is absent, getAny returns "" and `"" || 0` becomes 0 — that hid the on-hand fallback.
+        const rawAvail = getAny(wh, "QtyAvailable", "Available", "QtyAvail", "AvailableQty", "QtyHardAvailable");
+        let available = rawAvail === "" || rawAvail == null ? NaN : parseFloat(rawAvail);
         if (Number.isNaN(available)) available = onHandVal;
 
         levels.push({
@@ -88,10 +93,93 @@ export function extractWarehouseLevels(item, catalogFields = {}) {
             site_id: siteId,
             warehouse_id: warehouseId,
             on_hand: onHandVal,
-            available: Number.isNaN(available) ? onHandVal : available,
+            available,
             ...catalogFields,
             item_type: catalogFields.item_type || getF(item, "ItemType") || "",
             posting_class: catalogFields.posting_class || getF(item, "PostingClass") || "",
+        });
+    }
+    return levels;
+}
+
+/**
+ * Aggregate Inventory Summary rows by warehouse, omitting DAMAGE / DISCOUNTED locations.
+ */
+export function aggregateSummaryByWarehouse(summaryResults = []) {
+    const byWh = new Map();
+    for (const row of summaryResults) {
+        const locationId = String(getAny(row, "LocationID", "Location") || "").trim();
+        if (isExcludedLocationAlias(locationId)) continue;
+
+        const warehouseId = String(getAny(row, "WarehouseID", "SiteID", "Branch") || "").trim();
+        if (!warehouseId || isExcludedBranchAlias(warehouseId)) continue;
+
+        const onHand = parseFloat(getAny(row, "QtyOnHand", "OnHand", "BaseQty") || 0);
+        const rawAvail = getAny(
+            row,
+            "QtyAvailable",
+            "Available",
+            "QtyAvailableForShipment",
+            "QtyAvail"
+        );
+        let available = rawAvail === "" || rawAvail == null ? NaN : parseFloat(rawAvail);
+        if (Number.isNaN(available)) available = Number.isNaN(onHand) ? 0 : onHand;
+
+        const key = warehouseId.toUpperCase();
+        const prev = byWh.get(key) || {
+            warehouse_id: warehouseId,
+            on_hand: 0,
+            available: 0,
+        };
+        prev.on_hand += Number.isNaN(onHand) ? 0 : onHand;
+        prev.available += Number.isNaN(available) ? 0 : available;
+        byWh.set(key, prev);
+    }
+    return byWh;
+}
+
+/**
+ * Build per-warehouse levels from Inventory Summary (location-accurate),
+ * zeroing warehouses that only had excluded-location stock.
+ */
+export function extractWarehouseLevelsFromSummary(
+    inventoryId,
+    summaryResults,
+    catalogFields = {},
+    fallbackLevels = []
+) {
+    const invId = String(inventoryId || "").trim();
+    if (!invId) return [];
+
+    const byWh = aggregateSummaryByWarehouse(summaryResults);
+    const warehouseIds = new Set([
+        ...byWh.keys(),
+        ...fallbackLevels
+            .map((l) => String(l.branch_id || l.warehouse_id || "").trim().toUpperCase())
+            .filter(Boolean),
+    ]);
+
+    const levels = [];
+    for (const key of warehouseIds) {
+        if (!key || isExcludedBranchAlias(key)) continue;
+        const agg = byWh.get(key) || { warehouse_id: key, on_hand: 0, available: 0 };
+        const fallback = fallbackLevels.find(
+            (l) => String(l.branch_id || l.warehouse_id || "").trim().toUpperCase() === key
+        );
+        const warehouseId =
+            fallback?.warehouse_id || fallback?.branch_id || agg.warehouse_id || key;
+        const siteId = fallback?.branch_id || fallback?.site_id || warehouseId;
+
+        levels.push({
+            inventory_id: invId,
+            branch_id: siteId,
+            site_id: siteId,
+            warehouse_id: warehouseId,
+            on_hand: agg.on_hand,
+            available: agg.available,
+            ...catalogFields,
+            item_type: catalogFields.item_type || "",
+            posting_class: catalogFields.posting_class || "",
         });
     }
     return levels;
@@ -116,6 +204,9 @@ const mapPoLine = (line) => {
     const unitCost = parseFloat(getAny(line, "UnitCost", "CuryUnitCost") || 0);
     let extCost = parseFloat(getAny(line, "ExtendedCost", "LineAmount", "Amount", "CuryExtCost") || 0);
     if (!extCost && qty && unitCost) extCost = qty * unitCost;
+    const warehouseId = String(
+        getAny(line, "WarehouseID", "SiteID", "BranchID", "Branch", "DestinationWarehouseID") || ""
+    ).trim();
 
     return {
         inventoryId: getF(line, "InventoryID"),
@@ -123,20 +214,36 @@ const mapPoLine = (line) => {
         qty,
         uom: getF(line, "UOM"),
         extCost,
+        warehouseId,
+        branchId: warehouseId,
     };
 };
 
 /** Map a PurchaseOrder header + lines to the API response shape */
-const mapPurchaseOrder = (po) => ({
-    orderNbr: getF(po, "OrderNbr"),
-    orderType: getF(po, "OrderType"),
-    status: getF(po, "Status"),
-    date: getF(po, "Date"),
-    vendorId: getF(po, "VendorID"),
-    vendorName: getAny(po, "VendorName", "VendorID_description", "VendorDescription"),
-    totalAmount: parseFloat(getF(po, "OrderTotal") || 0),
-    lines: extractPoDetails(po).map(mapPoLine),
-});
+const mapPurchaseOrder = (po) => {
+    const headerBranch = String(
+        getAny(po, "BranchID", "Branch", "DestinationBranchID", "ShipToBranch") || ""
+    ).trim();
+    const lines = extractPoDetails(po).map((line) => {
+        const mapped = mapPoLine(line);
+        if (!mapped.warehouseId && headerBranch) {
+            mapped.warehouseId = headerBranch;
+            mapped.branchId = headerBranch;
+        }
+        return mapped;
+    });
+    return {
+        orderNbr: getF(po, "OrderNbr"),
+        orderType: getF(po, "OrderType"),
+        status: getF(po, "Status"),
+        date: getF(po, "Date"),
+        vendorId: getF(po, "VendorID"),
+        vendorName: getAny(po, "VendorName", "VendorID_description", "VendorDescription"),
+        totalAmount: parseFloat(getF(po, "OrderTotal") || 0),
+        branchId: headerBranch || lines.find((l) => l.warehouseId)?.warehouseId || "",
+        lines,
+    };
+};
 
 /** Build OData filters for a PO number (handles combined type+nbr like MNLP260480). */
 const buildOrderFilters = (orderNbr) => {
@@ -239,6 +346,72 @@ export const AcumaticaService = {
         throw lastError;
     },
 
+    /**
+     * Location-level stock via Inventory Summary (IN401000).
+     * Used to exclude DAMAGE / DISCOUNTED location qty from warehouse totals.
+     */
+    async getInventorySummaryResults(inventoryId, cookie) {
+        const id = String(inventoryId || "").trim();
+        if (!id || !cookie) return [];
+
+        const url = `${ACU_BASE}/InventorySummaryInquiry?$expand=Results`;
+        const res = await this.fetchWithRetry(url, cookie, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ InventoryID: { value: id } }),
+        });
+        const data = await res.json();
+        let results = data?.Results || [];
+        if (results && !Array.isArray(results) && results.value) results = results.value;
+        return Array.isArray(results) ? results : [];
+    },
+
+    /**
+     * Warehouse stock with DAMAGE / DISCOUNTED locations excluded.
+     * Falls back to WarehouseDetails if Inventory Summary is unavailable.
+     */
+    async resolveWarehouseLevels(item, catalogFields = {}, cookie) {
+        const fallback = extractWarehouseLevels(item, catalogFields);
+        const invId = String(getF(item, "InventoryID") || catalogFields.inventory_id || "").trim();
+        if (!invId || !cookie) return fallback;
+
+        const hasStock = fallback.some(
+            (l) => (Number(l.on_hand) || 0) > 0 || (Number(l.available) || 0) > 0
+        );
+        if (!hasStock) return fallback;
+
+        try {
+            const results = await this.getInventorySummaryResults(invId, cookie);
+            if (!results.length) return fallback;
+            return extractWarehouseLevelsFromSummary(invId, results, catalogFields, fallback);
+        } catch (err) {
+            console.warn(`[Acumatica] Inventory Summary failed for ${invId}:`, err.message);
+            return fallback;
+        }
+    },
+
+    /**
+     * Resolve warehouse levels for many StockItems with limited concurrency.
+     */
+    async resolveWarehouseLevelsBatch(itemsWithCatalog, cookie, concurrency = 8) {
+        const out = [];
+        for (let i = 0; i < itemsWithCatalog.length; i += concurrency) {
+            const slice = itemsWithCatalog.slice(i, i + concurrency);
+            const batch = await Promise.all(
+                slice.map(async ({ item, catalogFields }) => {
+                    try {
+                        return await this.resolveWarehouseLevels(item, catalogFields, cookie);
+                    } catch (err) {
+                        console.warn("[Acumatica] resolveWarehouseLevels:", err.message);
+                        return extractWarehouseLevels(item, catalogFields);
+                    }
+                })
+            );
+            for (const levels of batch) out.push(...levels);
+        }
+        return out;
+    },
+
     async getBranches(cookie) {
         const url = `${ACU_BASE}/Warehouse?$select=WarehouseID,Description`;
         const res = await this.fetchWithRetry(url, cookie);
@@ -296,16 +469,35 @@ export const AcumaticaService = {
         const items = data.value || [];
         const totalCount = data["@odata.count"] || items.length;
 
-        let flattened = [];
-        for (const item of items) {
-            let wds = item.WarehouseDetails || [];
-            if (wds && !Array.isArray(wds) && wds.value) wds = wds.value;
-            if (!Array.isArray(wds)) wds = [];
+        const prepared = items.map((item) => ({
+            item,
+            catalogFields: {
+                description: getF(item, "Description"),
+                item_class: getF(item, "ItemClass"),
+                default_price: parseFloat(getF(item, "DefaultPrice") || 0),
+                item_status: getF(item, "ItemStatus"),
+                base_unit: getF(item, "BaseUnit"),
+                item_type: getF(item, "ItemType"),
+                posting_class: getF(item, "PostingClass"),
+            },
+        }));
+        const levels = await this.resolveWarehouseLevelsBatch(prepared, cookie, 8);
 
-            if (wds.length === 0) {
+        let flattened = [];
+        const levelsByItem = new Map();
+        for (const level of levels) {
+            const key = String(level.inventory_id || "").trim();
+            if (!levelsByItem.has(key)) levelsByItem.set(key, []);
+            levelsByItem.get(key).push(level);
+        }
+
+        for (const item of items) {
+            const invId = String(getF(item, "InventoryID")).trim();
+            const itemLevels = levelsByItem.get(invId) || [];
+            if (itemLevels.length === 0) {
                 if (!branch) {
                     flattened.push({
-                        InventoryID: { value: getF(item, "InventoryID") },
+                        InventoryID: { value: invId },
                         Description: { value: getF(item, "Description") },
                         Branch: { value: "—" },
                         SiteID: { value: "—" },
@@ -317,24 +509,18 @@ export const AcumaticaService = {
                 }
                 continue;
             }
-            for (const wh of wds) {
-                const siteId = String(
-                    getAny(wh, "SiteID", "Branch", "BranchID", "LinkBranch") || getF(wh, "WarehouseID")
-                ).trim();
+            for (const level of itemLevels) {
+                const siteId = String(level.branch_id || "").trim();
+                if (!siteId || isExcludedBranchAlias(siteId)) continue;
                 if (branch && siteId.toLowerCase() !== branch.toLowerCase()) continue;
 
-                const onHand = parseFloat(getAny(wh, "QtyOnHand", "OnHand", "Qty") || 0);
-                let available = parseFloat(getAny(wh, "QtyAvailable", "Available", "QtyAvail", "AvailableQty") || 0);
-                const onHandVal = Number.isNaN(onHand) ? 0 : onHand;
-                if (Number.isNaN(available)) available = onHandVal;
-
                 flattened.push({
-                    InventoryID: { value: getF(item, "InventoryID") },
+                    InventoryID: { value: invId },
                     Description: { value: getF(item, "Description") },
                     Branch: { value: siteId },
                     SiteID: { value: siteId },
-                    OnHand: { value: onHandVal },
-                    Available: { value: Number.isNaN(available) ? onHandVal : available },
+                    OnHand: { value: level.on_hand },
+                    Available: { value: level.available },
                     DefaultPrice: { value: parseFloat(getF(item, "DefaultPrice") || 0) },
                     ItemClass: { value: getF(item, "ItemClass") },
                     ItemStatus: { value: getF(item, "ItemStatus") },
@@ -605,9 +791,10 @@ export const AcumaticaService = {
     },
 
     /** ── PURCHASE ORDERS ── */
-    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", cookie, startDate = "", endDate = "", status = "" }) {
+    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", cookie, startDate = "", endDate = "", status = "", branch = "" }) {
         const skip = (page - 1) * pageSize;
-        const top = pageSize + 1;
+        // When filtering by branch client-side, over-fetch so page still fills reasonably
+        const top = branch ? Math.min(200, pageSize * 4 + 1) : pageSize + 1;
 
         let filterArr = [];
         if (search) {
@@ -643,8 +830,22 @@ export const AcumaticaService = {
         const data = await res.json();
         const rawOrders = data.value || (Array.isArray(data) ? data : []);
 
-        const hasMore = rawOrders.length > pageSize;
-        const orders = rawOrders.slice(0, pageSize).map(mapPurchaseOrder);
+        let orders = rawOrders.map(mapPurchaseOrder);
+        if (branch) {
+            const b = String(branch).trim().toUpperCase();
+            orders = orders.filter((o) => {
+                if (String(o.branchId || "").trim().toUpperCase() === b) return true;
+                return (o.lines || []).some((l) => {
+                    const wh = String(l.warehouseId || l.branchId || "").trim().toUpperCase();
+                    return wh === b;
+                });
+            });
+        }
+
+        const hasMore = branch
+            ? rawOrders.length >= top
+            : rawOrders.length > pageSize;
+        orders = orders.slice(0, pageSize);
 
         return { orders, hasMore };
     },

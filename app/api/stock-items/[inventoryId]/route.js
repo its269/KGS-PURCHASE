@@ -1,5 +1,5 @@
 import { MySqlService } from "@/services/mysql";
-import { AcumaticaService, extractWarehouseLevels } from "@/services/acumatica";
+import { AcumaticaService } from "@/services/acumatica";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
 import { isEcomBranchAlias, isExcludedBranchAlias } from "@/lib/companies";
 import { NextResponse } from "next/server";
@@ -96,27 +96,32 @@ export async function GET(request, { params }) {
             return NextResponse.json({ error: "Item not found in Acumatica ERP" }, { status: 404 });
         }
 
-        const rawWds = item.WarehouseDetails || [];
-        const wds = Array.isArray(rawWds) ? rawWds : (rawWds.value || []);
-        
-        const levels = extractWarehouseLevels(item, {
-            description: String(getF(item, "Description")).trim(),
-            item_class: String(getF(item, "ItemClass")).trim(),
-            default_price: Number(getF(item, "DefaultPrice") || getF(item, "ListPrice") || 0),
-            item_status: String(getF(item, "ItemStatus")).trim(),
-            base_unit: String(getF(item, "BaseUnit")).trim(),
-        });
+        const levels = await AcumaticaService.resolveWarehouseLevels(
+            item,
+            {
+                description: String(getF(item, "Description")).trim(),
+                item_class: String(getF(item, "ItemClass")).trim(),
+                default_price: Number(getF(item, "DefaultPrice") || getF(item, "ListPrice") || 0),
+                item_status: String(getF(item, "ItemStatus")).trim(),
+                base_unit: String(getF(item, "BaseUnit")).trim(),
+            },
+            cookie
+        );
 
         const branches = levels
             .filter((l) => !isExcludedBranchAlias(l.branch_id))
-            .filter((l) => !isEcomBranchAlias(l.branch_id) || companyId === "ecommerce")
+            .filter((l) =>
+                companyId === "ecommerce"
+                    ? isEcomBranchAlias(l.branch_id)
+                    : !isEcomBranchAlias(l.branch_id)
+            )
             .map((l) => ({
-            branchId: l.branch_id,
-            siteId: l.site_id,
-            onHand: l.on_hand,
-            available: l.available,
-            updatedAt: new Date().toISOString(),
-        }));
+                branchId: l.branch_id,
+                siteId: l.site_id,
+                onHand: l.on_hand,
+                available: l.available,
+                updatedAt: new Date().toISOString(),
+            }));
         const totalOnHand = branches.reduce((s, b) => s + b.onHand, 0);
         const totalAvailable = branches.reduce((s, b) => s + b.available, 0);
 
