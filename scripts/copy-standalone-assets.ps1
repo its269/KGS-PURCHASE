@@ -1,10 +1,16 @@
 # Copies static assets into the Next.js standalone output (required for production).
+# Optional -DistDir lets CI prepare .next-incoming before swapping over live .next.
+
+param(
+    [string]$DistDir = '.next'
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
+$distRoot = Join-Path $root $DistDir
 
-if (-not (Test-Path -LiteralPath "$root\.next\standalone\server.js")) {
-    throw 'Standalone server.js not found — run npm run build first'
+if (-not (Test-Path -LiteralPath "$distRoot\standalone\server.js")) {
+    throw "Standalone server.js not found under $DistDir - run npm run build first"
 }
 
 function Invoke-Robocopy {
@@ -19,8 +25,8 @@ function Invoke-Robocopy {
     return $LASTEXITCODE
 }
 
-$staticExit = Invoke-Robocopy -Source "$root\.next\static" -Destination "$root\.next\standalone\.next\static"
-$publicExit = Invoke-Robocopy -Source "$root\public" -Destination "$root\.next\standalone\public"
+$staticExit = Invoke-Robocopy -Source "$distRoot\static" -Destination "$distRoot\standalone\.next\static"
+$publicExit = Invoke-Robocopy -Source "$root\public" -Destination "$distRoot\standalone\public"
 
 foreach ($code in @($staticExit, $publicExit)) {
     if ($code -ge 8) {
@@ -28,5 +34,5 @@ foreach ($code in @($staticExit, $publicExit)) {
     }
 }
 
-Write-Host 'Standalone assets copied'
+Write-Host "Standalone assets copied for $DistDir"
 exit 0

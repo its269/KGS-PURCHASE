@@ -4,6 +4,9 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
 const nextConfig = {
   basePath,
 
+  // Allow CI to build into .next-incoming while production keeps serving from .next
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+
   // mysql2 uses native Node.js modules — must not be bundled by Next.js
   serverExternalPackages: ["mysql2", "@supabase/supabase-js"],
 

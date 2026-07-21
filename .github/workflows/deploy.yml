@@ -27,18 +27,6 @@ jobs:
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\check-production-env.ps1
 
-      - name: Stop app and backup current production build
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Continue'
-          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          & .\scripts\ensure-pm2-env.ps1
-          & .\scripts\ensure-node-path.ps1
-          & .\scripts\stop-app.ps1
-          & .\scripts\backup-next-build.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          exit 0
-
       - name: Install dependencies
         timeout-minutes: 15
         shell: powershell
@@ -54,7 +42,7 @@ jobs:
             npm ci
           }
 
-      - name: Build production bundle
+      - name: Build production bundle (staged)
         timeout-minutes: 45
         shell: powershell
         run: |
@@ -64,13 +52,18 @@ jobs:
           & .\scripts\ensure-next-swc.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          # Build into .next-incoming while live app keeps serving from .next
+          if (Test-Path '.next-incoming') {
+            cmd /c 'rmdir /s /q ".next-incoming"' 2>&1 | Out-Null
+          }
+
           $env:NEXT_TELEMETRY_DISABLED = '1'
           $env:NODE_OPTIONS = '--max-old-space-size=8192'
           $env:NEXT_PUBLIC_BASE_PATH = '/kgs-purchase'
+          $env:NEXT_DIST_DIR = '.next-incoming'
           $buildSucceeded = $false
           for ($attempt = 1; $attempt -le 3; $attempt++) {
-            Write-Host "Running build (attempt $attempt/3)..."
-            # Capture stdout/stderr as plain text so SWC warnings don't become terminating NativeCommandError
+            Write-Host "Running staged build (attempt $attempt/3)..."
             $buildOutput = cmd /c "npm run build 2>&1"
             $buildExitCode = $LASTEXITCODE
             $buildOutput | ForEach-Object { Write-Host $_ }
@@ -81,7 +74,7 @@ jobs:
             }
 
             $buildText = ($buildOutput | Out-String)
-            $isStandaloneLock = $buildText -match 'EBUSY: resource busy or locked, rmdir .*\\.next\\+standalone'
+            $isStandaloneLock = $buildText -match 'EBUSY: resource busy or locked'
             $isSwcBinary = $buildText -match 'swc-win32-x64-msvc|not a valid Win32 application|Failed to load SWC'
             if ($isSwcBinary -and $attempt -lt 3) {
               Write-Host "Detected SWC binary failure. Repairing and retrying..."
@@ -93,43 +86,44 @@ jobs:
               exit $buildExitCode
             }
 
-            Write-Host "Detected transient lock in .next\\standalone. Retrying in 8 seconds..."
+            Write-Host "Detected transient lock. Retrying in 8 seconds..."
             Start-Sleep -Seconds 8
           }
 
           if (-not $buildSucceeded) {
-            throw "Build did not succeed after retries."
+            throw "Staged build did not succeed after retries."
           }
 
-      - name: Copy standalone assets
+      - name: Copy standalone assets into staged build
         shell: powershell
         run: |
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          & .\scripts\copy-standalone-assets.ps1
+          & .\scripts\copy-standalone-assets.ps1 -DistDir '.next-incoming'
 
-      - name: Verify build
+      - name: Verify staged build
         shell: cmd
         run: |
           cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          if not exist ".next\BUILD_ID" (
-            echo BUILD_ID missing - build failed
+          if not exist ".next-incoming\BUILD_ID" (
+            echo BUILD_ID missing in staged build
             exit /b 1
           )
-          if not exist ".next\standalone\server.js" (
-            echo standalone server.js missing
+          if not exist ".next-incoming\standalone\server.js" (
+            echo standalone server.js missing in staged build
             exit /b 1
           )
-          echo Build verified - ID: && type .next\BUILD_ID
+          echo Staged build verified - ID: && type .next-incoming\BUILD_ID
 
-      - name: Snapshot successful build for rollback
+      - name: Stop app and activate staged build
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
-          & .\scripts\backup-next-build.ps1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARN: could not snapshot build for rollback (non-fatal)"
-            exit 0
-          }
+          & .\scripts\ensure-pm2-env.ps1
+          & .\scripts\ensure-node-path.ps1
+          & .\scripts\stop-app.ps1
+          & .\scripts\activate-next-build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Restart production server
         shell: powershell
@@ -169,11 +163,11 @@ jobs:
           & .\scripts\stop-app.ps1
           & .\scripts\restore-next-backup.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pm2 reload kgs-purchase-http --update-env
-          if ($LASTEXITCODE -ne 0) {
+          if (Test-Path '.next\standalone\server.js') {
+            pm2 delete kgs-purchase-http 2>$null
             pm2 start ecosystem.config.js --only kgs-purchase-http
+            pm2 save
           }
-          pm2 save
           pm2 status
           Write-Host "Rollback complete"
           exit 0

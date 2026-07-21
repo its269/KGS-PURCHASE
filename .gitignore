@@ -55,4 +55,5 @@ emv*
 actions-runner/
 deploy-output.log
 .next-backup/
+.next-incoming/
 .next-stale-*/
