@@ -780,11 +780,12 @@ export async function POST(request) {
                                 for (const d of details) {
                                     const orderQty = parseFloat(getAny(d, "OrderQty", "Qty") || 0);
                                     const receivedQty = parseFloat(getAny(d, "ReceivedQty", "QtyReceived", "ReceivedQuantity") || 0);
-                                    const headerBranch = String(
-                                        getAny(o, "BranchID", "Branch", "DestinationBranchID") || ""
-                                    ).trim();
+                                    // Destination warehouse from the PO line only — never the document header
+                                    // branch (often MAIN), or branch POs get mis-counted as MAIN Coming PO.
                                     const warehouseId = String(
-                                        getAny(d, "WarehouseID", "SiteID", "BranchID", "Branch", "DestinationWarehouseID") || headerBranch || ""
+                                        getAny(d, "WarehouseID", "SiteID", "DestinationWarehouseID") ||
+                                        getAny(d, "BranchID", "Branch") ||
+                                        ""
                                     ).trim();
                                     lineRows.push({
                                         order_nbr: getF(o, "OrderNbr"),
@@ -794,8 +795,8 @@ export async function POST(request) {
                                         qty: orderQty,
                                         received_qty: receivedQty,
                                         uom: getF(d, "UOM"),
-                                        warehouse_id: warehouseId,
-                                        branch_id: warehouseId,
+                                        warehouse_id: warehouseId || null,
+                                        branch_id: warehouseId || null,
                                         ext_cost: parseFloat(getAny(d, "ExtendedCost", "LineAmount") || 0),
                                         last_sync: new Date()
                                     });

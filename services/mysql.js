@@ -707,23 +707,39 @@ export const MySqlService = {
     },
 
     /**
-     * Open purchase order quantities by inventory ID (incoming stock).
+     * Open purchase order quantities by inventory ID for one destination warehouse.
+     * MAIN Coming PO = lines with warehouse_id MAIN only (not other branches).
+     * Branch Coming PO = that branch warehouse only.
      */
-    async getOpenPoQtyByItem() {
+    async getOpenPoQtyByItem({ warehouseId = "MAIN" } = {}) {
         try {
             await this.ensureReceivedQtyColumn();
-            const [rows] = await purchasePool.query(`
+            await this.ensurePoWarehouseColumns();
+            const dest = String(warehouseId || "MAIN").trim().toUpperCase() || "MAIN";
+            const [rows] = await purchasePool.query(
+                `
                 SELECT
                     UPPER(TRIM(d.inventory_id)) as inventoryId,
                     COALESCE(SUM(GREATEST(d.qty - COALESCE(d.received_qty, 0), 0)), 0) as openQty
                 FROM purchase_order_details d
                 INNER JOIN purchase_history h
                     ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
-                WHERE h.status IN ('Open', 'Hold', 'Balanced', 'Pending Approval', 'Pending Printing', 'Pending Email')
+                WHERE UPPER(TRIM(h.status)) IN (
+                        'OPEN',
+                        'ON HOLD',
+                        'HOLD',
+                        'BALANCED',
+                        'PENDING APPROVAL',
+                        'PENDING PRINTING',
+                        'PENDING EMAIL'
+                    )
+                  AND UPPER(TRIM(d.warehouse_id)) = ?
                   AND d.inventory_id IS NOT NULL
                   AND TRIM(d.inventory_id) != ''
                 GROUP BY UPPER(TRIM(d.inventory_id))
-            `);
+                `,
+                [dest]
+            );
             const map = new Map();
             for (const row of rows) {
                 const key = String(row.inventoryId || "").toUpperCase().trim();
@@ -3061,9 +3077,10 @@ export const MySqlService = {
         if (row.is_main_warehouse_view) {
             rec.mainInventory = Number(row.main_inventory) || 0;
             rec.branchOrderQty = Number(row.branch_order_qty) || 0;
-            rec.comingPO = Number(row.coming_po) || 0;
             rec.totalBranchReplenishment = Number(row.total_branch_replenishment) || 0;
         }
+        // Always attach Coming PO for the cache row's branch (MAIN or branch-specific)
+        rec.comingPO = Number(row.coming_po) || 0;
 
         return rec;
     },

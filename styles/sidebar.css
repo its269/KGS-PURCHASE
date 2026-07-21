@@ -134,14 +134,16 @@
   max-width: 100%;
 }
 
-.sidebar-user-header::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--status-success);
-  flex-shrink: 0;
-  box-shadow: 0 0 6px var(--status-success);
+.sidebar-session-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0 0.25rem;
+}
+
+.sidebar.collapsed .sidebar-session-wrap {
+  align-items: center;
+  padding: 0;
 }
 
 

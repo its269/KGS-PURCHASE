@@ -137,5 +137,51 @@ export const AuthService = {
             last,
             fullName: [first, last].filter(Boolean).join(" ") || username
         };
-    }
+    },
+
+    /**
+     * Probe Acumatica with the stored cookie or Bearer token.
+     * This is the source of truth for "still logged in" — not the local app cookie alone.
+     */
+    async validateSession(credential) {
+        if (!credential) {
+            return { ok: false, reason: "missing" };
+        }
+        if (credential === "__bypass__") {
+            return { ok: true, bypass: true, source: "bypass" };
+        }
+
+        const { apiBase } = authUrls();
+        // Tiny read — validates the Acumatica session without pulling business data
+        const url = `${apiBase}/entity/Default/20.200.001/Branch?$top=1&$select=BranchID`;
+
+        const headers = { ...COMMON_HEADERS };
+        if (typeof credential === "string" && credential.startsWith("__bearer__")) {
+            headers.Authorization = `Bearer ${credential.slice("__bearer__".length)}`;
+        } else {
+            headers.Cookie = credential;
+        }
+
+        try {
+            const res = await fetch(url, {
+                method: "GET",
+                headers,
+                cache: "no-store",
+            });
+
+            if (res.status === 401 || res.status === 403) {
+                return { ok: false, reason: "acumatica_expired", status: res.status, source: "acumatica" };
+            }
+
+            // Transient ERP errors should not force logout
+            if (!res.ok) {
+                return { ok: true, degraded: true, status: res.status, source: "acumatica" };
+            }
+
+            return { ok: true, source: "acumatica" };
+        } catch (err) {
+            // Network / TLS issues — keep app session until Acumatica is reachable again
+            return { ok: true, degraded: true, reason: err.message, source: "acumatica" };
+        }
+    },
 };

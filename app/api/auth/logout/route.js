@@ -12,8 +12,13 @@ export async function GET(request) {
     if (cookie) await AuthService.logout(cookie).catch(() => {});
     if (sessionId) deleteSession(sessionId);
 
+    const expired = request.nextUrl.searchParams.get("expired") === "1";
     const signInUrl = request.nextUrl.clone();
     signInUrl.pathname = withBasePath("/signin");
+    signInUrl.search = "";
+    if (expired) {
+        signInUrl.searchParams.set("expired", "1");
+    }
     const response = NextResponse.redirect(signInUrl);
     clearAllCookies(request, response);
     return response;

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionMeta } from "@/lib/session-store";
 import { withBasePath, getBasePath, clearAllCookies } from "@/lib/base-path";
 
-const PUBLIC_PATHS = ["/signin", "/api/auth/login", "/api/auth/logout"];
+const PUBLIC_PATHS = ["/signin", "/api/auth/login", "/api/auth/logout", "/api/auth/session"];
 
 function normalizePath(pathname) {
     const base = getBasePath();

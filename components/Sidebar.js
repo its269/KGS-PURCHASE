@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { useTheme } from "./ThemeProvider";
+import SessionStatus from "./SessionStatus";
 import { withBasePath } from "@/lib/base-path";
 import { APP_VERSION } from "@/lib/app-version";
 import "@/styles/sidebar.css";
@@ -225,11 +226,9 @@ export default function Sidebar() {
             )}
           </div>
 
-          {!isCollapsed && (
-            <div className="sidebar-user-header">
-              <span className="sidebar-user-name">{userName}</span>
-            </div>
-          )}
+          <div className="sidebar-session-wrap">
+            <SessionStatus collapsed={isCollapsed} userName={userName} />
+          </div>
 
           {companies.length >= 2 && (
             <div className="sidebar-company-field">

@@ -677,11 +677,11 @@ export default function PurchaseOrdersPage() {
                                 <th className="po-col-vendor-name">Vendor Name</th>
                                 <th className="po-col-status">Status</th>
                                 <th className="po-col-date">Order Date</th>
-                                <th className="po-col-eta">ETA (Input)</th>
                                 <th className="po-col-etd">ETD</th>
+                                <th className="po-col-user-status">User Status</th>
+                                <th className="po-col-eta">ETA (Input)</th>
                                 <th className="po-col-container">Container #</th>
                                 <th className="po-col-remarks">Remarks</th>
-                                <th className="po-col-user-status">User Status</th>
                                 <th className="po-col-amount">Total Amount</th>
                             </tr>
                         </thead>
@@ -721,21 +721,27 @@ export default function PurchaseOrdersPage() {
                                             </td>
                                             <td><span style={{ fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
                                             <td onClick={(e) => e.stopPropagation()}>
-                                                <input 
-                                                    type="date" 
-                                                    className="po-input-date" 
-                                                    style={{ width: '100%' }}
-                                                    value={ui.eta || ""}
-                                                    onChange={(e) => handleUserInput(key, 'eta', e.target.value)}
-                                                />
-                                            </td>
-                                            <td onClick={(e) => e.stopPropagation()}>
                                                 <input
                                                     type="date"
                                                     className="po-input-date"
                                                     style={{ width: '100%' }}
                                                     value={ui.etd || ""}
                                                     onChange={(e) => handleUserInput(key, 'etd', e.target.value)}
+                                                />
+                                            </td>
+                                            <td onClick={(e) => e.stopPropagation()}>
+                                                <UserStatusCell
+                                                    value={ui.userStatus || ""}
+                                                    onChange={(val) => handleUserInput(key, "userStatus", val)}
+                                                />
+                                            </td>
+                                            <td onClick={(e) => e.stopPropagation()}>
+                                                <input 
+                                                    type="date" 
+                                                    className="po-input-date" 
+                                                    style={{ width: '100%' }}
+                                                    value={ui.eta || ""}
+                                                    onChange={(e) => handleUserInput(key, 'eta', e.target.value)}
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
@@ -756,12 +762,6 @@ export default function PurchaseOrdersPage() {
                                                     placeholder="Remarks"
                                                     value={ui.remarks || ""}
                                                     onChange={(e) => handleUserInput(key, 'remarks', e.target.value)}
-                                                />
-                                            </td>
-                                            <td onClick={(e) => e.stopPropagation()}>
-                                                <UserStatusCell
-                                                    value={ui.userStatus || ""}
-                                                    onChange={(val) => handleUserInput(key, "userStatus", val)}
                                                 />
                                             </td>
                                             <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)', fontSize: '1rem' }}>₱{fmt(po.totalAmount)}</strong></td>

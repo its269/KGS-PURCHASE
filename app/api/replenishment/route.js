@@ -5,6 +5,7 @@ import { MySqlService } from "@/services/mysql";
 import {
     computeReplenishmentForBranch,
     rebuildAllReplenishmentCache,
+    applyLiveComingPo,
     TARGET_DAYS_OF_COVER,
 } from "@/lib/replenishment-engine";
 import { buildBranchBrief } from "@/lib/replenishment-insights";
@@ -105,10 +106,16 @@ export async function GET(request) {
                 : await MySqlService.getReplenishmentFromCachePage(effectiveCompanyId, branch, {
                     page,
                     pageSize,
-                    slim: true,
+                    slim: false,
                 });
 
             if (cachedPage?.recommendations) {
+                // Always refresh Coming PO from destination-warehouse open POs (MAIN ≠ branches)
+                const recommendations = await applyLiveComingPo(
+                    cachedPage.recommendations,
+                    branch
+                );
+
                 // Watermark check in parallel / non-blocking for stale rebuild
                 MySqlService.getReplenishmentDataWatermark()
                     .then((wm) => {
@@ -118,15 +125,15 @@ export async function GET(request) {
                     })
                     .catch(() => {});
 
-                const stats = cachedPage.meta?.stats || {
-                    urgent: cachedPage.recommendations.filter((r) => r.priorityLevel === "High").length,
-                    soon: cachedPage.recommendations.filter((r) => r.priorityLevel === "Medium").length,
-                    totalSuggested: cachedPage.recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0),
-                    itemCount: cachedPage.meta?.itemCount ?? cachedPage.recommendations.length,
+                const stats = {
+                    urgent: recommendations.filter((r) => r.priorityLevel === "High").length,
+                    soon: recommendations.filter((r) => r.priorityLevel === "Medium").length,
+                    totalSuggested: recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0),
+                    itemCount: cachedPage.meta?.itemCount ?? recommendations.length,
                 };
 
                 return NextResponse.json({
-                    recommendations: cachedPage.recommendations,
+                    recommendations,
                     brief: briefFromStats(
                         { ...stats, itemCount: cachedPage.meta?.itemCount ?? stats.itemCount },
                         branch
@@ -138,6 +145,7 @@ export async function GET(request) {
                         salesSource: "mysql",
                         isMainWarehouseView: String(branch).trim().toUpperCase() === "MAIN",
                         servedFrom: "cache",
+                        comingPoScope: String(branch).trim().toUpperCase() || "MAIN",
                     },
                 });
             }

@@ -20,9 +20,8 @@ async function persistLinesToMySQL(orders) {
     const lineRows = [];
     for (const o of orders) {
         if (!o.lines?.length) continue;
-        const headerBranch = String(o.branchId || "").trim();
         o.lines.forEach((line, idx) => {
-            const warehouseId = String(line.warehouseId || line.branchId || headerBranch || "").trim();
+            const warehouseId = String(line.warehouseId || line.branchId || "").trim();
             lineRows.push({
                 order_nbr: o.orderNbr,
                 line_nbr: idx + 1,

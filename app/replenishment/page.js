@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
+import { buildReplenishmentInsight, TARGET_DAYS_OF_COVER } from "@/lib/replenishment-insights";
 import "@/styles/dashboard.css";
+import "@/styles/inventory-detail.css";
 import "@/styles/replenishment.css";
 
 const PAGE_SIZE = 10;
@@ -42,6 +44,11 @@ const IconInfo = () => (
 const IconDownload = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+);
+const IconClose = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
     </svg>
 );
 
@@ -142,86 +149,227 @@ function fmtNum(n) {
     return val % 1 === 0 ? val.toLocaleString() : val.toFixed(1);
 }
 
-function toggleAiRow(id, setExpandedAi) {
-    setExpandedAi((prev) => ({ ...prev, [id]: !prev[id] }));
+/** Cache often serves slim rows without howItWorks.steps — rebuild so Explain always has content. */
+function resolveAiInsights(rec) {
+    const existing = rec?.aiInsights || {};
+    if (existing.howItWorks?.steps?.length && existing.headline && existing.summary) {
+        return existing;
+    }
+
+    const ads = Number(existing.salesVelocity) || 0;
+    const rawDays = existing.daysRemaining;
+    const hasSalesHistory = rawDays !== "N/A" && rawDays != null && ads > 0;
+    const daysRemaining = hasSalesHistory ? Number(rawDays) || 0 : 0;
+    const currentStock = Number(rec.currentStock ?? rec.mainInventory) || 0;
+    const suggestedQty = Number(rec.suggestedQty) || 0;
+    const branchId = rec.branchId || (rec.isMainWarehouseView ? "MAIN" : "");
+    const rebuilt = buildReplenishmentInsight({
+        itemId: rec.itemId,
+        description: rec.description,
+        currentStock,
+        suggestedQty,
+        priorityLevel: rec.priorityLevel || "Low",
+        branchId,
+        ads,
+        daysRemaining,
+        leadTimeDays: rec.leadTimeDays ?? existing.leadTimeDays ?? 0,
+        vendorId: rec.vendorId || existing.vendorId || null,
+        hasSalesHistory,
+        qtySold90: Number(rec.qtySold90) || 0,
+        targetStock: ads * TARGET_DAYS_OF_COVER,
+        salesScope: rec.salesScope || existing.salesScope || "branch",
+        mainWarehouseContext: rec.isMainWarehouseView
+            ? {
+                branchOrderQty: Number(rec.branchOrderQty) || 0,
+                comingPO: Number(rec.comingPO) || 0,
+                totalBranchReplenishment: Number(rec.totalBranchReplenishment) || 0,
+            }
+            : null,
+    });
+
+    return {
+        ...rebuilt,
+        ...existing,
+        headline: existing.headline || rebuilt.headline,
+        summary: existing.summary || rebuilt.summary,
+        whatToDo: existing.whatToDo || rebuilt.whatToDo,
+        formula: existing.formula || rebuilt.formula,
+        metrics: existing.metrics?.length ? existing.metrics : rebuilt.metrics,
+        howItWorks: {
+            preview: existing.howItWorks?.preview || rebuilt.howItWorks.preview,
+            steps: existing.howItWorks?.steps?.length
+                ? existing.howItWorks.steps
+                : rebuilt.howItWorks.steps,
+        },
+    };
 }
 
-function ReplenishmentRows({ recs, expandedAi, setExpandedAi, isMain }) {
-    const colSpan = isMain ? 11 : 9;
+function AiExplainLightbox({ rec, onClose }) {
+    useEffect(() => {
+        if (!rec) return undefined;
+        const onKey = (e) => {
+            if (e.key === "Escape") onClose();
+        };
+        document.addEventListener("keydown", onKey);
+        const prevOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        return () => {
+            document.removeEventListener("keydown", onKey);
+            document.body.style.overflow = prevOverflow;
+        };
+    }, [rec, onClose]);
 
+    if (!rec) return null;
+
+    const ai = resolveAiInsights(rec);
+    const how = ai.howItWorks || {};
+    const steps = how.steps || [];
+    const explanation = [ai.headline, ai.summary].filter(Boolean).join(" — ")
+        || how.preview
+        || ai.message
+        || "";
+
+    return (
+        <div className="idm-overlay" onClick={onClose} role="presentation">
+            <div
+                className="idm-modal repl-ai-lightbox"
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="repl-ai-lightbox-title"
+            >
+                <button type="button" className="idm-close-btn" onClick={onClose} aria-label="Close">
+                    <IconClose />
+                </button>
+
+                <div className="idm-content repl-ai-lightbox-content">
+                    <div className="repl-ai-lightbox-header">
+                        <div className="repl-ai-lightbox-icon">
+                            <IconSparkles />
+                        </div>
+                        <div>
+                            <h2 id="repl-ai-lightbox-title">AI Explanation</h2>
+                            <p>
+                                <span className="repl-product-id">{rec.itemId}</span>
+                                {rec.description ? ` · ${rec.description}` : ""}
+                            </p>
+                        </div>
+                    </div>
+
+                    {explanation && (
+                        <section className="repl-ai-lightbox-section">
+                            <h3>Explanation</h3>
+                            <p className="repl-ai-lightbox-preview">{explanation}</p>
+                        </section>
+                    )}
+
+                    {(ai.whatToDo || rec.restockSource) && (
+                        <section className="repl-ai-lightbox-section">
+                            <h3>Recommended action</h3>
+                            <p>{ai.whatToDo || rec.restockSource}</p>
+                        </section>
+                    )}
+
+                    {ai.formula && (
+                        <section className="repl-ai-lightbox-section">
+                            <h3>Formula</h3>
+                            <p className="repl-ai-lightbox-formula">{ai.formula}</p>
+                        </section>
+                    )}
+
+                    {ai.metrics?.length > 0 && (
+                        <section className="repl-ai-lightbox-section">
+                            <h3>Key figures</h3>
+                            <ul className="repl-ai-metrics">
+                                {ai.metrics.map((m) => (
+                                    <li key={m.label}>
+                                        <strong>{m.label}</strong>
+                                        <span>{m.value}</span>
+                                        {m.hint ? <em>{m.hint}</em> : null}
+                                    </li>
+                                ))}
+                            </ul>
+                        </section>
+                    )}
+
+                    <section className="repl-ai-lightbox-section">
+                        <h3>How it was calculated</h3>
+                        {steps.length > 0 ? (
+                            <ol className="repl-ai-steps">
+                                {steps.map((step) => (
+                                    <li key={step.title}>
+                                        <strong>{step.title}</strong>
+                                        <p>{step.text}</p>
+                                    </li>
+                                ))}
+                            </ol>
+                        ) : (
+                            <p className="repl-ai-lightbox-empty">
+                                No detailed steps for this row — stock is sufficient or no order is suggested.
+                            </p>
+                        )}
+                    </section>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ReplenishmentRows({ recs, onExplain, explainId, isMain }) {
     return recs.map((rec) => {
         const ai = rec.aiInsights || {};
         const how = ai.howItWorks || {};
         const days = ai.daysRemaining;
         const ads = ai.salesVelocity;
         const hasSales = days !== "N/A" && days != null;
-        const isOpen = !!expandedAi[rec.recommendationId];
+        const isOpen = explainId === rec.recommendationId;
         const leadTime = rec.leadTimeDays ?? ai.leadTimeDays;
 
         return (
-            <Fragment key={rec.recommendationId}>
-                <tr className={`repl-row ${priorityClass(rec.priorityLevel)}`}>
-                    <td>
-                        <span className={`repl-badge ${priorityClass(rec.priorityLevel)}`}>
-                            {priorityLabel(rec.priorityLevel)}
-                        </span>
-                    </td>
-                    <td>
-                        <div className="repl-product-id">{rec.itemId}</div>
-                        <div className="repl-product-desc">{rec.description || "—"}</div>
-                    </td>
-                    {isMain ? (
-                        <>
-                            <td className="repl-num">{fmtNum(rec.branchOrderQty ?? 0)}</td>
-                            <td className="repl-num">{fmtNum(rec.mainInventory ?? rec.currentStock)}</td>
-                            <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
-                            <td className="repl-num">{fmtNum(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0)}</td>
-                        </>
-                    ) : (
+            <tr key={rec.recommendationId} className={`repl-row ${priorityClass(rec.priorityLevel)}`}>
+                <td>
+                    <span className={`repl-badge ${priorityClass(rec.priorityLevel)}`}>
+                        {priorityLabel(rec.priorityLevel)}
+                    </span>
+                </td>
+                <td>
+                    <div className="repl-product-id">{rec.itemId}</div>
+                    <div className="repl-product-desc">{rec.description || "—"}</div>
+                </td>
+                {isMain ? (
+                    <>
+                        <td className="repl-num">{fmtNum(rec.branchOrderQty ?? 0)}</td>
+                        <td className="repl-num">{fmtNum(rec.mainInventory ?? rec.currentStock)}</td>
+                        <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
+                        <td className="repl-num">{fmtNum(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0)}</td>
+                    </>
+                ) : (
+                    <>
                         <td className="repl-num">{fmtNum(rec.currentStock)}</td>
-                    )}
-                    <td className="repl-num">{hasSales ? fmtNum(ads) : "—"}</td>
-                    <td className="repl-num">{hasSales ? `${fmtNum(days)} days` : "—"}</td>
-                    <td className="repl-num">{leadTime > 0 ? `${fmtNum(leadTime)} days` : "—"}</td>
-                    <td className="repl-num repl-order-qty">
-                        {Number(rec.suggestedQty) > 0 ? `+${fmtNum(rec.suggestedQty)}` : fmtNum(rec.suggestedQty ?? 0)}
-                    </td>
-                    <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
-                    <td className="repl-ai-cell">
-                        <p className="repl-ai-preview">{how.preview || "Tap Explain to see how this was calculated."}</p>
-                        <button
-                            type="button"
-                            className={`repl-ai-btn ${isOpen ? "open" : ""}`}
-                            onClick={() => toggleAiRow(rec.recommendationId, setExpandedAi)}
-                            aria-expanded={isOpen}
-                        >
-                            <IconSparkles />
-                            {isOpen ? "Hide" : "Explain"}
-                        </button>
-                    </td>
-                </tr>
-                {isOpen && how.steps?.length > 0 && (
-                    <tr className="repl-ai-detail-row">
-                        <td colSpan={colSpan}>
-                            <div className="repl-ai-panel">
-                                <div className="repl-ai-panel-header">
-                                    <IconSparkles />
-                                    <strong>AI Explanation</strong>
-                                    <span>How this recommendation was built</span>
-                                </div>
-                                <ol className="repl-ai-steps">
-                                    {how.steps.map((step) => (
-                                        <li key={step.title}>
-                                            <strong>{step.title}</strong>
-                                            <p>{step.text}</p>
-                                        </li>
-                                    ))}
-                                </ol>
-                            </div>
-                        </td>
-                    </tr>
+                        <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
+                    </>
                 )}
-            </Fragment>
+                <td className="repl-num">{hasSales ? fmtNum(ads) : "—"}</td>
+                <td className="repl-num">{hasSales ? `${fmtNum(days)} days` : "—"}</td>
+                <td className="repl-num">{leadTime > 0 ? `${fmtNum(leadTime)} days` : "—"}</td>
+                <td className="repl-num repl-order-qty">
+                    {Number(rec.suggestedQty) > 0 ? `+${fmtNum(rec.suggestedQty)}` : fmtNum(rec.suggestedQty ?? 0)}
+                </td>
+                <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
+                <td className="repl-ai-cell">
+                    <p className="repl-ai-preview">{how.preview || "Tap Explain to see how this was calculated."}</p>
+                    <button
+                        type="button"
+                        className={`repl-ai-btn ${isOpen ? "open" : ""}`}
+                        onClick={() => onExplain(rec)}
+                        aria-haspopup="dialog"
+                        aria-expanded={isOpen}
+                    >
+                        <IconSparkles />
+                        Explain
+                    </button>
+                </td>
+            </tr>
         );
     });
 }
@@ -238,10 +386,11 @@ export default function ReplenishmentPage() {
     const [loading, setLoading] = useState(true);
     const [backgroundLoading, setBackgroundLoading] = useState(false);
     const [error, setError] = useState(null);
-    const [expandedAi, setExpandedAi] = useState({});
+    const [aiExplainRec, setAiExplainRec] = useState(null);
     const [openColumnInfo, setOpenColumnInfo] = useState(null);
     const [page, setPage] = useState(1);
     const fetchGenRef = useRef(0);
+    const closeAiExplain = useCallback(() => setAiExplainRec(null), []);
 
     const retailBranches = useMemo(
         () => branches.filter((b) => {
@@ -301,9 +450,9 @@ export default function ReplenishmentPage() {
                 const full = await load(`&page=1&pageSize=0${refreshParam}`);
                 if (gen !== fetchGenRef.current) return;
                 applyPayload(full);
-                DataCache.set(`replenishment_recs_v5_${branchToFetch}`, full, { persist: false });
+                DataCache.set(`replenishment_recs_v6_${branchToFetch}`, full, { persist: false });
             } else {
-                DataCache.set(`replenishment_recs_v5_${branchToFetch}`, first, { persist: false });
+                DataCache.set(`replenishment_recs_v6_${branchToFetch}`, first, { persist: false });
             }
         } catch (err) {
             if (err.message === "Unauthorized") return;
@@ -370,7 +519,7 @@ export default function ReplenishmentPage() {
         let active = true;
         if (!activeBranch) return undefined;
 
-        const cacheKey = `replenishment_recs_v5_${activeBranch}`;
+        const cacheKey = `replenishment_recs_v6_${activeBranch}`;
         const cached = DataCache.get(cacheKey);
 
         (async () => {
@@ -434,7 +583,8 @@ export default function ReplenishmentPage() {
 
     useEffect(() => {
         setPage(1);
-    }, [priorityFilter, search, viewMode, selectedBranch]);
+        closeAiExplain();
+    }, [priorityFilter, search, viewMode, selectedBranch, closeAiExplain]);
 
     const totalPages = Math.max(1, Math.ceil(filteredRecs.length / PAGE_SIZE));
     const paginatedRecs = useMemo(() => {
@@ -447,9 +597,9 @@ export default function ReplenishmentPage() {
     }, [page, totalPages]);
 
     const branchHint = isMain
-        ? "MAIN warehouse: aggregate branch demand, MAIN stock, coming PO, and vendor order qty."
+        ? "MAIN warehouse: Coming PO counts open purchase orders destined for MAIN only. Branch demand is separate."
         : selectedBranch
-            ? `For ${selectedBranch}: request a stock transfer from MAIN.`
+            ? `For ${selectedBranch}: Coming PO counts open purchase orders destined for this branch only. Request transfers from MAIN for any remaining gap.`
             : "Select a branch to view replenishment needs.";
 
     const scopeLabel = isMain ? "MAIN Warehouse" : (selectedBranch || "Branch");
@@ -460,7 +610,7 @@ export default function ReplenishmentPage() {
 
         const headers = isMain
             ? ["Status", "Product ID", "Description", "Branch Order Qty", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"]
-            : ["Status", "Product ID", "Description", "Branch Stock", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"];
+            : ["Status", "Product ID", "Description", "Branch Stock", "Coming PO", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"];
 
         const csvRows = rows.map((rec) => {
             const ai = rec.aiInsights || {};
@@ -478,7 +628,7 @@ export default function ReplenishmentPage() {
                     rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0
                 );
             } else {
-                base.push(rec.currentStock ?? 0);
+                base.push(rec.currentStock ?? 0, rec.comingPO ?? 0);
             }
             base.push(
                 ai.salesVelocity ?? "",
@@ -642,7 +792,7 @@ export default function ReplenishmentPage() {
                             className="db-refresh-btn"
                             onClick={() => {
                                 if (!activeBranch) return;
-                                DataCache.delete(`replenishment_recs_v5_${activeBranch}`);
+                                DataCache.delete(`replenishment_recs_v6_${activeBranch}`);
                                 fetchRecommendations(false, activeBranch, true);
                             }}
                             disabled={loading || !activeBranch}
@@ -680,7 +830,10 @@ export default function ReplenishmentPage() {
                                         <th style={{ width: "120px", textAlign: "right" }}>Total branch repl.</th>
                                     </>
                                 ) : (
-                                    <th style={{ width: "100px", textAlign: "right" }}>Branch stock</th>
+                                    <>
+                                        <th style={{ width: "100px", textAlign: "right" }}>Branch stock</th>
+                                        <th style={{ width: "100px", textAlign: "right" }}>Coming PO</th>
+                                    </>
                                 )}
                                 <th className="repl-col-th" style={{ width: "128px", textAlign: "right" }}>
                                     <ColumnInfoHeader
@@ -724,14 +877,14 @@ export default function ReplenishmentPage() {
                         <tbody>
                             {loading && recs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 11 : 9} className="repl-table-empty">
+                                    <td colSpan={isMain ? 11 : 10} className="repl-table-empty">
                                         <div className="db-spinner db-spinner-lg" style={{ margin: "0 auto 0.75rem" }} />
                                         Loading recommendations for {scopeLabel}...
                                     </td>
                                 </tr>
                             ) : filteredRecs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 11 : 9} className="repl-table-empty">
+                                    <td colSpan={isMain ? 11 : 10} className="repl-table-empty">
                                         {priorityFilter === "urgent"
                                             ? "No urgent items right now."
                                             : priorityFilter === "soon"
@@ -746,8 +899,8 @@ export default function ReplenishmentPage() {
                             ) : (
                                 <ReplenishmentRows
                                     recs={paginatedRecs}
-                                    expandedAi={expandedAi}
-                                    setExpandedAi={setExpandedAi}
+                                    onExplain={setAiExplainRec}
+                                    explainId={aiExplainRec?.recommendationId}
                                     isMain={isMain}
                                 />
                             )}
@@ -783,6 +936,8 @@ export default function ReplenishmentPage() {
                     </p>
                 )}
             </main>
+
+            <AiExplainLightbox rec={aiExplainRec} onClose={closeAiExplain} />
         </div>
     );
 }

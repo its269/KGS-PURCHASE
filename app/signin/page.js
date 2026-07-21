@@ -58,7 +58,7 @@ function SignInContent() {
     useEffect(() => {
         if (searchParams.get("expired") === "1") {
             localStorage.removeItem("acu_session");
-            setError("Your session expired. Please sign in again.");
+            setError("Your session has expired. Please log in again.");
         }
     }, [searchParams]);
 

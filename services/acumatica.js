@@ -205,7 +205,9 @@ const mapPoLine = (line) => {
     let extCost = parseFloat(getAny(line, "ExtendedCost", "LineAmount", "Amount", "CuryExtCost") || 0);
     if (!extCost && qty && unitCost) extCost = qty * unitCost;
     const warehouseId = String(
-        getAny(line, "WarehouseID", "SiteID", "BranchID", "Branch", "DestinationWarehouseID") || ""
+        getAny(line, "WarehouseID", "SiteID", "DestinationWarehouseID") ||
+        getAny(line, "BranchID", "Branch") ||
+        ""
     ).trim();
 
     return {
@@ -226,10 +228,8 @@ const mapPurchaseOrder = (po) => {
     ).trim();
     const lines = extractPoDetails(po).map((line) => {
         const mapped = mapPoLine(line);
-        if (!mapped.warehouseId && headerBranch) {
-            mapped.warehouseId = headerBranch;
-            mapped.branchId = headerBranch;
-        }
+        // Do not copy document header Branch onto lines — that is often MAIN for all
+        // company POs and would mis-attribute branch warehouse receipts as MAIN.
         return mapped;
     });
     return {

@@ -2,10 +2,12 @@
 
 import { useEffect } from "react";
 import { withBasePath } from "@/lib/base-path";
+import { handleSessionExpired, isAuthProbeUrl } from "@/lib/session-client";
 
 /**
- * AuthBootstrap component that intercepts all fetch calls to /api/*
- * and adds the Authorization header if a session exists in localStorage.
+ * AuthBootstrap intercepts fetch calls to /api/*:
+ * - Adds Authorization from localStorage
+ * - On 401 (except auth probes), shows expired notice and redirects to sign-in
  */
 export default function AuthBootstrap() {
     useEffect(() => {
@@ -17,9 +19,14 @@ export default function AuthBootstrap() {
                 resource = withBasePath(resource);
             }
 
-            const isApiCall =
-                typeof resource === "string" &&
-                (resource.includes("/api/") || resource.startsWith("api/"));
+            const urlStr =
+                typeof resource === "string"
+                    ? resource
+                    : resource instanceof Request
+                        ? resource.url
+                        : String(resource || "");
+
+            const isApiCall = urlStr.includes("/api/");
 
             if (isApiCall) {
                 const sessionId = localStorage.getItem("acu_session");
@@ -43,7 +50,18 @@ export default function AuthBootstrap() {
                     config.headers = headers;
                 }
             }
-            return originalFetch(resource, config);
+
+            const response = await originalFetch(resource, config);
+
+            if (
+                isApiCall &&
+                response.status === 401 &&
+                !isAuthProbeUrl(urlStr)
+            ) {
+                handleSessionExpired();
+            }
+
+            return response;
         };
 
         return () => {
