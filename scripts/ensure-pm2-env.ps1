@@ -35,7 +35,19 @@ function Grant-UsersReadExecute([string]$dir) {
     if (-not $dir) { return }
     try {
         if (-not (Test-Path -LiteralPath $dir -ErrorAction Stop)) { return }
-        icacls $dir /grant "*S-1-5-32-545:(OI)(CI)RX" /T /C /Q 2>$null | Out-Null
+
+        # Only touch the directory ACL (no /T). Recursive icacls on AppData\npm
+        # can take minutes and stall/fail GitHub Actions deploys.
+        $acl = Get-Acl -LiteralPath $dir
+        $usersSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
+        $hasUsers = $acl.Access | Where-Object {
+            $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $usersSid.Value -and
+            $_.FileSystemRights.ToString() -match 'ReadAndExecute|Read|FullControl'
+        }
+        if ($hasUsers) { return }
+
+        icacls $dir /grant "*S-1-5-32-545:(OI)(CI)RX" /C /Q 2>$null | Out-Null
+        Write-Host "Granted Users RX on $dir"
     } catch {
         # Best-effort only — deploy must continue even if ACL update fails
     }
@@ -50,7 +62,9 @@ $npmRoaming = if ($env:APPDATA) {
 
 # Allow the Actions / service account to read Administrator's global npm shims (pm2, etc.)
 Grant-UsersReadExecute $adminNpm
-Grant-UsersReadExecute $npmRoaming
+if ($npmRoaming -ne $adminNpm) {
+    Grant-UsersReadExecute $npmRoaming
+}
 
 Add-PathFront $npmRoaming
 Add-PathFront $adminNpm

@@ -121,16 +121,28 @@ jobs:
           )
           echo Build verified - ID: && type .next\BUILD_ID
 
+      - name: Snapshot successful build for rollback
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\backup-next-build.ps1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARN: could not snapshot build for rollback (non-fatal)"
+            exit 0
+          }
+
       - name: Restart production server
         shell: powershell
         run: |
           Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
           & .\scripts\ensure-pm2-env.ps1
           & .\scripts\ensure-node-path.ps1
-          pm2 reload kgs-purchase-http --update-env
-          if ($LASTEXITCODE -ne 0) {
-            pm2 start ecosystem.config.js --only kgs-purchase-http
+          if (-not (Test-Path '.next\standalone\server.js')) {
+            throw 'Cannot start: .next\standalone\server.js is missing'
           }
+          pm2 delete kgs-purchase-http 2>$null
+          pm2 start ecosystem.config.js --only kgs-purchase-http
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pm2 save
           pm2 status
 
