@@ -1,5 +1,5 @@
 # Restores .next-backup to .next for deploy rollback on Windows.
-# Never Move-Item a backup into an existing .next folder — that nests as .next\.next-backup.
+# Never Move-Item a backup into an existing .next folder - that nests as .next\.next-backup.
 # If .next is locked, rename it aside so restore can proceed.
 
 $ErrorActionPreference = 'Continue'
@@ -38,7 +38,7 @@ function Test-ValidBuild([string]$Root) {
 # Recover from a previously nested backup created by a bad Move-Item
 $nestedBackup = '.next\.next-backup'
 if ((Test-Path -LiteralPath $nestedBackup) -and (Test-ValidBuild $nestedBackup)) {
-    Write-Host 'Found nested backup at .next\.next-backup — promoting to repo-root .next-backup'
+    Write-Host 'Found nested backup at .next\.next-backup - promoting to repo-root .next-backup'
     if (Test-Path -LiteralPath '.next-backup') {
         Clear-BuildDir '.next-backup' | Out-Null
     }
@@ -61,7 +61,7 @@ if (-not (Clear-BuildDir '.next')) {
     throw 'Rollback failed: could not remove or rename current .next'
 }
 
-# After Clear-BuildDir, .next must not exist — otherwise Move-Item nests the backup
+# After Clear-BuildDir, .next must not exist - otherwise Move-Item nests the backup
 if (Test-Path -LiteralPath '.next') {
     throw 'Rollback failed: .next still exists after clear; refusing Move-Item to avoid nesting'
 }
