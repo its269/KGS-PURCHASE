@@ -597,9 +597,9 @@ export default function ReplenishmentPage() {
     }, [page, totalPages]);
 
     const branchHint = isMain
-        ? "MAIN warehouse: Coming PO counts open purchase orders destined for MAIN only. Branch demand is separate."
+        ? "MAIN warehouse: Coming PO counts open (non–On Hold) purchase orders destined for MAIN only. Branch demand is separate."
         : selectedBranch
-            ? `For ${selectedBranch}: Coming PO counts open purchase orders destined for this branch only. Request transfers from MAIN for any remaining gap.`
+            ? `For ${selectedBranch}: Coming PO counts open (non–On Hold) purchase orders destined for this branch only. Request transfers from MAIN for any remaining gap.`
             : "Select a branch to view replenishment needs.";
 
     const scopeLabel = isMain ? "MAIN Warehouse" : (selectedBranch || "Branch");

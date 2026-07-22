@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import { DataCache } from "@/lib/data-cache";
 import { loadListWithCache } from "@/lib/list-cache";
 import { prefetchRemainingPages } from "@/lib/progressive-load";
@@ -9,6 +9,7 @@ import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/inventory-detail.css";
 import "@/styles/po.css";
+import "@/styles/suppliers.css";
 
 const PAGE_SIZE = 10;
 
@@ -79,7 +80,52 @@ function poStatusClass(status) {
     if (s === "closed") return "po-status-closed";
     if (s === "completed") return "po-status-completed";
     if (s === "cancelled" || s === "canceled") return "po-status-cancelled";
+    if (s === "on hold" || s === "hold") return "po-status-default";
     return "po-status-default";
+}
+
+function buildOrderHighlights(order) {
+    const lines = order.lines || [];
+    const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+    const openQty = lines.reduce((s, l) => s + (Number(l.openQty ?? Math.max((Number(l.qty) || 0) - (Number(l.receivedQty) || 0), 0))), 0);
+    const receivedQty = lines.reduce((s, l) => s + (Number(l.receivedQty) || 0), 0);
+    const warehouses = [...new Set(lines.map((l) => String(l.warehouseId || l.branchId || "").trim()).filter(Boolean))];
+    const itemCount = lines.length;
+    const avgLineCost = itemCount > 0
+        ? lines.reduce((s, l) => s + (Number(l.extCost) || 0), 0) / itemCount
+        : 0;
+
+    let deliveryNote = "No promised or receipt date on file yet.";
+    if (order.promisedDate && order.receiptDate) {
+        const promised = new Date(order.promisedDate);
+        const receipt = new Date(order.receiptDate);
+        if (!Number.isNaN(promised.getTime()) && !Number.isNaN(receipt.getTime())) {
+            const diffDays = Math.round((receipt - promised) / 86400000);
+            if (diffDays <= 0) deliveryNote = `Delivered on time (${Math.abs(diffDays)} day(s) early or on the promised date).`;
+            else deliveryNote = `Delivered ${diffDays} day(s) after the promised date.`;
+        }
+    } else if (order.promisedDate && !order.receiptDate) {
+        const promised = new Date(order.promisedDate);
+        if (!Number.isNaN(promised.getTime())) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            promised.setHours(0, 0, 0, 0);
+            const diffDays = Math.round((promised - today) / 86400000);
+            if (diffDays < 0) deliveryNote = `Promised date was ${Math.abs(diffDays)} day(s) ago — still awaiting receipt.`;
+            else if (diffDays === 0) deliveryNote = "Promised date is today.";
+            else deliveryNote = `Promised in ${diffDays} day(s).`;
+        }
+    }
+
+    return {
+        totalQty,
+        openQty,
+        receivedQty,
+        warehouses,
+        itemCount,
+        avgLineCost,
+        deliveryNote,
+    };
 }
 
 export default function SuppliersPage() {
@@ -99,6 +145,7 @@ export default function SuppliersPage() {
     const [supplierOrders, setSupplierOrders] = useState([]);
     const [ordersLoading, setOrdersLoading] = useState(false);
     const [ordersError, setOrdersError] = useState(null);
+    const [expandedOrderNbr, setExpandedOrderNbr] = useState(null);
 
     const isInitialMount = useRef(true);
     const prefetchAbortRef = useRef(null);
@@ -282,6 +329,7 @@ export default function SuppliersPage() {
         setSelectedVendor(vendor);
         setSupplierOrders([]);
         setOrdersError(null);
+        setExpandedOrderNbr(null);
         setOrdersLoading(true);
 
         try {
@@ -311,6 +359,11 @@ export default function SuppliersPage() {
         setSelectedVendor(null);
         setSupplierOrders([]);
         setOrdersError(null);
+        setExpandedOrderNbr(null);
+    };
+
+    const toggleOrderDetail = (orderNbr) => {
+        setExpandedOrderNbr((prev) => (prev === orderNbr ? null : orderNbr));
     };
 
     return (
@@ -619,7 +672,7 @@ export default function SuppliersPage() {
                             </div>
 
                             <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "1rem" }}>
-                                Purchase orders linked to this supplier only.
+                                Purchase orders linked to this supplier only. Click an <strong>Order #</strong> to see line items, delivery dates, and open quantities.
                             </p>
 
                             {ordersLoading ? (
@@ -634,7 +687,7 @@ export default function SuppliersPage() {
                                     No purchase orders found for this supplier.
                                 </div>
                             ) : (
-                                <div className="db-table-wrap" style={{ maxHeight: "420px", overflow: "auto" }}>
+                                <div className="db-table-wrap" style={{ maxHeight: "520px", overflow: "auto" }}>
                                     <table className="db-table" style={{ fontSize: "0.82rem" }}>
                                         <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
                                             <tr>
@@ -646,23 +699,160 @@ export default function SuppliersPage() {
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {supplierOrders.map((order) => (
-                                                <tr key={`${order.orderType || "PO"}-${order.orderNbr}`}>
-                                                    <td><span className="db-inv-id">{order.orderNbr}</span></td>
-                                                    <td>
-                                                        <span className={`db-badge ${poStatusClass(order.status)}`}>
-                                                            {order.status || "—"}
-                                                        </span>
-                                                    </td>
-                                                    <td>{fmtOrderDate(order.date)}</td>
-                                                    <td style={{ textAlign: "right", fontWeight: 700 }}>
-                                                        ₱{fmtAmount(order.totalAmount)}
-                                                    </td>
-                                                    <td style={{ textAlign: "right" }}>
-                                                        {order.lines?.length ?? 0}
-                                                    </td>
-                                                </tr>
-                                            ))}
+                                            {supplierOrders.map((order) => {
+                                                const isOpen = expandedOrderNbr === order.orderNbr;
+                                                const highlights = isOpen ? buildOrderHighlights(order) : null;
+                                                return (
+                                                    <Fragment key={`${order.orderType || "PO"}-${order.orderNbr}`}>
+                                                        <tr className={isOpen ? "po-row-expanded" : ""}>
+                                                            <td>
+                                                                <button
+                                                                    type="button"
+                                                                    className={`sup-order-nbr-btn ${isOpen ? "open" : ""}`}
+                                                                    onClick={() => toggleOrderDetail(order.orderNbr)}
+                                                                    aria-expanded={isOpen}
+                                                                >
+                                                                    <span className="db-inv-id">{order.orderNbr}</span>
+                                                                    <span className="sup-order-nbr-hint">{isOpen ? "Hide" : "View"}</span>
+                                                                </button>
+                                                            </td>
+                                                            <td>
+                                                                <span className={`db-badge ${poStatusClass(order.status)}`}>
+                                                                    {order.status || "—"}
+                                                                </span>
+                                                            </td>
+                                                            <td>{fmtOrderDate(order.date)}</td>
+                                                            <td style={{ textAlign: "right", fontWeight: 700 }}>
+                                                                ₱{fmtAmount(order.totalAmount)}
+                                                            </td>
+                                                            <td style={{ textAlign: "right" }}>
+                                                                {order.lines?.length ?? 0}
+                                                            </td>
+                                                        </tr>
+                                                        {isOpen && (
+                                                            <tr className="po-lines-row">
+                                                                <td colSpan={5}>
+                                                                    <div className="sup-order-detail">
+                                                                        <div className="sup-order-detail-header">
+                                                                            <strong>Order {order.orderNbr}</strong>
+                                                                            <span>Details for this purchase order</span>
+                                                                        </div>
+
+                                                                        <div className="sup-order-meta-grid">
+                                                                            <div>
+                                                                                <span>Status</span>
+                                                                                <strong>{order.status || "—"}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Order date</span>
+                                                                                <strong>{fmtOrderDate(order.date)}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Promised date</span>
+                                                                                <strong>{fmtOrderDate(order.promisedDate)}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Receipt date</span>
+                                                                                <strong>{fmtOrderDate(order.receiptDate)}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Total amount</span>
+                                                                                <strong>₱{fmtAmount(order.totalAmount)}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Line items</span>
+                                                                                <strong>{highlights.itemCount}</strong>
+                                                                            </div>
+                                                                        </div>
+
+                                                                        <div className="sup-order-insights">
+                                                                            <div>
+                                                                                <span>Ordered qty</span>
+                                                                                <strong>{highlights.totalQty.toLocaleString()}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Received qty</span>
+                                                                                <strong>{highlights.receivedQty.toLocaleString()}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Still open</span>
+                                                                                <strong>{highlights.openQty.toLocaleString()}</strong>
+                                                                            </div>
+                                                                            <div>
+                                                                                <span>Avg line cost</span>
+                                                                                <strong>₱{fmtAmount(highlights.avgLineCost)}</strong>
+                                                                            </div>
+                                                                            <div className="sup-order-insight-wide">
+                                                                                <span>Destination warehouse(s)</span>
+                                                                                <strong>
+                                                                                    {highlights.warehouses.length
+                                                                                        ? highlights.warehouses.join(", ")
+                                                                                        : "Not set on lines"}
+                                                                                </strong>
+                                                                            </div>
+                                                                            <div className="sup-order-insight-wide">
+                                                                                <span>Delivery note</span>
+                                                                                <strong>{highlights.deliveryNote}</strong>
+                                                                            </div>
+                                                                        </div>
+
+                                                                        <div className="po-lines-wrap" style={{ margin: 0 }}>
+                                                                            <table className="po-lines-table">
+                                                                                <thead>
+                                                                                    <tr>
+                                                                                        <th style={{ width: 140 }}>Item ID</th>
+                                                                                        <th>Description</th>
+                                                                                        <th style={{ width: 100 }}>Warehouse</th>
+                                                                                        <th style={{ textAlign: "right", width: 90 }}>Qty</th>
+                                                                                        <th style={{ textAlign: "right", width: 90 }}>Received</th>
+                                                                                        <th style={{ textAlign: "right", width: 90 }}>Open</th>
+                                                                                        <th style={{ textAlign: "right", width: 120 }}>Ext. Cost</th>
+                                                                                    </tr>
+                                                                                </thead>
+                                                                                <tbody>
+                                                                                    {order.lines?.length > 0 ? order.lines.map((line, i) => {
+                                                                                        const openQty = Number(line.openQty ?? Math.max((Number(line.qty) || 0) - (Number(line.receivedQty) || 0), 0));
+                                                                                        return (
+                                                                                            <tr key={`${order.orderNbr}-${i}`}>
+                                                                                                <td>
+                                                                                                    <span className="db-inv-id">{line.inventoryId || "—"}</span>
+                                                                                                </td>
+                                                                                                <td style={{ color: "var(--text-secondary)", fontWeight: 500 }}>
+                                                                                                    {line.description || "—"}
+                                                                                                </td>
+                                                                                                <td>{line.warehouseId || line.branchId || "—"}</td>
+                                                                                                <td style={{ textAlign: "right", fontWeight: 700 }}>
+                                                                                                    {Number(line.qty || 0).toLocaleString()}{" "}
+                                                                                                    <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>{line.uom || ""}</span>
+                                                                                                </td>
+                                                                                                <td style={{ textAlign: "right" }}>
+                                                                                                    {Number(line.receivedQty || 0).toLocaleString()}
+                                                                                                </td>
+                                                                                                <td style={{ textAlign: "right", fontWeight: 700, color: openQty > 0 ? "var(--accent-primary)" : "var(--text-muted)" }}>
+                                                                                                    {openQty.toLocaleString()}
+                                                                                                </td>
+                                                                                                <td style={{ textAlign: "right", fontWeight: 700, color: "var(--accent-primary)" }}>
+                                                                                                    ₱{fmtAmount(line.extCost)}
+                                                                                                </td>
+                                                                                            </tr>
+                                                                                        );
+                                                                                    }) : (
+                                                                                        <tr>
+                                                                                            <td colSpan={7} style={{ textAlign: "center", padding: "1.5rem", color: "var(--text-muted)" }}>
+                                                                                                No line items found for this order.
+                                                                                            </td>
+                                                                                        </tr>
+                                                                                    )}
+                                                                                </tbody>
+                                                                            </table>
+                                                                        </div>
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                    </Fragment>
+                                                );
+                                            })}
                                         </tbody>
                                     </table>
                                 </div>

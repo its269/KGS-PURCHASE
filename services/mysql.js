@@ -278,6 +278,8 @@ export const MySqlService = {
                         COALESCE(NULLIF(TRIM(h.vendor_name), ''), v.vendor_name) as vendorName,
                         h.status,
                         h.order_date as date,
+                        h.promised_date as promisedDate,
+                        h.receipt_date as receiptDate,
                         h.total_amount as totalAmount
                      FROM purchase_history h
                      LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
@@ -299,8 +301,9 @@ export const MySqlService = {
                 const orderNbrs = rows.map(r => r.orderNbr);
                 const placeholders = orderNbrs.map(() => "?").join(",");
                 const [lineRows] = await purchasePool.query(
-                    `SELECT order_nbr, line_nbr as lineNbr, inventory_id as inventoryId, description, qty, uom,
-                            ext_cost as extCost, warehouse_id as warehouseId, branch_id as branchId
+                    `SELECT order_nbr, line_nbr as lineNbr, inventory_id as inventoryId, description, qty,
+                            received_qty as receivedQty, uom, ext_cost as extCost,
+                            warehouse_id as warehouseId, branch_id as branchId
                      FROM purchase_order_details
                      WHERE order_nbr COLLATE utf8mb4_unicode_ci IN (${placeholders})
                      ORDER BY line_nbr ASC`,
@@ -309,10 +312,14 @@ export const MySqlService = {
                 for (const line of lineRows) {
                     const key = String(line.order_nbr || "").trim();
                     if (!linesByOrder.has(key)) linesByOrder.set(key, []);
+                    const qty = Number(line.qty) || 0;
+                    const receivedQty = Number(line.receivedQty) || 0;
                     linesByOrder.get(key).push({
                         inventoryId: line.inventoryId,
                         description: line.description,
-                        qty: line.qty,
+                        qty,
+                        receivedQty,
+                        openQty: Math.max(qty - receivedQty, 0),
                         uom: line.uom,
                         extCost: line.extCost,
                         warehouseId: line.warehouseId || line.branchId || "",
@@ -710,6 +717,7 @@ export const MySqlService = {
      * Open purchase order quantities by inventory ID for one destination warehouse.
      * MAIN Coming PO = lines with warehouse_id MAIN only (not other branches).
      * Branch Coming PO = that branch warehouse only.
+     * Excludes On Hold / Hold — those orders are not treated as incoming supply yet.
      */
     async getOpenPoQtyByItem({ warehouseId = "MAIN" } = {}) {
         try {
@@ -726,8 +734,6 @@ export const MySqlService = {
                     ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
                 WHERE UPPER(TRIM(h.status)) IN (
                         'OPEN',
-                        'ON HOLD',
-                        'HOLD',
                         'BALANCED',
                         'PENDING APPROVAL',
                         'PENDING PRINTING',

@@ -64,11 +64,6 @@ const IconChevronSelect = () => (
         <polyline points="6 9 12 15 18 9" />
     </svg>
 );
-const IconClose = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-);
 
 function poStatusClass(status) {
     const s = (status || "").toLowerCase();
@@ -141,148 +136,61 @@ function UserStatusCell({ value, onChange }) {
     );
 }
 
-function UserStatusGuideLightbox({ open, activeTab, onTabChange, onClose, onFilterTable, tableFilter }) {
-    const [search, setSearch] = useState("");
-
-    useEffect(() => {
-        if (open) setSearch("");
-    }, [open]);
-
-    if (!open) return null;
-
-    const query = search.trim().toLowerCase();
-    const filteredOptions = query
-        ? USER_STATUS_OPTIONS.filter((opt) => {
-            const guide = USER_STATUS_GUIDE[opt];
-            const haystack = [
-                opt,
-                guide.title,
-                guide.description,
-                ...(guide.tips || []),
-            ].join(" ").toLowerCase();
-            return haystack.includes(query);
-        })
-        : USER_STATUS_OPTIONS;
-
-    const tab = filteredOptions.includes(activeTab)
-        ? activeTab
-        : filteredOptions[0] || USER_STATUS_OPTIONS[0];
-    const guide = USER_STATUS_GUIDE[tab];
-
-    const handleTabClick = (opt) => {
-        onTabChange(opt);
-    };
+function UserStatusGuidePanel({ activeTab, onTabChange, onFilterTable, tableFilter }) {
+    const guide = USER_STATUS_GUIDE[activeTab] || USER_STATUS_GUIDE.Pending;
+    const isFiltering = tableFilter === activeTab;
 
     return (
-        <div className="idm-overlay" onClick={onClose} style={{ zIndex: 1100 }}>
-            <div
-                className="idm-modal po-status-lightbox"
-                onClick={(e) => e.stopPropagation()}
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="po-status-lightbox-title"
-            >
-                <button type="button" className="idm-close-btn" onClick={onClose} aria-label="Close">
-                    <IconClose />
-                </button>
-
-                <div className="idm-content po-status-lightbox-content">
-                    <div className="po-status-lightbox-header">
-                        <div className="po-status-lightbox-icon">
-                            <IconInfo />
-                        </div>
-                        <div>
-                            <h2 id="po-status-lightbox-title">User Status Guide</h2>
-                            <p>Browse all user statuses, filter by keyword, and view guidance for each stage.</p>
-                        </div>
-                    </div>
-
-                    <div className="po-status-lightbox-toolbar">
-                        <div className="db-search-wrapper po-status-lightbox-search">
-                            <IconSearch />
-                            <input
-                                className="db-search"
-                                type="text"
-                                placeholder="Filter statuses (e.g. transit, customs, delay)..."
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                            />
-                            {search && (
-                                <button
-                                    type="button"
-                                    className="db-search-clear"
-                                    onClick={() => setSearch("")}
-                                    aria-label="Clear filter"
-                                >
-                                    &times;
-                                </button>
-                            )}
-                        </div>
-                        {tableFilter && (
-                            <span className="po-status-table-filter-badge">
-                                Table filtered: <strong>{tableFilter}</strong>
-                            </span>
-                        )}
-                    </div>
-
-                    <div className="po-status-tabs po-status-tabs--lightbox">
-                        {filteredOptions.length === 0 ? (
-                            <div className="po-status-no-results">
-                                No statuses match &ldquo;{search}&rdquo;. Try another keyword.
-                            </div>
-                        ) : (
-                            <>
-                                <div className="po-status-tabs-bar" role="tablist" aria-label="User status options">
-                                    {filteredOptions.map((opt) => (
-                                        <button
-                                            key={opt}
-                                            type="button"
-                                            role="tab"
-                                            aria-selected={tab === opt}
-                                            className={`po-status-tab ${tab === opt ? "po-status-tab--active" : ""}`}
-                                            onClick={() => handleTabClick(opt)}
-                                        >
-                                            {opt}
-                                        </button>
-                                    ))}
-                                </div>
-                                <div className="po-status-tab-panel" role="tabpanel">
-                                    <div className="po-status-tab-panel-main">
-                                        <h3 className="po-status-tab-title">{guide.title}</h3>
-                                        <p className="po-status-tab-desc">{guide.description}</p>
-                                    </div>
-                                    {guide.tips?.length > 0 && (
-                                        <ul className="po-status-tab-tips">
-                                            {guide.tips.map((tip) => (
-                                                <li key={tip}>{tip}</li>
-                                            ))}
-                                        </ul>
-                                    )}
-                                </div>
-                                <div className="po-status-lightbox-actions">
-                                    <button
-                                        type="button"
-                                        className="po-status-filter-table-btn"
-                                        onClick={() => onFilterTable?.(tab)}
-                                    >
-                                        Filter table by &ldquo;{tab}&rdquo;
-                                    </button>
-                                    {tableFilter === tab && (
-                                        <button
-                                            type="button"
-                                            className="po-status-clear-filter-btn"
-                                            onClick={() => onFilterTable?.("")}
-                                        >
-                                            Clear table filter
-                                        </button>
-                                    )}
-                                </div>
-                            </>
-                        )}
-                    </div>
+        <section className="po-status-guide-panel" aria-labelledby="po-status-guide-title">
+            <div className="po-status-guide-panel-head">
+                <div className="po-status-guide-panel-icon">
+                    <IconInfo />
+                </div>
+                <div>
+                    <h2 id="po-status-guide-title">User Status Guide</h2>
+                    <p>Tap a status to see what it means. Use Show in table to filter orders by that status.</p>
                 </div>
             </div>
-        </div>
+
+            <div className="po-status-guide-chips" role="tablist" aria-label="User status options">
+                {USER_STATUS_OPTIONS.map((opt) => (
+                    <button
+                        key={opt}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeTab === opt}
+                        className={`po-status-guide-chip ${activeTab === opt ? "active" : ""} ${tableFilter === opt ? "filtering" : ""}`}
+                        onClick={() => onTabChange(opt)}
+                    >
+                        {opt}
+                    </button>
+                ))}
+            </div>
+
+            <div className="po-status-guide-body" role="tabpanel">
+                <div className="po-status-guide-body-main">
+                    <h3>{guide.title}</h3>
+                    <p>{guide.description}</p>
+                </div>
+                {guide.tips?.length > 0 && (
+                    <ul className="po-status-guide-tips">
+                        {guide.tips.map((tip) => (
+                            <li key={tip}>{tip}</li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <div className="po-status-guide-actions">
+                <button
+                    type="button"
+                    className={`po-status-filter-table-btn ${isFiltering ? "active" : ""}`}
+                    onClick={() => onFilterTable?.(isFiltering ? "" : activeTab)}
+                >
+                    {isFiltering ? `Clear “${activeTab}” filter` : `Show “${activeTab}” in table`}
+                </button>
+            </div>
+        </section>
     );
 }
 
@@ -303,19 +211,14 @@ export default function PurchaseOrdersPage() {
     const [selectedId, setSelectedId] = useState(null);
     const [userInputs, setUserInputs] = useState({}); // key -> { eta, userStatus }
     const [statusGuideTab, setStatusGuideTab] = useState(USER_STATUS_OPTIONS[0]);
-    const [showStatusGuide, setShowStatusGuide] = useState(false);
     const [userStatusTableFilter, setUserStatusTableFilter] = useState("");
     const [exporting, setExporting] = useState(false);
 
-    const openStatusGuide = useCallback((statusValue) => {
-        const next = USER_STATUS_OPTIONS.includes(statusValue) ? statusValue : USER_STATUS_OPTIONS[0];
-        setStatusGuideTab(next);
-        setShowStatusGuide(true);
-    }, []);
-
     const handleUserStatusTableFilter = useCallback((statusValue) => {
         setUserStatusTableFilter(statusValue || "");
-        if (statusValue) setShowStatusGuide(false);
+        if (statusValue && USER_STATUS_OPTIONS.includes(statusValue)) {
+            setStatusGuideTab(statusValue);
+        }
     }, []);
 
     const handleExport = async () => {
@@ -549,18 +452,16 @@ export default function PurchaseOrdersPage() {
         <div className="po-root">
             <main className="po-main">
                 <div className="db-page-title po-page-title-row">
-                    <div>
+                    <div className="po-page-title-text">
                         <h1>Purchase Orders</h1>
                         <p>View and manage all purchase orders live from Acumatica ERP.</p>
                     </div>
-                    <button
-                        type="button"
-                        className="po-status-guide-top-btn"
-                        onClick={() => openStatusGuide(statusGuideTab)}
-                    >
-                        <IconInfo />
-                        User Status Guide
-                    </button>
+                    <UserStatusGuidePanel
+                        activeTab={statusGuideTab}
+                        onTabChange={setStatusGuideTab}
+                        onFilterTable={handleUserStatusTableFilter}
+                        tableFilter={userStatusTableFilter}
+                    />
                 </div>
 
                 {userStatusTableFilter && (
@@ -863,7 +764,7 @@ export default function PurchaseOrdersPage() {
                         This module displays all Purchase Orders from Acumatica. You can track their status and manage ETA for upcoming deliveries.
                     </p>
                     <p className="po-info-text" style={{ marginTop: '0.75rem' }}>
-                        Changes to ETA, remarks, and User Status are saved to your account and backed up locally in your browser. Use the User Status Guide button at the top to browse statuses and filter the table.
+                        Changes to ETA, remarks, and User Status are saved to your account and backed up locally in your browser. Use the User Status Guide at the top of this page to review each status and filter the table.
                     </p>
                 </div>
 
@@ -875,15 +776,6 @@ export default function PurchaseOrdersPage() {
             {selectedId && (
                 <InventoryDetailModal inventoryId={selectedId} onClose={() => setSelectedId(null)} />
             )}
-
-            <UserStatusGuideLightbox
-                open={showStatusGuide}
-                activeTab={statusGuideTab}
-                onTabChange={setStatusGuideTab}
-                onClose={() => setShowStatusGuide(false)}
-                onFilterTable={handleUserStatusTableFilter}
-                tableFilter={userStatusTableFilter}
-            />
         </div>
     );
 }
