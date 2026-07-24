@@ -57,3 +57,7 @@ deploy-output.log
 .next-backup/
 .next-incoming/
 .next-stale-*/
+
+# local workflow drafts (not deployable Actions)
+.github/workflows/*.yml.local
+
