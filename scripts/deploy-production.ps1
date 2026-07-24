@@ -59,7 +59,22 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "SWC ensure failed" }
 
     if (Test-Path '.next-incoming') {
-        cmd /c 'rmdir /s /q ".next-incoming"' 2>&1 | Out-Null
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            cmd /c 'rmdir /s /q ".next-incoming"' 2>&1 | Out-Null
+            if (-not (Test-Path '.next-incoming')) { break }
+            $stale = ".next-incoming-stale-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            try {
+                Rename-Item -LiteralPath '.next-incoming' -NewName $stale -Force
+                Write-Host "Renamed locked .next-incoming to $stale"
+                break
+            } catch {
+                Write-Host "Clear .next-incoming attempt $attempt failed: $($_.Exception.Message)"
+                Start-Sleep -Seconds 2
+            }
+        }
+        if (Test-Path '.next-incoming') {
+            throw 'Could not clear .next-incoming before build'
+        }
     }
 
     $env:NEXT_TELEMETRY_DISABLED = '1'
