@@ -1,0 +1,975 @@
+import { AcumaticaService, extractStockItemCatalog, extractWarehouseLevels } from "@/services/acumatica";
+import { MySqlService } from "@/services/mysql";
+import { NextResponse } from "next/server";
+import { getSessionFromRequest, getSessionIdFromRequest, getCompanyCredential, getSessionCookies } from "@/lib/session-store";
+import { COMPANIES, getAcumaticaCompanyName, splitLevelsByCompany } from "@/lib/companies";
+import { rebuildAllReplenishmentCache } from "@/lib/replenishment-engine";
+import mysql from "mysql2/promise";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+async function systemLoginForCompany(acumaticaCompany) {
+    const loginRes = await fetch(`${process.env.ACUMATICA_BASE_URL}/entity/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: process.env.ACUMATICA_USERNAME || process.env.ACU_USERNAME,
+            password: process.env.ACUMATICA_PASSWORD || process.env.ACU_PASSWORD,
+            company: acumaticaCompany,
+        }),
+    });
+    if (!loginRes.ok) throw new Error(`Acumatica login failed for ${acumaticaCompany}: ${loginRes.status}`);
+    const setCookies = loginRes.headers.getSetCookie();
+    return setCookies.map((c) => c.split(";")[0]).join("; ");
+}
+
+/**
+ * BFF API Route for Data Synchronization
+ * Syncs data from Acumatica ERP to the MySQL database.
+ */
+export async function POST(request) {
+    console.log(">>> [Sync API] Starting MySQL Sync Process");
+    const encoder = new TextEncoder();
+    const signal = request.signal;
+
+    const cookie = getSessionFromRequest(request);
+    const sessionId = getSessionIdFromRequest(request);
+    const syncSecret = request.headers.get("x-sync-secret");
+    const isSecretValid = process.env.SYNC_SECRET && syncSecret === process.env.SYNC_SECRET;
+
+    if (!cookie && !isSecretValid) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+    
+    let effectiveCookie = cookie;
+    if (isSecretValid && !cookie) {
+        console.log(">>> [Sync API] Secret valid. Performing system login to Acumatica...");
+        try {
+            const loginRes = await fetch(`${process.env.ACUMATICA_BASE_URL}/entity/auth/login`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: process.env.ACUMATICA_USERNAME,
+                    password: process.env.ACUMATICA_PASSWORD,
+                    company: process.env.ACUMATICA_COMPANY
+                })
+            });
+            if (!loginRes.ok) throw new Error(`Acumatica login failed: ${loginRes.status}`);
+            
+            // Capture all cookies (especially .ASPXAUTH and ASP.NET_SessionId)
+            const setCookies = loginRes.headers.getSetCookie();
+            effectiveCookie = setCookies.map(c => c.split(";")[0]).join("; ");
+            console.log(">>> [Sync API] System login successful. Captured cookies.");
+        } catch (loginErr) {
+            console.error(">>> [Sync API] System login failed:", loginErr.message);
+            return NextResponse.json({ message: "System login failed" }, { status: 500 });
+        }
+    }
+
+    if (effectiveCookie === "__bypass__" && !isSecretValid) {
+        return NextResponse.json({ 
+            message: "Synchronization is unavailable in Bypass Mode because the Acumatica API Limit is currently reached. Please try again later when Acumatica sessions have expired." 
+        }, { status: 403 });
+    }
+
+    // --- AUTO MIGRATION ---
+    try {
+        console.log(">>> [Sync API] Running Auto-Migrations...");
+        const conn = await mysql.createConnection({
+            host: process.env.MYSQL_HOST,
+            port: parseInt(process.env.MYSQL_PORT || "3306", 10),
+            user: process.env.MYSQL_USER,
+            password: process.env.MYSQL_PASSWORD,
+        });
+        
+        const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+        const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+
+        // Ensure Databases exist
+        await conn.query(`CREATE DATABASE IF NOT EXISTS \`${inventoryDb}\``);
+        await conn.query(`CREATE DATABASE IF NOT EXISTS \`${purchaseDb}\``);
+
+        // Ensure inventory_items table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${inventoryDb}\`.\`inventory_items\` (
+                \`inventory_id\` VARCHAR(100) NOT NULL,
+                \`default_warehouse\` VARCHAR(100) NOT NULL DEFAULT '__catalog__',
+                PRIMARY KEY (\`inventory_id\`, \`default_warehouse\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure product_periodic_sales table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`product_periodic_sales\` (
+                \`id\` VARCHAR(255) PRIMARY KEY,
+                \`inventory_id\` VARCHAR(100),
+                \`last_sync\` DATETIME
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure vendors table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`vendors\` (
+                \`vendor_id\` VARCHAR(100) PRIMARY KEY,
+                \`vendor_name\` VARCHAR(255),
+                \`status\` VARCHAR(50),
+                \`avg_lead_time\` INT DEFAULT 0,
+                \`reliability_score\` DECIMAL(5,2) DEFAULT 100.00,
+                \`last_sync\` DATETIME
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure vendors has performance columns (for older schemas)
+        const vCols = [
+            { name: "avg_lead_time", def: "INT DEFAULT 0" },
+            { name: "reliability_score", def: "DECIMAL(5,2) DEFAULT 100.00" }
+        ];
+        for (const c of vCols) {
+            const [[row]] = await conn.query(
+                `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS 
+                 WHERE TABLE_SCHEMA=? AND TABLE_NAME='vendors' AND COLUMN_NAME=?`,
+                [purchaseDb, c.name]
+            );
+            if (row.cnt === 0) {
+                await conn.query(`ALTER TABLE \`${purchaseDb}\`.\`vendors\` ADD COLUMN \`${c.name}\` ${c.def}`);
+            }
+        }
+
+        // Ensure purchase_history table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`purchase_history\` (
+                \`order_nbr\` VARCHAR(50) PRIMARY KEY,
+                \`vendor_id\` VARCHAR(100),
+                \`vendor_name\` VARCHAR(255),
+                \`status\` VARCHAR(50),
+                \`order_date\` DATETIME,
+                \`promised_date\` DATETIME,
+                \`receipt_date\` DATETIME,
+                \`total_amount\` DECIMAL(18,4),
+                \`last_sync\` DATETIME
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure purchase_history has vendor_name column (for older schemas)
+        const [[phVendorNameCol]] = await conn.query(
+            `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS 
+             WHERE TABLE_SCHEMA=? AND TABLE_NAME='purchase_history' AND COLUMN_NAME='vendor_name'`,
+            [purchaseDb]
+        );
+        if (phVendorNameCol.cnt === 0) {
+            await conn.query(`ALTER TABLE \`${purchaseDb}\`.\`purchase_history\` ADD COLUMN \`vendor_name\` VARCHAR(255) NULL AFTER \`vendor_id\``);
+        }
+
+        // Ensure sync_logs table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`sync_logs\` (
+                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+                \`timestamp\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                \`mode\` VARCHAR(50),
+                \`section\` VARCHAR(100),
+                \`status\` VARCHAR(50),
+                \`records_processed\` INT DEFAULT 0,
+                \`message\` TEXT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure purchase_order_details table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`purchase_order_details\` (
+                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+                \`order_nbr\` VARCHAR(50),
+                \`line_nbr\` INT,
+                \`inventory_id\` VARCHAR(100),
+                \`description\` VARCHAR(255),
+                \`qty\` DECIMAL(18,4),
+                \`received_qty\` DECIMAL(18,4) DEFAULT 0,
+                \`uom\` VARCHAR(50),
+                \`warehouse_id\` VARCHAR(100) NULL,
+                \`branch_id\` VARCHAR(100) NULL,
+                \`ext_cost\` DECIMAL(18,4),
+                \`last_sync\` DATETIME,
+                UNIQUE KEY \`uq_po_line\` (\`order_nbr\`, \`line_nbr\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        await MySqlService.ensureReceivedQtyColumn();
+        await MySqlService.ensurePoWarehouseColumns();
+
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`replenishment_cache\` (
+                \`company_id\` VARCHAR(50) NOT NULL DEFAULT 'main',
+                \`branch_id\` VARCHAR(100) NOT NULL,
+                \`inventory_id\` VARCHAR(100) NOT NULL,
+                \`description\` VARCHAR(500) NULL,
+                \`current_stock\` DECIMAL(18,4) DEFAULT 0,
+                \`qty_sold_90\` DECIMAL(18,4) DEFAULT 0,
+                \`sales_velocity\` DECIMAL(18,6) DEFAULT 0,
+                \`days_remaining\` INT DEFAULT 0,
+                \`suggested_qty\` DECIMAL(18,4) DEFAULT 0,
+                \`priority_level\` VARCHAR(20) NOT NULL DEFAULT 'Low',
+                \`lead_time_days\` INT DEFAULT 0,
+                \`vendor_id\` VARCHAR(100) NULL,
+                \`branch_order_qty\` DECIMAL(18,4) DEFAULT 0,
+                \`main_inventory\` DECIMAL(18,4) DEFAULT 0,
+                \`coming_po\` DECIMAL(18,4) DEFAULT 0,
+                \`total_branch_replenishment\` DECIMAL(18,4) DEFAULT 0,
+                \`sales_scope\` VARCHAR(50) NULL,
+                \`restock_source\` VARCHAR(255) NULL,
+                \`what_to_do\` TEXT NULL,
+                \`ai_preview\` TEXT NULL,
+                \`ai_insights_json\` JSON NULL,
+                \`is_main_warehouse_view\` TINYINT(1) NOT NULL DEFAULT 0,
+                \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (\`company_id\`, \`branch_id\`, \`inventory_id\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure branches table exists
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${inventoryDb}\`.\`branches\` (
+                \`branch_id\` VARCHAR(100) PRIMARY KEY,
+                \`branch_name\` VARCHAR(255),
+                \`active\` TINYINT(1) DEFAULT 1
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        // Ensure inventory_items columns exist
+        const cols = [
+            { name: "on_hand", def: "DECIMAL(18, 4) DEFAULT 0" },
+            { name: "available", def: "DECIMAL(18, 4) DEFAULT 0" },
+            { name: "branch_id", def: "VARCHAR(100) NULL" },
+            { name: "site_id", def: "VARCHAR(100) NULL" },
+            { name: "last_sync", def: "DATETIME NULL" },
+            { name: "type", def: "VARCHAR(50) NULL" },
+            { name: "item_type", def: "VARCHAR(50) NULL" },
+            { name: "posting_class", def: "VARCHAR(100) NULL" },
+            { name: "base_unit", def: "VARCHAR(50) NULL" },
+            { name: "item_class", def: "VARCHAR(100) NULL" },
+            { name: "default_price", def: "DECIMAL(18, 4) DEFAULT 0" },
+            { name: "inventory_name", def: "VARCHAR(255) NULL" },
+            { name: "company_id", def: "VARCHAR(50) NOT NULL DEFAULT 'main'" },
+            { name: "vendor_id", def: "VARCHAR(100) NULL" },
+            { name: "lead_time_days", def: "INT NULL" },
+            { name: "safety_stock", def: "DECIMAL(18,4) NULL" },
+            { name: "moq", def: "DECIMAL(18,4) NULL" },
+        ];
+
+        for (const c of cols) {
+            const [[row]] = await conn.query(
+                `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS 
+                 WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND COLUMN_NAME=?`,
+                [inventoryDb, c.name]
+            );
+            if (row.cnt === 0) {
+                await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD COLUMN \`${c.name}\` ${c.def}`);
+            }
+        }
+
+        await MySqlService.ensureInventoryPlanningColumns();
+
+        await conn.query(
+            `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\`
+             MODIFY COLUMN \`base_unit\` VARCHAR(50) NULL DEFAULT '',
+             MODIFY COLUMN \`posting_class\` VARCHAR(100) NULL DEFAULT ''`
+        ).catch((e) => console.warn(">>> [Sync API] Column default migration:", e.message));
+
+        // Always drop inventory_id-only unique indexes — they block per-warehouse rows
+        try {
+            for (const idx of ["uq_inventory_items_inventory_id", "inventory_id"]) {
+                const [[row]] = await conn.query(
+                    `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME=?`,
+                    [inventoryDb, idx]
+                );
+                if (row.cnt > 0) {
+                    await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP INDEX \`${idx}\``);
+                    console.log(`>>> [Sync API] Dropped blocking index: ${idx}`);
+                }
+            }
+        } catch (idxErr) {
+            console.warn(">>> [Sync API] Index cleanup skipped:", idxErr.message);
+        }
+
+        const [[pkCheck]] = await conn.query(
+            `SELECT COUNT(*) as cnt FROM information_schema.KEY_COLUMN_USAGE
+             WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND CONSTRAINT_NAME='PRIMARY' AND COLUMN_NAME='company_id'`,
+            [inventoryDb]
+        );
+        if (pkCheck.cnt === 0) {
+            try {
+                const [[uqOld]] = await conn.query(
+                    `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND INDEX_NAME='uq_inv_warehouse'`,
+                    [inventoryDb]
+                );
+                if (uqOld.cnt > 0) {
+                    await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP INDEX uq_inv_warehouse`);
+                }
+                const [[idCol]] = await conn.query(
+                    `SELECT EXTRA FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND COLUMN_NAME='id'`,
+                    [inventoryDb]
+                );
+                if (idCol?.EXTRA?.includes("auto_increment")) {
+                    await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` MODIFY COLUMN id INT NOT NULL`);
+                }
+                await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` DROP PRIMARY KEY`);
+                await conn.query(
+                    `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD PRIMARY KEY (inventory_id, default_warehouse, company_id)`
+                );
+                await conn.query(
+                    `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\`
+                     ADD UNIQUE KEY uq_inv_warehouse (inventory_id, default_warehouse, company_id)`
+                ).catch(() => {});
+                const [[{ maxId }]] = await conn.query(
+                    `SELECT COALESCE(MAX(id), 0) AS maxId FROM \`${inventoryDb}\`.\`inventory_items\``
+                );
+                await conn.query(
+                    `ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` ADD KEY idx_inventory_row_id (id)`
+                ).catch(() => {});
+                await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` MODIFY COLUMN id INT NOT NULL AUTO_INCREMENT`);
+                await conn.query(`ALTER TABLE \`${inventoryDb}\`.\`inventory_items\` AUTO_INCREMENT = ${maxId + 1}`);
+                console.log(">>> [Sync API] Updated inventory_items primary key to include company_id.");
+            } catch (pkErr) {
+                console.warn(">>> [Sync API] PK migration skipped:", pkErr.message);
+            }
+        }
+
+        try {
+            const cleaned = await MySqlService.sanitizeCatalogStockFields();
+            if (cleaned > 0) {
+                console.log(`>>> [Sync API] Cleared stock fields on ${cleaned} catalog row(s).`);
+            }
+        } catch (sanitizeErr) {
+            console.warn(">>> [Sync API] Catalog sanitize skipped:", sanitizeErr.message);
+        }
+
+        try {
+            const cleaned = await MySqlService.cleanupMisclassifiedEcomBranches();
+            if (cleaned > 0) {
+                console.log(`>>> [Sync API] Removed ${cleaned} misclassified ecommerce branch rows from main company.`);
+            }
+        } catch (cleanErr) {
+            console.warn(">>> [Sync API] Ecommerce cleanup skipped:", cleanErr.message);
+        }
+
+        await conn.end();
+        console.log(">>> [Sync API] Auto-Migrations Complete.");
+    } catch (migErr) {
+        console.error(">>> [Sync API] Auto-Migration Error:", migErr.message);
+        // Continue anyway, maybe it's just permissions
+    }
+
+    const { searchParams } = new URL(request.url);
+    const mode = searchParams.get("mode") || "incremental";
+    const options = {
+        inventory: searchParams.get("inventory") === "true",
+        sales: searchParams.get("sales") === "true",
+        mode: mode,
+        startDate: searchParams.get("startDate"),
+        endDate: searchParams.get("endDate"),
+    };
+
+    const stream = new ReadableStream({
+        async start(controller) {
+            const send = (data) => {
+                if (signal.aborted) return;
+                controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
+            };
+
+            const keepAlive = setInterval(() => {
+                if (!signal.aborted) {
+                    try { controller.enqueue(encoder.encode(JSON.stringify({ ping: true }) + "\n")); } catch { }
+                }
+            }, 15000);
+            const finish = () => { clearInterval(keepAlive); controller.close(); };
+
+            const getF = (obj, keyName) => {
+                if (!obj) return "";
+                const k = Object.keys(obj).find(i => i.toLowerCase() === keyName.toLowerCase());
+                if (!k) return "";
+                const val = obj[k];
+                if (val === null || val === undefined) return "";
+                if (typeof val === "object") return val.value ?? "";
+                return val;
+            };
+
+            const getAny = (obj, ...keys) => {
+                for (const k of keys) {
+                    const v = getF(obj, k);
+                    if (v !== "" && v !== null && v !== undefined) return v;
+                }
+                return "";
+            };
+
+            const parseAcumaticaRows = (data) => data?.value || (Array.isArray(data) ? data : []);
+
+            const resolveReceiptDate = (order, receiptDateByOrder) => {
+                const orderNbr = getF(order, "OrderNbr");
+                const status = String(getF(order, "Status") || "").trim();
+                const fromReceipt = receiptDateByOrder.get(orderNbr);
+                if (fromReceipt) return fromReceipt;
+                if (status === "Closed" || status === "Completed") {
+                    return getAny(order, "LastReceiptDate", "ReceiptDate", "LastModifiedDateTime") || null;
+                }
+                return null;
+            };
+
+            const buildReceiptDateMap = async (acuBase, startDate) => {
+                const receiptDateByOrder = new Map();
+                let prSkip = 0;
+                let prTotal = 0;
+                const maxReceiptPages = 40;
+                let prPage = 0;
+                while (!signal.aborted && prPage < maxReceiptPages) {
+                    const prFilter = `Date ge datetimeoffset'${startDate}T00:00:00Z'`;
+                    const prUrl = `${acuBase}/PurchaseReceipt?$expand=Details&$top=100&$skip=${prSkip}&$filter=${encodeURIComponent(prFilter)}`;
+                    try {
+                        const prRes = await AcumaticaService.fetchWithRetry(prUrl, effectiveCookie);
+                        const prData = await prRes.json();
+                        const receipts = parseAcumaticaRows(prData);
+                        if (receipts.length === 0) break;
+
+                        for (const pr of receipts) {
+                            const receiptDate = getF(pr, "Date");
+                            if (!receiptDate) continue;
+                            let details = pr.Details || [];
+                            if (details.value) details = details.value;
+                            if (!Array.isArray(details)) details = [];
+
+                            for (const d of details) {
+                                const poNbr = getF(d, "POOrderNbr");
+                                if (!poNbr) continue;
+                                const existing = receiptDateByOrder.get(poNbr);
+                                if (!existing || new Date(receiptDate) > new Date(existing)) {
+                                    receiptDateByOrder.set(poNbr, receiptDate);
+                                }
+                            }
+                        }
+
+                        prTotal += receipts.length;
+                        prSkip += receipts.length;
+                        prPage++;
+                        const prProg = Math.min(65, 50 + Math.floor(prPage * 1.5));
+                        send({
+                            section: "Incoming PO",
+                            details: `Loading receipt dates… (${prTotal} receipts)`,
+                            progress: prProg,
+                        });
+
+                        if (receipts.length < 100) break;
+                    } catch (prErr) {
+                        console.warn(">>> [Sync API] PurchaseReceipt fetch skipped:", prErr.message);
+                        break;
+                    }
+                }
+                return receiptDateByOrder;
+            };
+
+            try {
+                const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
+                const isDelta = options.mode === "delta" || options.mode === "incremental";
+                const todayStr = new Date().toISOString().split('T')[0];
+
+                await MySqlService.logSyncEvent(options.mode, "All", "started", 0, `Sync started via API`);
+
+                // Get last sync timestamps for incremental mode
+                let lastInvSync = null;
+                let lastSalesSync = null;
+                if (isDelta) {
+                    lastInvSync = await MySqlService.getLastInventorySyncTime();
+                    lastSalesSync = await MySqlService.getLastSalesSyncTime();
+                    
+                    // Add 5-minute safety overlap buffer if timestamp exists
+                    // Also format to ISO without milliseconds for better OData compatibility
+                    const formatOData = (date) => date.toISOString().replace(/\.\d{3}/, "");
+
+                    if (lastInvSync) {
+                        const d = new Date(new Date(lastInvSync).getTime() - (5 * 60 * 1000));
+                        lastInvSync = formatOData(d);
+                    }
+                    if (lastSalesSync) {
+                        const d = new Date(new Date(lastSalesSync).getTime() - (5 * 60 * 1000));
+                        lastSalesSync = formatOData(d);
+                    }
+                }
+
+                // 1. BRANCHES + WAREHOUSES (Always fast — master list for replenishment picker)
+                send({ section: "Inventory", details: "Updating branches...", progress: 5 });
+                try {
+                    const [realBranches, warehouses] = await Promise.all([
+                        AcumaticaService.getRealBranches(effectiveCookie).catch((e) => {
+                            console.warn("[Sync API] getRealBranches:", e.message);
+                            return [];
+                        }),
+                        AcumaticaService.getBranches(effectiveCookie).catch((e) => {
+                            console.warn("[Sync API] getBranches(Warehouse):", e.message);
+                            return [];
+                        }),
+                    ]);
+
+                    const byId = new Map();
+                    for (const b of realBranches) {
+                        const id = String(b.BranchID || "").trim();
+                        if (!id) continue;
+                        byId.set(id.toUpperCase(), {
+                            branch_id: id,
+                            branch_name: String(b.Description || b.BranchID || id).trim(),
+                            active: true,
+                        });
+                    }
+                    for (const w of warehouses) {
+                        const id = String(w.SiteID || "").trim();
+                        if (!id) continue;
+                        const key = id.toUpperCase();
+                        const existing = byId.get(key);
+                        if (!existing) {
+                            byId.set(key, {
+                                branch_id: id,
+                                branch_name: id,
+                                active: true,
+                            });
+                        }
+                    }
+
+                    const branchRows = [...byId.values()];
+                    if (branchRows.length > 0) {
+                        await MySqlService.upsertBranches(branchRows);
+                    }
+                    await MySqlService.logSyncEvent(options.mode, "Branches", "completed", branchRows.length);
+                } catch (e) {
+                    await MySqlService.logSyncEvent(options.mode, "Branches", "error", 0, e.message);
+                }
+
+                // 1.5 VENDORS (Sync every time or if inventory/sales is selected)
+                if (options.inventory || options.sales) {
+                    send({ section: "Suppliers", details: "Updating vendor directory...", progress: 5 });
+                    let vendorCount = 0;
+                    try {
+                        const vendorPageSize = 500;
+                        let vendorSkip = 0;
+                        while (true) {
+                            const url = `${ACU_BASE}/Vendor?$top=${vendorPageSize}&$skip=${vendorSkip}`;
+                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
+                            const data = await res.json();
+                            const vendors = data.value || [];
+                            if (vendors.length === 0) break;
+
+                            const vendorRows = vendors.map(v => ({
+                                vendor_id: String(getF(v, "VendorID")).trim(),
+                                vendor_name: String(getF(v, "VendorName")).trim(),
+                                status: String(getF(v, "Status")).trim(),
+                                last_sync: new Date()
+                            }));
+                            await MySqlService.upsertVendors(vendorRows);
+                            vendorCount += vendorRows.length;
+
+                            send({
+                                section: "Suppliers",
+                                details: `Synced ${vendorCount} vendor(s)...`,
+                                progress: Math.min(90, 10 + Math.floor(vendorCount / 20)),
+                                count: vendorCount
+                            });
+
+                            if (vendors.length < vendorPageSize) break;
+                            vendorSkip += vendorPageSize;
+                        }
+                        await MySqlService.logSyncEvent(options.mode, "Suppliers", "completed", vendorCount);
+                        send({
+                            section: "Suppliers",
+                            status: "done",
+                            details: `Supplier sync complete (${vendorCount} vendors).`,
+                            progress: 100,
+                            count: vendorCount
+                        });
+                    } catch (e) {
+                        console.error(">>> [Sync API] Vendor sync error:", e.message);
+                        await MySqlService.logSyncEvent(options.mode, "Suppliers", "error", 0, e.message);
+                        send({ section: "Suppliers", details: `Supplier sync error: ${e.message}`, progress: 5 });
+                    }
+                }
+
+                // 2. INVENTORY — one KGSC fetch, split stock into main vs ecommerce (ECOMMERCE branch)
+                if (options.inventory) {
+                    let invCookie = null;
+                    try {
+                        invCookie = isSecretValid
+                            ? await systemLoginForCompany(getAcumaticaCompanyName("main"))
+                            : (getSessionCookies(sessionId, "main") || getCompanyCredential(sessionId, "main") || effectiveCookie);
+                    } catch (loginErr) {
+                        console.error(">>> [Sync API] Inventory login error:", loginErr.message);
+                    }
+
+                    if (!invCookie || invCookie === "__bypass__") {
+                        console.warn(">>> [Sync API] Skipping inventory — no credential");
+                    } else {
+                        const inventorySyncStartedAt = new Date();
+                        const filterArr = [];
+                        if (isDelta && lastInvSync) {
+                            filterArr.push(`LastModified gt datetimeoffset'${lastInvSync}'`);
+                            send({ section: "Inventory", details: `Incremental sync since ${lastInvSync}...`, progress: 10 });
+                        } else {
+                            send({ section: "Inventory", details: "Full refresh: syncing stock from KGSC (existing data kept until complete)...", progress: 8 });
+                        }
+
+                        const filterStr = filterArr.length > 0 ? `&$filter=${filterArr.join(" and ")}` : "";
+                        let skip = 0;
+                        let totalSynced = 0;
+                        let totalLevelsSynced = 0;
+                        const top = 50;
+
+                        while (!signal.aborted) {
+                            let items = [];
+                            try {
+                                const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$top=${top}&$skip=${skip}${filterStr}`;
+                                const res = await AcumaticaService.fetchWithRetry(url, invCookie);
+                                const data = await res.json();
+                                items = data.value || (Array.isArray(data) ? data : []);
+                            } catch (fetchErr) {
+                                console.error(`>>> [Sync API] Inventory Fetch Error at skip ${skip}:`, fetchErr.message);
+                                throw fetchErr;
+                            }
+
+                            if (items.length === 0) break;
+
+                            const allLevels = [];
+                            const catalogs = [];
+                            const batchItemIds = [];
+                            const prepared = [];
+                            for (const item of items) {
+                                try {
+                                    const catalog = extractStockItemCatalog(item);
+                                    if (!catalog) continue;
+                                    batchItemIds.push(catalog.inventory_id);
+                                    catalogs.push({ ...catalog });
+                                    const catalogFields = {
+                                        description: catalog.description,
+                                        item_class: catalog.item_class,
+                                        default_price: catalog.default_price,
+                                        item_status: catalog.item_status,
+                                        base_unit: catalog.base_unit,
+                                        item_type: catalog.item_type,
+                                        posting_class: catalog.posting_class,
+                                    };
+                                    prepared.push({ item, catalogFields });
+                                } catch (itemErr) {
+                                    console.error(`>>> [Sync API] Item Processing Error:`, itemErr);
+                                }
+                            }
+
+                            // Inventory Summary per item so DAMAGE / DISCOUNTED locations are excluded
+                            try {
+                                const levels = await AcumaticaService.resolveWarehouseLevelsBatch(
+                                    prepared,
+                                    invCookie,
+                                    8
+                                );
+                                allLevels.push(...levels);
+                            } catch (summaryErr) {
+                                console.warn(
+                                    ">>> [Sync API] Location summary batch failed; falling back to WarehouseDetails:",
+                                    summaryErr.message
+                                );
+                                for (const { item, catalogFields } of prepared) {
+                                    allLevels.push(...extractWarehouseLevels(item, catalogFields));
+                                }
+                            }
+
+                            const { main: mainLevels, ecommerce: ecomLevels } = splitLevelsByCompany(allLevels);
+
+                            if (catalogs.length > 0) {
+                                if (isDelta && batchItemIds.length > 0) {
+                                    await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "main");
+                                    await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "ecommerce");
+                                }
+                                await MySqlService.upsertInventoryItems(catalogs, "main");
+                                if (mainLevels.length) {
+                                    await MySqlService.upsertInventoryLevels(mainLevels, "main");
+                                    totalLevelsSynced += mainLevels.length;
+                                }
+                                if (ecomLevels.length) {
+                                    await MySqlService.upsertInventoryItems(catalogs, "ecommerce");
+                                    await MySqlService.upsertInventoryLevels(ecomLevels, "ecommerce");
+                                    totalLevelsSynced += ecomLevels.length;
+                                }
+                            }
+
+                            totalSynced += items.length;
+                            skip += items.length;
+                            const invProgress = isDelta
+                                ? Math.min(99, Math.floor(totalSynced / 5))
+                                : Math.min(99, Math.floor(totalSynced / 30));
+                            send({
+                                section: "Inventory",
+                                details: `Processed ${totalSynced} items (${totalLevelsSynced} stock rows)...`,
+                                progress: Math.max(10, invProgress),
+                                count: totalSynced,
+                            });
+                            if (items.length < top) break;
+                        }
+
+                        if (!isDelta && !signal.aborted && totalLevelsSynced > 0) {
+                            // Verify rows were actually written before pruning old site rows
+                            const writtenMain = await MySqlService.countWarehouseRows("main");
+                            const writtenEcom = await MySqlService.countWarehouseRows("ecommerce");
+                            if (writtenMain + writtenEcom > 0) {
+                                const removedMain = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "main");
+                                const removedEcom = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "ecommerce");
+                                console.log(`>>> [Sync API] Removed stale stock rows: main=${removedMain}, ecommerce=${removedEcom}`);
+                            } else {
+                                console.warn(">>> [Sync API] Skipping stale cleanup — warehouse rows not found after upsert.");
+                            }
+                        } else if (!isDelta && totalLevelsSynced === 0) {
+                            console.warn(">>> [Sync API] Skipping stale row cleanup — no warehouse levels were synced.");
+                        }
+
+                        await MySqlService.sanitizeCatalogStockFields("main").catch(() => 0);
+                        await MySqlService.sanitizeCatalogStockFields("ecommerce").catch(() => 0);
+
+                        await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced, `${totalLevelsSynced} stock rows`);
+                        send({ section: "Inventory", status: "done", details: `Inventory sync complete (${totalLevelsSynced} stock rows).`, progress: 100 });
+                    }
+                }
+
+                // 3. SALES (SalesInvoice + AR credit/debit memos, line-level branch)
+                const affectedInventoryIds = new Set();
+                if (options.sales) {
+                    const sStart = options.startDate || "2024-01-01";
+                    const sEnd = options.endDate || todayStr;
+
+                    if (isDelta && lastSalesSync) {
+                        send({ section: "Sales history", details: `Incremental Sync: Fetching changes since ${lastSalesSync}...`, progress: 10 });
+                    } else {
+                        send({ section: "Sales history", details: `Full Sync: SalesInvoice + memos (${sStart} to ${sEnd})`, progress: 10 });
+                    }
+
+                    let sTotal = 0;
+                    try {
+                        const salesRows = await AcumaticaService.fetchPeriodicSalesForSync({
+                            cookie: effectiveCookie,
+                            startDate: sStart,
+                            endDate: sEnd,
+                            lastModifiedAfter: isDelta && lastSalesSync ? lastSalesSync : null,
+                        });
+
+                        if (options.mode === "delta") {
+                            for (const r of salesRows) {
+                                if (r.inventory_id) affectedInventoryIds.add(r.inventory_id);
+                            }
+                        }
+
+                        const CHUNK = 400;
+                        for (let i = 0; i < salesRows.length; i += CHUNK) {
+                            if (signal.aborted) break;
+                            const chunk = salesRows.slice(i, i + CHUNK);
+                            await MySqlService.upsertPeriodicSales(chunk);
+                            sTotal += chunk.length;
+                            const salesProg = Math.min(95, 10 + Math.floor(sTotal / 20));
+                            send({ section: "Sales history", details: `Synced ${sTotal} line(s)...`, progress: salesProg, count: sTotal });
+                        }
+                    } catch (salesFetchErr) {
+                        console.error(`>>> [Sync API] Sales Fetch Error:`, salesFetchErr.message);
+                        send({ section: "Sales history", details: `Sales sync error: ${salesFetchErr.message}`, progress: 10 });
+                        throw salesFetchErr;
+                    }
+
+                    await MySqlService.logSyncEvent(options.mode, "Sales history", "completed", sTotal);
+                    send({ section: "Sales history", status: "done", details: `Sales sync complete (${sTotal} lines).`, progress: 100 });
+                }
+
+                // 3.5 PURCHASE ORDERS (Incoming PO Details — runs with inventory or sales sync)
+                if (options.sales || options.inventory) {
+                    send({ section: "Incoming PO", details: "Updating purchase order details...", progress: 50 });
+                    try {
+                        let poStart = options.startDate || "2024-01-01";
+                        const receiptDateByOrder = await buildReceiptDateMap(ACU_BASE, poStart);
+                        const poFilter = `Date ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
+                        let poSkip = 0;
+                        let poTotal = 0;
+                        while (!signal.aborted) {
+                            const url = `${ACU_BASE}/PurchaseOrder?$expand=Details&$top=50&$skip=${poSkip}&$filter=${encodeURIComponent(poFilter)}`;
+                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
+                            const data = await res.json();
+                            const orders = parseAcumaticaRows(data);
+                            if (orders.length === 0) break;
+
+                            const historyRows = [];
+                            const lineRows = [];
+                            for (const o of orders) {
+                                historyRows.push({
+                                    order_nbr: getF(o, "OrderNbr"),
+                                    vendor_id: getF(o, "VendorID"),
+                                    vendor_name: getF(o, "VendorName"),
+                                    status: getF(o, "Status"),
+                                    order_date: getF(o, "Date"),
+                                    promised_date: getF(o, "PromisedOn"),
+                                    receipt_date: resolveReceiptDate(o, receiptDateByOrder),
+                                    total_amount: parseFloat(getF(o, "OrderTotal") || 0)
+                                });
+
+                                let details = o.Details || o.Transactions || [];
+                                if (details.value) details = details.value;
+                                if (!Array.isArray(details)) details = [];
+
+                                for (const d of details) {
+                                    const orderQty = parseFloat(getAny(d, "OrderQty", "Qty") || 0);
+                                    const receivedQty = parseFloat(getAny(d, "ReceivedQty", "QtyReceived", "ReceivedQuantity") || 0);
+                                    // Destination warehouse from the PO line only — never the document header
+                                    // branch (often MAIN), or branch POs get mis-counted as MAIN Coming PO.
+                                    const warehouseId = String(
+                                        getAny(d, "WarehouseID", "SiteID", "DestinationWarehouseID") ||
+                                        getAny(d, "BranchID", "Branch") ||
+                                        ""
+                                    ).trim();
+                                    lineRows.push({
+                                        order_nbr: getF(o, "OrderNbr"),
+                                        line_nbr: parseInt(getF(d, "LineNbr") || 0),
+                                        inventory_id: getF(d, "InventoryID"),
+                                        description: getAny(d, "LineDescription", "Description"),
+                                        qty: orderQty,
+                                        received_qty: receivedQty,
+                                        uom: getF(d, "UOM"),
+                                        warehouse_id: warehouseId || null,
+                                        branch_id: warehouseId || null,
+                                        ext_cost: parseFloat(getAny(d, "ExtendedCost", "LineAmount") || 0),
+                                        last_sync: new Date()
+                                    });
+                                }
+                            }
+                            if (historyRows.length > 0) await MySqlService.upsertPurchaseHistory(historyRows);
+                            if (lineRows.length > 0) await MySqlService.upsertPurchaseOrderDetails(lineRows);
+                            await MySqlService.backfillPurchaseHistoryVendorNames();
+
+                            poTotal += orders.length;
+                            poSkip += orders.length;
+                            const poProg = Math.min(99, 65 + Math.floor(poTotal / 5));
+                            send({
+                                section: "Incoming PO",
+                                details: `Synced ${poTotal} purchase order(s)…`,
+                                progress: poProg,
+                                count: poTotal,
+                            });
+                            if (orders.length < 50) break;
+                        }
+                        await MySqlService.logSyncEvent(options.mode, "Incoming PO", "completed", poTotal);
+                        send({ section: "Incoming PO", status: "done", details: "Purchase order sync complete.", progress: 100 });
+                    } catch (poErr) {
+                        console.error(">>> [Sync API] PO sync error:", poErr.message);
+                        await MySqlService.logSyncEvent(options.mode, "Incoming PO", "error", 0, poErr.message);
+                    }
+                }
+
+                // 4. SMART DELTA REFRESH (Only for items sold today)
+                if (options.mode === "delta" && affectedInventoryIds.size > 0) {
+                    send({ section: "Inventory", details: `Updating stocks for ${affectedInventoryIds.size} sold items...`, progress: 95 });
+                    const idList = Array.from(affectedInventoryIds);
+                    const idChunks = [];
+                    for (let i = 0; i < idList.length; i += 10) idChunks.push(idList.slice(i, i + 10));
+
+                    for (const batch of idChunks) {
+                        const filter = batch.map(id => `InventoryID eq '${id}'`).join(" or ");
+                        const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$filter=${filter}`;
+                        const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
+                        const data = await res.json();
+                        const items = data.value || [];
+                        const levels = [];
+                        const batchItemIds = [];
+                        const prepared = [];
+                        for (const item of items) {
+                            const catalog = extractStockItemCatalog(item);
+                            if (!catalog) continue;
+                            batchItemIds.push(catalog.inventory_id);
+                            prepared.push({
+                                item,
+                                catalogFields: {
+                                    description: catalog.description,
+                                    item_class: catalog.item_class,
+                                    default_price: catalog.default_price,
+                                    item_status: catalog.item_status,
+                                    base_unit: catalog.base_unit,
+                                    item_type: catalog.item_type,
+                                    posting_class: catalog.posting_class,
+                                },
+                            });
+                        }
+                        try {
+                            levels.push(
+                                ...(await AcumaticaService.resolveWarehouseLevelsBatch(
+                                    prepared,
+                                    effectiveCookie,
+                                    8
+                                ))
+                            );
+                        } catch {
+                            for (const { item, catalogFields } of prepared) {
+                                levels.push(...extractWarehouseLevels(item, catalogFields));
+                            }
+                        }
+                        const { main: mainLevels, ecommerce: ecomLevels } = splitLevelsByCompany(levels);
+                        if (batchItemIds.length > 0) {
+                            await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "main");
+                            await MySqlService.deleteInventoryLevelsForItems(batchItemIds, "ecommerce");
+                        }
+                        if (mainLevels.length > 0) await MySqlService.upsertInventoryLevels(mainLevels, "main");
+                        if (ecomLevels.length > 0) await MySqlService.upsertInventoryLevels(ecomLevels, "ecommerce");
+                    }
+                    await MySqlService.logSyncEvent(options.mode, "Smart Delta", "completed", idList.length);
+                    send({ section: "Inventory", status: "done", details: "Stock refresh complete.", progress: 100 });
+                }
+
+                // 5. FINAL ENRICHMENT (Optional but recommended for full data accuracy)
+                if (options.sales || options.inventory) {
+                    send({ section: "Data Enrichment", details: "Filling missing categories...", progress: 98 });
+                    try {
+                        await MySqlService.enrichSalesData();
+                        await MySqlService.validateSalesIntegrity();
+                        
+                        // New: Calculate Vendor Performance
+                        send({ section: "Data Enrichment", details: "Calculating vendor performance...", progress: 99 });
+                        const vCount = await MySqlService.calculateAndStoreVendorPerformance();
+                        await MySqlService.logSyncEvent(options.mode, "Suppliers Performance", "completed", vCount);
+
+                        send({ section: "Replenishment", details: "Building replenishment cache...", progress: 99 });
+                        await MySqlService.ensureReplenishmentCacheTable();
+                        const replResult = await rebuildAllReplenishmentCache("main");
+                        await MySqlService.logSyncEvent(options.mode, "Replenishment", "completed", replResult.totalRows);
+                        send({ section: "Replenishment", status: "done", details: `Replenishment cache built (${replResult.totalRows} rows).`, progress: 100 });
+                    } catch (e) {
+                        console.error(">>> [Sync API] Enrichment error:", e);
+                        await MySqlService.logSyncEvent(options.mode, "Data Enrichment", "error", 0, e.message);
+                    }
+                    send({ section: "Data Enrichment", status: "done", details: "Enrichment complete.", progress: 100 });
+                }
+
+                await MySqlService.logSyncEvent(options.mode, "All", "completed", 0, "Sync finished successfully");
+                send({ status: "complete", message: "Sync completed successfully" });
+                finish();
+            } catch (err) {
+                console.error(">>> [Sync Error]", err);
+                await MySqlService.logSyncEvent(options.mode, "All", "error", 0, err.message);
+                send({ status: "error", message: err?.message || String(err) || "An unknown sync error occurred" });
+                finish();
+            }
+        }
+    });
+
+    return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
+}
+
+/**
+ * GET handler to fetch recent sync logs
+ */
+export async function GET(request) {
+    try {
+        const cookie = getSessionFromRequest(request);
+        if (!cookie) return Response.json({ message: "Unauthorized" }, { status: 401 });
+
+        const { searchParams } = new URL(request.url);
+        const limit = parseInt(searchParams.get("limit") || "20");
+
+        const logs = await MySqlService.getSyncLogs(limit);
+        return Response.json(logs);
+    } catch (err) {
+        console.error("[GET Sync Logs Error]", err);
+        return Response.json({ message: "Internal server error" }, { status: 500 });
+    }
+}

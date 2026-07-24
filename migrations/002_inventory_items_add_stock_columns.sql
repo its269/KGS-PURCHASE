@@ -1,0 +1,3 @@
+-- Migration 002: Add missing stock-level columns to inventory_items
+-- Safe version: uses information_schema checks before each ALTER to avoid duplicate-column errors.
+-- Run via: node migrations/run-migration.js

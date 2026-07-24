@@ -1,0 +1,173 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    # Requires kgs-purchase-runner on this server — see scripts/register-self-hosted-runner.ps1
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 90
+
+    steps:
+      - name: Pull latest code
+        shell: cmd
+        run: |
+          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          git -c safe.directory=C:/Users/Administrator/Desktop/Github/KGS-PURCHASE fetch origin main
+          git -c safe.directory=C:/Users/Administrator/Desktop/Github/KGS-PURCHASE reset --hard origin/main
+
+      - name: Verify production .env
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\check-production-env.ps1
+
+      - name: Install dependencies
+        timeout-minutes: 15
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-node-path.ps1
+          $env:NPM_CONFIG_CACHE = "$env:ProgramData\kgs-purchase-npm-cache"
+          New-Item -ItemType Directory -Force -Path $env:NPM_CONFIG_CACHE | Out-Null
+          if (Test-Path "node_modules") {
+            Write-Host "node_modules present - running npm install (skip destructive npm ci on Windows runner)"
+            npm install --no-audit --no-fund
+          } else {
+            npm ci
+          }
+
+      - name: Build production bundle (staged)
+        timeout-minutes: 45
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          $ErrorActionPreference = 'Continue'
+          & .\scripts\ensure-node-path.ps1
+          & .\scripts\ensure-next-swc.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Build into .next-incoming while live app keeps serving from .next
+          if (Test-Path '.next-incoming') {
+            cmd /c 'rmdir /s /q ".next-incoming"' 2>&1 | Out-Null
+          }
+
+          $env:NEXT_TELEMETRY_DISABLED = '1'
+          $env:NODE_OPTIONS = '--max-old-space-size=8192'
+          $env:NEXT_PUBLIC_BASE_PATH = '/kgs-purchase'
+          $env:NEXT_DIST_DIR = '.next-incoming'
+          $buildSucceeded = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Running staged build (attempt $attempt/3)..."
+            $buildOutput = cmd /c "npm run build 2>&1"
+            $buildExitCode = $LASTEXITCODE
+            $buildOutput | ForEach-Object { Write-Host $_ }
+
+            if ($buildExitCode -eq 0) {
+              $buildSucceeded = $true
+              break
+            }
+
+            $buildText = ($buildOutput | Out-String)
+            $isStandaloneLock = $buildText -match 'EBUSY: resource busy or locked'
+            $isSwcBinary = $buildText -match 'swc-win32-x64-msvc|not a valid Win32 application|Failed to load SWC'
+            if ($isSwcBinary -and $attempt -lt 3) {
+              Write-Host "Detected SWC binary failure. Repairing and retrying..."
+              & .\scripts\ensure-next-swc.ps1
+              Start-Sleep -Seconds 3
+              continue
+            }
+            if (-not $isStandaloneLock -or $attempt -eq 3) {
+              exit $buildExitCode
+            }
+
+            Write-Host "Detected transient lock. Retrying in 8 seconds..."
+            Start-Sleep -Seconds 8
+          }
+
+          if (-not $buildSucceeded) {
+            throw "Staged build did not succeed after retries."
+          }
+
+      - name: Copy standalone assets into staged build
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\copy-standalone-assets.ps1 -DistDir '.next-incoming'
+
+      - name: Verify staged build
+        shell: cmd
+        run: |
+          cd /d "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          if not exist ".next-incoming\BUILD_ID" (
+            echo BUILD_ID missing in staged build
+            exit /b 1
+          )
+          if not exist ".next-incoming\standalone\server.js" (
+            echo standalone server.js missing in staged build
+            exit /b 1
+          )
+          echo Staged build verified - ID: && type .next-incoming\BUILD_ID
+
+      - name: Stop app and activate staged build
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-pm2-env.ps1
+          & .\scripts\ensure-node-path.ps1
+          & .\scripts\stop-app.ps1
+          & .\scripts\activate-next-build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Restart production server
+        shell: powershell
+        run: |
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-pm2-env.ps1
+          & .\scripts\ensure-node-path.ps1
+          if (-not (Test-Path '.next\standalone\server.js')) {
+            throw 'Cannot start: .next\standalone\server.js is missing'
+          }
+          pm2 delete kgs-purchase-http 2>$null
+          pm2 start ecosystem.config.js --only kgs-purchase-http
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pm2 save
+          pm2 status
+
+      - name: Health check
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 8
+          try {
+            $r = Invoke-WebRequest -Uri 'http://localhost:3001/kgs-purchase/signin' -UseBasicParsing -TimeoutSec 15
+            Write-Host "OK - HTTP $($r.StatusCode)"
+          } catch {
+            Write-Host "WARN: $($_.Exception.Message)"
+          }
+
+      - name: Rollback on failure or cancel
+        if: failure() || cancelled()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location "C:\Users\Administrator\Desktop\Github\KGS-PURCHASE"
+          & .\scripts\ensure-pm2-env.ps1
+          & .\scripts\ensure-node-path.ps1
+          Write-Host "Rolling back..."
+          & .\scripts\stop-app.ps1
+          & .\scripts\restore-next-backup.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path '.next\standalone\server.js') {
+            pm2 delete kgs-purchase-http 2>$null
+            pm2 start ecosystem.config.js --only kgs-purchase-http
+            pm2 save
+          }
+          pm2 status
+          Write-Host "Rollback complete"
+          exit 0

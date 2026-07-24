@@ -1,0 +1,150 @@
+:root,
+:root[data-theme='light'] {
+  /* --- Light Theme Palette --- */
+  --bg-main: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-sidebar: #ffffff;
+  --bg-input: #ffffff;
+  
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --text-inverse: #ffffff;
+  --text-sidebar: #475569;
+  --text-sidebar-active: #3b82f6;
+  
+  --accent-primary: #3b82f6;
+  --accent-secondary: #6366f1;
+  
+  --status-success: #10b981;
+  --status-warning: #f59e0b;
+  --status-danger: #ef4444;
+  --status-info: #0ea5e9;
+  
+  --border-light: #e2e8f0;
+  --border-medium: #cbd5e1;
+  --border-dark: #94a3b8;
+  --border-sidebar: #e2e8f0;
+  
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  
+  --font-inter: "Inter", system-ui, -apple-system, sans-serif;
+  
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 80px;
+
+  --date-calendar-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'/%3E%3Cline x1='16' y1='2' x2='16' y2='6'/%3E%3Cline x1='8' y1='2' x2='8' y2='6'/%3E%3Cline x1='3' y1='10' x2='21' y2='10'/%3E%3C/svg%3E");
+}
+
+[data-theme='dark'] {
+  /* --- Dark Theme Palette --- */
+  --bg-main: #020617;
+  --bg-surface: #0f172a;
+  --bg-sidebar: #020617;
+  --bg-input: #1e293b;
+  
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-inverse: #020617;
+  --text-sidebar: #94a3b8;
+  --text-sidebar-active: #60a5fa;
+  
+  --accent-primary: #60a5fa;
+  --accent-secondary: #818cf8;
+  
+  --status-success: #059669;
+  --status-warning: #d97706;
+  --status-danger: #dc2626;
+  --status-info: #0284c7;
+  
+  --border-light: #1e293b;
+  --border-medium: #334155;
+  --border-dark: #475569;
+  --border-sidebar: rgba(255, 255, 255, 0.08);
+  
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+
+  --date-calendar-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23e2e8f0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'/%3E%3Cline x1='16' y1='2' x2='16' y2='6'/%3E%3Cline x1='8' y1='2' x2='8' y2='6'/%3E%3Cline x1='3' y1='10' x2='21' y2='10'/%3E%3C/svg%3E");
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  max-width: 100vw;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-inter);
+}
+
+/* Instant dark/light switch — no color fade anywhere */
+html.no-theme-transition,
+html.no-theme-transition *,
+html.no-theme-transition *::before,
+html.no-theme-transition *::after {
+  transition: none !important;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+input, select, textarea {
+  font-family: inherit;
+}
+
+/* Native select dropdown — readable options in dark theme (all modules) */
+select {
+  cursor: pointer;
+}
+
+select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+select option:checked,
+select option:hover {
+  background-color: #3b82f6;
+  color: #ffffff;
+}
+
+/* Scrollbar styling for modern feel */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-main);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-dark);
+}

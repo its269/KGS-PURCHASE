@@ -1,0 +1,28 @@
+{
+  "name": "acu",
+  "version": "1.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start -p 3000",
+    "start:prod": "NODE_ENV=production node .next/standalone/server.js",
+    "lint": "eslint",
+    "deploy": "npm run build && npm run start:prod"
+  },
+  "dependencies": {
+    "@google/gemini-cli": "^0.45.2",
+    "@supabase/supabase-js": "^2.105.4",
+    "dotenv": "^16.4.5",
+    "mysql2": "^3.22.4",
+    "next": "16.2.6",
+    "node-fetch": "^3.3.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "eslint": "^9",
+    "eslint-config-next": "16.2.6"
+  }
+}

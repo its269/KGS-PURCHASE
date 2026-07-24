@@ -1,0 +1,282 @@
+/* ============================================================
+   Sign-In Page — Modern Redesign
+   ============================================================ */
+
+/* ---------- Wrapper ---------- */
+.signin-wrapper {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-main);
+    padding: 1.5rem;
+}
+
+/* ---------- Card ---------- */
+.signin-card {
+    background: var(--bg-surface);
+    border-radius: var(--radius-xl);
+    padding: 3rem 2.5rem;
+    width: 100%;
+    max-width: 440px;
+    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--border-light);
+    animation: siFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes siFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ---------- Header ---------- */
+.signin-header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+}
+
+.signin-logo-container {
+    margin-bottom: 2rem;
+    display: flex;
+    justify-content: center;
+}
+
+.signin-logo-img {
+    height: 72px;
+    width: auto;
+    object-fit: contain;
+    filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1));
+}
+
+.signin-title {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--text-primary);
+    margin-bottom: 0.75rem;
+    letter-spacing: -0.04em;
+}
+
+.signin-subtitle {
+    font-size: 1rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+/* ---------- Error ---------- */
+.signin-error {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid var(--status-danger);
+    border-radius: var(--radius-lg);
+    color: var(--status-danger);
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 2rem;
+}
+
+/* ---------- Form ---------- */
+.signin-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.75rem;
+}
+
+/* ---------- Field ---------- */
+.signin-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.signin-label {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* ---------- Input ---------- */
+.signin-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.signin-input-icon {
+    position: absolute;
+    left: 1.1rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    pointer-events: none;
+}
+
+.signin-input {
+    width: 100%;
+    padding: 0.85rem 1rem 0.85rem 3rem;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-lg);
+    font-size: 1rem;
+    color: var(--text-primary);
+    background: var(--bg-input);
+    outline: none;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.signin-input:focus {
+    border-color: var(--accent-primary);
+    background: var(--bg-surface);
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+}
+
+.signin-input::placeholder {
+    color: var(--text-muted);
+}
+
+/* ---------- Password toggle ---------- */
+.signin-toggle-password {
+    position: absolute;
+    right: 1rem;
+    background: none;
+    border: none;
+    padding: 0.25rem;
+    cursor: pointer;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    transition: color 0.15s;
+}
+
+.signin-toggle-password:hover {
+    color: var(--text-secondary);
+}
+
+/* ---------- Options ---------- */
+.signin-options {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: -0.25rem;
+}
+
+.signin-remember {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.signin-checkbox {
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+    border: 2px solid var(--border-medium);
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+}
+
+.signin-remember-label {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.signin-forgot-btn {
+    font-size: 0.9rem;
+    color: var(--accent-primary);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+/* ---------- Submit Button ---------- */
+.signin-btn {
+    width: 100%;
+    padding: 0.85rem;
+    background: var(--accent-primary);
+    color: #ffffff;
+    font-size: 1.1rem;
+    font-weight: 700;
+    border: none;
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.signin-btn:hover:not(:disabled) {
+    background: var(--accent-secondary);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+}
+
+.signin-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+/* ---------- Footer ---------- */
+.signin-footer {
+    margin-top: 2.5rem;
+    text-align: center;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border-light);
+}
+
+.signin-footer p {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+/* ---------- Spinner ---------- */
+.signin-spinner {
+    width: 22px;
+    height: 22px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: siSpin 0.8s linear infinite;
+}
+
+@keyframes siSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* ---------- Responsiveness ---------- */
+@media (max-width: 480px) {
+    .signin-wrapper {
+        padding: 0;
+        background: var(--bg-surface);
+    }
+    
+    .signin-card {
+        padding: 2.5rem 1.5rem;
+        box-shadow: none;
+        border-radius: 0;
+        border: none;
+        max-width: 100%;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+}
