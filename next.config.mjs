@@ -43,6 +43,16 @@ const nextConfig = {
         ],
       },
       {
+        // Sign-in HTML must not be cached across deploys
+        source: "/signin",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-store, must-revalidate",
+          },
+        ],
+      },
+      {
         // Security headers on every response
         source: "/(.*)",
         headers: [

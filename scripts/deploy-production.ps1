@@ -102,15 +102,27 @@ try {
 
     Write-Step "Health check"
     Start-Sleep -Seconds 8
+    function Test-SignInHealthy([string]$BaseUrl) {
+        $page = Invoke-WebRequest -Uri "$BaseUrl/signin" -UseBasicParsing -TimeoutSec 15
+        if ($page.StatusCode -ne 200) { throw "HTTP $($page.StatusCode)" }
+        $css = [regex]::Match($page.Content, 'href="([^"]+_next/static/[^"]+\.css)"').Groups[1].Value
+        if (-not $css) { throw "No CSS reference in HTML" }
+        $origin = ([Uri]$BaseUrl).GetLeftPart([UriPartial]::Authority)
+        $asset = Invoke-WebRequest -Uri ($origin + $css) -UseBasicParsing -TimeoutSec 15
+        if ($asset.StatusCode -ne 200 -or $asset.Content.Length -lt 50) {
+            throw "CSS asset failed: $css"
+        }
+        return "HTTP $($page.StatusCode), CSS OK ($($asset.Content.Length) bytes)"
+    }
     try {
-        $r = Invoke-WebRequest -Uri 'http://localhost:3001/kgs-purchase/signin' -UseBasicParsing -TimeoutSec 15
-        Write-Host "OK  localhost:3001/kgs-purchase/signin -> HTTP $($r.StatusCode)" -ForegroundColor Green
+        $msg = Test-SignInHealthy 'http://localhost:3001/kgs-purchase'
+        Write-Host "OK  localhost:3001/kgs-purchase/signin -> $msg" -ForegroundColor Green
     } catch {
         Write-Warning "Local health check: $($_.Exception.Message)"
     }
     try {
-        $r2 = Invoke-WebRequest -Uri 'http://190.92.233.232/kgs-purchase/signin' -UseBasicParsing -TimeoutSec 15
-        Write-Host "OK  http://190.92.233.232/kgs-purchase/signin -> HTTP $($r2.StatusCode)" -ForegroundColor Green
+        $msg2 = Test-SignInHealthy 'http://190.92.233.232/kgs-purchase'
+        Write-Host "OK  http://190.92.233.232/kgs-purchase/signin -> $msg2" -ForegroundColor Green
     } catch {
         Write-Warning "Public health check: $($_.Exception.Message)"
         Write-Host "If local OK but public fails, run: .\scripts\setup-kgs-purchase-proxy.ps1"
