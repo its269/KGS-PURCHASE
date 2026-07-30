@@ -1,6 +1,20 @@
 # Ensures PM2 can resolve the Windows home directory (HOMEPATH/HOME)
 # and that pm2 itself is on PATH (AppData\Roaming\npm).
 # Call before any pm2 CLI invocation in minimal shells (-NoProfile, Task Scheduler, CI).
+#
+# GitHub Actions on this host must run as Local System (same as the PM2 daemon).
+# Pin PM2_HOME to the Administrator profile so service jobs talk to the live daemon.
+
+$adminProfile = 'C:\Users\Administrator'
+$adminPm2Home = Join-Path $adminProfile '.pm2'
+if (Test-Path -LiteralPath $adminPm2Home) {
+    $env:PM2_HOME = $adminPm2Home
+    Write-Host "PM2_HOME=$env:PM2_HOME"
+}
+
+if (-not $env:USERPROFILE -or $env:USERPROFILE -match 'systemprofile|NetworkService|LocalService') {
+    $env:USERPROFILE = $adminProfile
+}
 
 if (-not $env:HOMEPATH -and $env:USERPROFILE) {
     $env:HOMEPATH = $env:USERPROFILE -replace '^[^:]+:', ''

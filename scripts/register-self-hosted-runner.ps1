@@ -96,13 +96,30 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Installing runner as Windows service ..."
 & .\svc.install
+
+# Must match PM2 (Local System). NETWORK SERVICE cannot stop the live app,
+# so activate-next-build fails with a locked .next and auto-deploy rolls back.
+$svcName = (Get-Service -Name "actions.runner.*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match 'KGS-PURCHASE|kgs-purchase' } |
+    Select-Object -First 1 -ExpandProperty Name)
+if (-not $svcName) {
+    $svcName = (Get-Service -Name "actions.runner.*" -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty Name)
+}
+if ($svcName) {
+    Write-Host "Configuring $svcName to run as Local System..."
+    sc.exe config $svcName obj= LocalSystem | Out-Null
+}
+
 & .\svc.start
 
 Start-Sleep -Seconds 3
-$svc = Get-Service -Name "actions.runner.*" -ErrorAction SilentlyContinue | Select-Object -First 1
+$svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
     Write-Host ""
     Write-Host "SUCCESS: Runner service is running ($($svc.Name))." -ForegroundColor Green
+    $cim = Get-CimInstance Win32_Service -Filter "Name='$($svc.Name)'"
+    Write-Host "Logon account: $($cim.StartName)" -ForegroundColor Green
     Write-Host "Verify on GitHub: $repoUrl/settings/actions/runners" -ForegroundColor Green
     Write-Host ""
     Write-Host "Queued deploy workflows should start within a minute." -ForegroundColor Green
