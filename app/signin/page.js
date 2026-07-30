@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import "@/styles/signin.css";
 import { withBasePath } from "@/lib/base-path";
 
@@ -47,20 +47,27 @@ const IconAlert = () => (
 
 /* ── Component ──────────────────────────────────────────── */
 function SignInContent() {
-    const router = useRouter();
     const searchParams = useSearchParams();
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    // Avoid hydration mismatches from browser extensions that inject attrs
+    // (e.g. fdprocessedid) onto form controls before React hydrates.
+    const [mounted, setMounted] = useState(false);
 
     useEffect(() => {
+        setMounted(true);
+    }, []);
+
+    useEffect(() => {
+        if (!mounted) return;
         if (searchParams.get("expired") === "1") {
             localStorage.removeItem("acu_session");
             setError("Your session has expired. Please log in again.");
         }
-    }, [searchParams]);
+    }, [mounted, searchParams]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -136,86 +143,107 @@ function SignInContent() {
                     <p className="signin-subtitle">Please enter your account details</p>
                 </div>
 
-                <form className="signin-form" onSubmit={handleSubmit} noValidate>
-                    {error && (
-                        <div className="signin-error" role="alert">
-                            <IconAlert />
-                            <span>{error}</span>
+                {!mounted ? (
+                    <div className="signin-form signin-form-skeleton" aria-hidden="true">
+                        <div className="signin-field">
+                            <div className="signin-label">Username</div>
+                            <div className="signin-input-wrapper signin-skeleton-bar">
+                                <span className="signin-input-icon"><IconUser /></span>
+                                <span className="signin-skeleton-text">Username</span>
+                            </div>
                         </div>
-                    )}
-
-                    <div className="signin-field">
-                        <label className="signin-label" htmlFor="username">
-                            Username
-                        </label>
-                        <div className="signin-input-wrapper">
-                            <span className="signin-input-icon"><IconUser /></span>
-                            <input
-                                id="username"
-                                className="signin-input"
-                                type="text"
-                                placeholder="Username"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                autoComplete="username"
-                                required
-                                suppressHydrationWarning
-                            />
+                        <div className="signin-field">
+                            <div className="signin-label">Password</div>
+                            <div className="signin-input-wrapper signin-skeleton-bar">
+                                <span className="signin-input-icon"><IconLock /></span>
+                                <span className="signin-skeleton-text">Password</span>
+                            </div>
                         </div>
+                        <div className="signin-btn signin-skeleton-btn">Sign In</div>
                     </div>
+                ) : (
+                    <form className="signin-form" onSubmit={handleSubmit} noValidate>
+                        {error && (
+                            <div className="signin-error" role="alert">
+                                <IconAlert />
+                                <span>{error}</span>
+                            </div>
+                        )}
 
-                    <div className="signin-field">
-                        <label className="signin-label" htmlFor="password">
-                            Password
-                        </label>
-                        <div className="signin-input-wrapper">
-                            <span className="signin-input-icon"><IconLock /></span>
-                            <input
-                                id="password"
-                                className="signin-input"
-                                type={showPassword ? "text" : "password"}
-                                placeholder="Password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                autoComplete="current-password"
-                                required
-                                suppressHydrationWarning
-                            />
+                        <div className="signin-field">
+                            <label className="signin-label" htmlFor="username">
+                                Username
+                            </label>
+                            <div className="signin-input-wrapper">
+                                <span className="signin-input-icon"><IconUser /></span>
+                                <input
+                                    id="username"
+                                    className="signin-input"
+                                    type="text"
+                                    placeholder="Username"
+                                    value={username}
+                                    onChange={(e) => setUsername(e.target.value)}
+                                    autoComplete="username"
+                                    required
+                                />
+                            </div>
+                        </div>
+
+                        <div className="signin-field">
+                            <label className="signin-label" htmlFor="password">
+                                Password
+                            </label>
+                            <div className="signin-input-wrapper">
+                                <span className="signin-input-icon"><IconLock /></span>
+                                <input
+                                    id="password"
+                                    className="signin-input"
+                                    type={showPassword ? "text" : "password"}
+                                    placeholder="Password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    autoComplete="current-password"
+                                    required
+                                />
+                                <button
+                                    type="button"
+                                    className="signin-toggle-password"
+                                    onClick={() => setShowPassword(!showPassword)}
+                                    aria-label={showPassword ? "Hide password" : "Show password"}
+                                >
+                                    {showPassword ? <IconEyeOff /> : <IconEye />}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="signin-options">
+                            <div className="signin-remember">
+                                <input
+                                    id="remember"
+                                    className="signin-checkbox"
+                                    type="checkbox"
+                                />
+                                <label htmlFor="remember" className="signin-remember-label">
+                                    Remember me
+                                </label>
+                            </div>
                             <button
                                 type="button"
-                                className="signin-toggle-password"
-                                onClick={() => setShowPassword(!showPassword)}
-                                aria-label={showPassword ? "Hide password" : "Show password"}
-                                suppressHydrationWarning
+                                className="signin-forgot-btn"
+                                onClick={() => alert("Please contact your administrator to reset your password.")}
                             >
-                                {showPassword ? <IconEyeOff /> : <IconEye />}
+                                Forgot password?
                             </button>
                         </div>
-                    </div>
 
-                    <div className="signin-options">
-                        <div className="signin-remember">
-                            <input
-                                id="remember"
-                                className="signin-checkbox"
-                                type="checkbox"
-                            />
-                            <label htmlFor="remember" className="signin-remember-label">
-                                Remember me
-                            </label>
-                        </div>
-                        <button type="button" className="signin-forgot-btn" onClick={() => alert("Please contact your administrator to reset your password.")}>
-                            Forgot password?
+                        <button type="submit" className="signin-btn" disabled={loading}>
+                            {loading ? <span className="signin-spinner" /> : "Sign In"}
                         </button>
-                    </div>
-
-                    <button type="submit" className="signin-btn" disabled={loading} suppressHydrationWarning>
-                        {loading ? <span className="signin-spinner" /> : "Sign In"}
-                    </button>
-                </form>
+                    </form>
+                )}
 
                 <div className="signin-footer">
-                    <p>&copy; {new Date().getFullYear()} Kelin Graphics System Corp.</p>
+                    <p suppressHydrationWarning>&copy; {new Date().getFullYear()} Kelin Graphics System Corp.</p>
                 </div>
             </div>
         </div>

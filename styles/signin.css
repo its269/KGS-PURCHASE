@@ -233,6 +233,28 @@
     box-shadow: none;
 }
 
+/* ---------- Pre-mount skeleton (no <input>/<button> — avoids extension hydration noise) ---------- */
+.signin-form-skeleton {
+    pointer-events: none;
+    opacity: 0.85;
+}
+
+.signin-skeleton-bar {
+    min-height: 48px;
+    align-items: center;
+}
+
+.signin-skeleton-text {
+    color: var(--text-muted);
+    font-size: 1rem;
+}
+
+.signin-skeleton-btn {
+    opacity: 0.6;
+    cursor: default;
+    box-shadow: none;
+}
+
 /* ---------- Footer ---------- */
 .signin-footer {
     margin-top: 2.5rem;

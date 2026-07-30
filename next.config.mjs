@@ -19,8 +19,23 @@ const nextConfig = {
   // Remove the X-Powered-By header to reduce response size + hide stack
   poweredByHeader: false,
 
-  // Aggressive asset caching headers — Nginx will also set these for static files
+  // Aggressive asset caching headers — Nginx will also set these for static files.
+  // Skip Cache-Control on /_next/static in development — it breaks Next.js HMR/dev caching.
   async headers() {
+    const security = {
+      source: "/(.*)",
+      headers: [
+        { key: "X-Content-Type-Options", value: "nosniff" },
+        { key: "X-Frame-Options", value: "SAMEORIGIN" },
+        { key: "X-XSS-Protection", value: "1; mode=block" },
+        { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+      ],
+    };
+
+    if (process.env.NODE_ENV !== "production") {
+      return [security];
+    }
+
     return [
       {
         // Immutable JS/CSS chunks — content-hashed, safe to cache forever
@@ -52,16 +67,7 @@ const nextConfig = {
           },
         ],
       },
-      {
-        // Security headers on every response
-        source: "/(.*)",
-        headers: [
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "SAMEORIGIN" },
-          { key: "X-XSS-Protection", value: "1; mode=block" },
-          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-        ],
-      },
+      security,
     ];
   },
 };

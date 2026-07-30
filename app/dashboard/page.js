@@ -215,7 +215,7 @@ export default function DashboardPage() {
             const statsCacheKey = `${inventoryCachePrefix()}${statsParams.toString()}`;
 
             const cachedTable = DataCache.get(tableCacheKey);
-            if (cachedTable) {
+            if (cachedTable && !String(cachedTable.source || "").startsWith("acumatica")) {
                 setAllInventory(cachedTable.data || []);
                 setTotalCount(cachedTable.totalCount || 0);
                 setHasMore(!!cachedTable.hasMore);
@@ -277,7 +277,7 @@ export default function DashboardPage() {
     useEffect(() => {
         const fetchBranches = async () => {
             const companyKey = localStorage.getItem("activeCompanyId") || "main";
-            const cacheKey = `branches_${companyKey}`;
+            const cacheKey = `branches_v2_${companyKey}`;
             const cached = DataCache.get(cacheKey);
             // Guard: only use cache if it's already the {id,name} format
             if (cached && Array.isArray(cached) && cached.length > 0 && typeof cached[0] === "object" && cached[0].id) {
@@ -289,14 +289,14 @@ export default function DashboardPage() {
             }
 
             try {
-                const res = await fetchWithAuth("/api/branches");
+                const res = await fetchWithAuth("/api/branches?source=mysql");
                 if (res.ok) {
                     const data = await res.json();
                     const list = Array.isArray(data) ? data : (data?.value || []);
                     const options = list
                         .map(b => {
-                            const rawName = b.Description?.value || b.BranchName?.value || b.branch_name || "";
-                            const name = rawName && !rawName.startsWith("[object") ? rawName : (b.SiteID || b.branch_id || "");
+                            const rawName = b.Description?.value || b.Description || b.BranchName?.value || b.branch_name || "";
+                            const name = rawName && !String(rawName).startsWith("[object") ? String(rawName) : (b.SiteID || b.branch_id || "");
                             return { id: b.SiteID || b.branch_id || "", name };
                         })
                         .filter(b => b.id)
@@ -398,7 +398,7 @@ export default function DashboardPage() {
         const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
 
         const cached = DataCache.get(cacheKey);
-        if (cached) {
+        if (cached && !String(cached.source || "").startsWith("acumatica")) {
             setAllInventory(cached.data || []);
             setTotalCount(cached.totalCount || 0);
             setHasMore(!!cached.hasMore);
@@ -458,7 +458,7 @@ export default function DashboardPage() {
                     <p>View stock on hand, availability, and safety levels by item and branch.</p>
                     {globalStats.dataMode === "warehouse-missing" && (
                         <p className="db-catalog-hint">
-                            Branch stock has not been loaded yet. Run a full Inventory sync from Sync Center to populate warehouse totals.
+                            Showing the product catalog from MySQL. Branch stock quantities are not loaded yet — run a full Inventory sync from Sync Center to populate on-hand and available totals.
                         </p>
                     )}
                 </div>

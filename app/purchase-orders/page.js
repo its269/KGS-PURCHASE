@@ -64,6 +64,11 @@ const IconChevronSelect = () => (
         <polyline points="6 9 12 15 18 9" />
     </svg>
 );
+const IconFilter = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+);
 
 function poStatusClass(status) {
     const s = (status || "").toLowerCase();
@@ -80,6 +85,225 @@ function fmtDate(d) {
     const date = new Date(d);
     if (isNaN(date.getTime())) return d;
     return date.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function toDateKey(d) {
+    if (!d) return "";
+    const raw = String(d).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+    const date = new Date(raw);
+    if (isNaN(date.getTime())) return "";
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
+/** Display ISO / date value as mm/dd/yyyy */
+function isoToMdy(d) {
+    const key = toDateKey(d);
+    if (!key) return "";
+    const [y, m, day] = key.split("-");
+    return `${m}/${day}/${y}`;
+}
+
+/** Parse mm/dd/yyyy (or yyyy-mm-dd) into ISO yyyy-mm-dd; null if invalid */
+function mdyToIso(text) {
+    const t = String(text || "").trim();
+    if (!t) return "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    const match = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!match) return null;
+    const month = Number(match[1]);
+    const day = Number(match[2]);
+    const year = Number(match[3]);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const check = new Date(`${iso}T12:00:00`);
+    if (isNaN(check.getTime()) || check.getMonth() + 1 !== month || check.getDate() !== day) return null;
+    return iso;
+}
+
+function textIncludes(haystack, needle) {
+    if (!needle) return true;
+    return String(haystack ?? "").toLowerCase().includes(String(needle).toLowerCase().trim());
+}
+
+const EMPTY_COLUMN_FILTERS = {
+    orderNbr: "",
+    vendorId: "",
+    vendorName: "",
+    origin: "",
+    status: "",
+    date: "",
+    etd: "",
+    userStatus: "",
+    eta: "",
+    containerNumber: "",
+    remarks: "",
+    totalAmount: "",
+};
+
+const COLUMN_FILTER_META = [
+    { key: "orderNbr", label: "Order #" },
+    { key: "vendorId", label: "Vendor ID" },
+    { key: "vendorName", label: "Vendor Name" },
+    { key: "origin", label: "Origin" },
+    { key: "status", label: "Status" },
+    { key: "date", label: "Order Date" },
+    { key: "etd", label: "ETD" },
+    { key: "userStatus", label: "User Status" },
+    { key: "eta", label: "ETA" },
+    { key: "containerNumber", label: "Container #" },
+    { key: "remarks", label: "Remarks" },
+    { key: "totalAmount", label: "Total Amount" },
+];
+
+const PO_STATUS_FILTER_OPTIONS = [
+    "Hold", "Open", "Balanced", "Pending Approval", "Completed", "Cancelled", "Closed",
+];
+
+const ORIGIN_OPTIONS = ["Philippines", "China"];
+
+function PoDateInput({ value = "", onChange, className = "", style }) {
+    const [text, setText] = useState(() => isoToMdy(value));
+    const pickerRef = useRef(null);
+
+    useEffect(() => {
+        setText(isoToMdy(value));
+    }, [value]);
+
+    const commitText = (raw) => {
+        const trimmed = String(raw || "").trim();
+        if (!trimmed) {
+            onChange?.("");
+            setText("");
+            return;
+        }
+        const iso = mdyToIso(trimmed);
+        if (iso) {
+            onChange?.(iso);
+            setText(isoToMdy(iso));
+        } else {
+            setText(isoToMdy(value));
+        }
+    };
+
+    return (
+        <div className={`po-date-mdy ${className}`.trim()} style={style}>
+            <input
+                type="text"
+                className="po-input-date po-input-date-mdy"
+                placeholder="mm/dd/yyyy"
+                inputMode="numeric"
+                autoComplete="off"
+                value={text}
+                onChange={(e) => {
+                    const next = e.target.value;
+                    setText(next);
+                    if (!next.trim()) {
+                        onChange?.("");
+                        return;
+                    }
+                    const iso = mdyToIso(next);
+                    if (iso) onChange?.(iso);
+                }}
+                onBlur={() => commitText(text)}
+            />
+            <input
+                ref={pickerRef}
+                type="date"
+                className="po-date-native-picker"
+                value={toDateKey(value) || ""}
+                onChange={(e) => onChange?.(e.target.value || "")}
+                tabIndex={-1}
+                aria-hidden="true"
+            />
+            <button
+                type="button"
+                className="po-date-picker-btn"
+                aria-label="Open calendar"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    const el = pickerRef.current;
+                    if (!el) return;
+                    if (typeof el.showPicker === "function") el.showPicker();
+                    else el.click();
+                }}
+            >
+                <IconCalendar />
+            </button>
+        </div>
+    );
+}
+
+function ColumnFilterHeader({
+    label,
+    filterKey,
+    type = "text",
+    value,
+    options = [],
+    onChange,
+    className = "",
+}) {
+    const popoverId = `po-col-filter-${filterKey}`;
+    const active = Boolean(value);
+
+    return (
+        <th className={className}>
+            <div className="po-th-filter">
+                <span className="po-th-label">{label}</span>
+                <button
+                    type="button"
+                    className={`po-th-filter-btn ${active ? "active" : ""}`}
+                    popoverTarget={popoverId}
+                    aria-label={`Filter ${label}`}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <IconFilter />
+                </button>
+                <div
+                    id={popoverId}
+                    popover="auto"
+                    className="po-col-filter-popover"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <div className="po-col-filter-title">Filter: {label}</div>
+                    {type === "select" ? (
+                        <select
+                            className="po-col-filter-input"
+                            value={value || ""}
+                            onChange={(e) => onChange(e.target.value)}
+                        >
+                            <option value="">All</option>
+                            {options.map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                        </select>
+                    ) : type === "date" ? (
+                        <PoDateInput
+                            value={value || ""}
+                            onChange={onChange}
+                            className="po-col-filter-date"
+                        />
+                    ) : (
+                        <input
+                            type="text"
+                            className="po-col-filter-input"
+                            placeholder="Contains…"
+                            value={value || ""}
+                            onChange={(e) => onChange(e.target.value)}
+                        />
+                    )}
+                    <div className="po-col-filter-actions">
+                        <button type="button" className="po-col-filter-clear" onClick={() => onChange("")}>
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </th>
+    );
 }
 
 const USER_STATUS_OPTIONS = ["Pending", "In Transit", "Arrived", "Customs", "Delayed", "Cancelled"];
@@ -212,14 +436,38 @@ export default function PurchaseOrdersPage() {
     const [userInputs, setUserInputs] = useState({}); // key -> { eta, userStatus }
     const [statusGuideTab, setStatusGuideTab] = useState(USER_STATUS_OPTIONS[0]);
     const [userStatusTableFilter, setUserStatusTableFilter] = useState("");
+    const [columnFilters, setColumnFilters] = useState(EMPTY_COLUMN_FILTERS);
     const [exporting, setExporting] = useState(false);
 
-    const handleUserStatusTableFilter = useCallback((statusValue) => {
-        setUserStatusTableFilter(statusValue || "");
-        if (statusValue && USER_STATUS_OPTIONS.includes(statusValue)) {
-            setStatusGuideTab(statusValue);
+    const setColumnFilter = useCallback((field, value) => {
+        const next = value || "";
+        setColumnFilters((prev) => ({ ...prev, [field]: next }));
+        if (field === "userStatus") {
+            setUserStatusTableFilter(next);
+            if (next && USER_STATUS_OPTIONS.includes(next)) {
+                setStatusGuideTab(next);
+            }
         }
     }, []);
+
+    const clearAllColumnFilters = useCallback(() => {
+        setColumnFilters(EMPTY_COLUMN_FILTERS);
+        setUserStatusTableFilter("");
+    }, []);
+
+    const handleUserStatusTableFilter = useCallback((statusValue) => {
+        const next = statusValue || "";
+        setUserStatusTableFilter(next);
+        setColumnFilters((prev) => ({ ...prev, userStatus: next }));
+        if (next && USER_STATUS_OPTIONS.includes(next)) {
+            setStatusGuideTab(next);
+        }
+    }, []);
+
+    const activeColumnFilterChips = useMemo(
+        () => COLUMN_FILTER_META.filter((col) => columnFilters[col.key]),
+        [columnFilters]
+    );
 
     const handleExport = async () => {
         setExporting(true);
@@ -441,12 +689,27 @@ export default function PurchaseOrdersPage() {
     }, [orders, userInputs]);
 
     const displayedOrders = useMemo(() => {
-        if (!userStatusTableFilter) return orders;
+        const f = columnFilters;
         return orders.filter((o) => {
             const key = `${o.orderType}-${o.orderNbr}`;
-            return (userInputs[key]?.userStatus || "") === userStatusTableFilter;
+            const ui = userInputs[key] || {};
+
+            if (!textIncludes(o.orderNbr, f.orderNbr)) return false;
+            if (!textIncludes(o.vendorId, f.vendorId)) return false;
+            if (!textIncludes(o.vendorName, f.vendorName)) return false;
+            if (f.origin && (ui.origin || "") !== f.origin) return false;
+            if (f.status && String(o.status || "").toLowerCase() !== f.status.toLowerCase()) return false;
+            if (f.date && toDateKey(o.date) !== f.date) return false;
+            if (f.etd && toDateKey(ui.etd) !== f.etd) return false;
+            if (f.userStatus && (ui.userStatus || "") !== f.userStatus) return false;
+            if (f.eta && toDateKey(ui.eta) !== f.eta) return false;
+            if (!textIncludes(ui.containerNumber, f.containerNumber)) return false;
+            if (!textIncludes(ui.remarks, f.remarks)) return false;
+            if (f.totalAmount && !textIncludes(String(o.totalAmount ?? ""), f.totalAmount)
+                && !textIncludes(fmt(o.totalAmount), f.totalAmount)) return false;
+            return true;
         });
-    }, [orders, userInputs, userStatusTableFilter]);
+    }, [orders, userInputs, columnFilters]);
 
     return (
         <div className="po-root">
@@ -464,13 +727,25 @@ export default function PurchaseOrdersPage() {
                     />
                 </div>
 
-                {userStatusTableFilter && (
-                    <div className="po-user-status-filter-bar">
-                        <span>
-                            Showing orders with User Status: <strong>{userStatusTableFilter}</strong>
-                        </span>
-                        <button type="button" onClick={() => setUserStatusTableFilter("")}>
-                            Clear filter
+                {activeColumnFilterChips.length > 0 && (
+                    <div className="po-column-filter-bar" role="status">
+                        <div className="po-column-filter-chips">
+                            {activeColumnFilterChips.map((col) => (
+                                <button
+                                    key={col.key}
+                                    type="button"
+                                    className="po-column-filter-chip"
+                                    onClick={() => setColumnFilter(col.key, "")}
+                                    title={`Clear ${col.label} filter`}
+                                >
+                                    <span>{col.label}:</span>
+                                    <strong>{columnFilters[col.key]}</strong>
+                                    <span aria-hidden="true">×</span>
+                                </button>
+                            ))}
+                        </div>
+                        <button type="button" className="po-column-filter-clear-all" onClick={clearAllColumnFilters}>
+                            Clear all filters
                         </button>
                     </div>
                 )}
@@ -478,23 +753,19 @@ export default function PurchaseOrdersPage() {
                 <div className="po-toolbar">
                     <div className="po-filter-group">
                         <span className="po-filter-label">From:</span>
-                        <input
-                            type="date"
-                            className="po-select-box po-date-input"
-                            style={{ width: '150px' }}
+                        <PoDateInput
                             value={startDate}
-                            onChange={(e) => setStartDate(e.target.value)}
+                            onChange={setStartDate}
+                            style={{ width: "150px" }}
                         />
                     </div>
 
                     <div className="po-filter-group">
                         <span className="po-filter-label">To:</span>
-                        <input
-                            type="date"
-                            className="po-select-box po-date-input"
-                            style={{ width: '150px' }}
+                        <PoDateInput
                             value={endDate}
-                            onChange={(e) => setEndDate(e.target.value)}
+                            onChange={setEndDate}
+                            style={{ width: "150px" }}
                         />
                     </div>
 
@@ -573,31 +844,113 @@ export default function PurchaseOrdersPage() {
                         <thead>
                             <tr>
                                 <th className="po-col-expand"></th>
-                                <th className="po-col-order">Order #</th>
-                                <th className="po-col-vendor-id">Vendor ID</th>
-                                <th className="po-col-vendor-name">Vendor Name</th>
-                                <th className="po-col-status">Status</th>
-                                <th className="po-col-date">Order Date</th>
-                                <th className="po-col-etd">ETD</th>
-                                <th className="po-col-user-status">User Status</th>
-                                <th className="po-col-eta">ETA (Input)</th>
-                                <th className="po-col-container">Container #</th>
-                                <th className="po-col-remarks">Remarks</th>
-                                <th className="po-col-amount">Total Amount</th>
+                                <ColumnFilterHeader
+                                    label="Order #"
+                                    filterKey="orderNbr"
+                                    className="po-col-order"
+                                    value={columnFilters.orderNbr}
+                                    onChange={(v) => setColumnFilter("orderNbr", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Vendor ID"
+                                    filterKey="vendorId"
+                                    className="po-col-vendor-id"
+                                    value={columnFilters.vendorId}
+                                    onChange={(v) => setColumnFilter("vendorId", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Vendor Name"
+                                    filterKey="vendorName"
+                                    className="po-col-vendor-name"
+                                    value={columnFilters.vendorName}
+                                    onChange={(v) => setColumnFilter("vendorName", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Origin"
+                                    filterKey="origin"
+                                    type="select"
+                                    options={ORIGIN_OPTIONS}
+                                    className="po-col-origin"
+                                    value={columnFilters.origin}
+                                    onChange={(v) => setColumnFilter("origin", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Status"
+                                    filterKey="status"
+                                    type="select"
+                                    options={PO_STATUS_FILTER_OPTIONS}
+                                    className="po-col-status"
+                                    value={columnFilters.status}
+                                    onChange={(v) => setColumnFilter("status", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Order Date"
+                                    filterKey="date"
+                                    type="date"
+                                    className="po-col-date"
+                                    value={columnFilters.date}
+                                    onChange={(v) => setColumnFilter("date", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="ETD"
+                                    filterKey="etd"
+                                    type="date"
+                                    className="po-col-etd"
+                                    value={columnFilters.etd}
+                                    onChange={(v) => setColumnFilter("etd", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="User Status"
+                                    filterKey="userStatus"
+                                    type="select"
+                                    options={USER_STATUS_OPTIONS}
+                                    className="po-col-user-status"
+                                    value={columnFilters.userStatus}
+                                    onChange={(v) => setColumnFilter("userStatus", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="ETA (Input)"
+                                    filterKey="eta"
+                                    type="date"
+                                    className="po-col-eta"
+                                    value={columnFilters.eta}
+                                    onChange={(v) => setColumnFilter("eta", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Container #"
+                                    filterKey="containerNumber"
+                                    className="po-col-container"
+                                    value={columnFilters.containerNumber}
+                                    onChange={(v) => setColumnFilter("containerNumber", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Remarks"
+                                    filterKey="remarks"
+                                    className="po-col-remarks"
+                                    value={columnFilters.remarks}
+                                    onChange={(v) => setColumnFilter("remarks", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Total Amount"
+                                    filterKey="totalAmount"
+                                    className="po-col-amount"
+                                    value={columnFilters.totalAmount}
+                                    onChange={(v) => setColumnFilter("totalAmount", v)}
+                                />
                             </tr>
                         </thead>
                         <tbody>
                             {loading && orders.length === 0 ? (
-                                <tr><td colSpan={12} className="si-loading-cell">
+                                <tr><td colSpan={13} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem 0' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Fetching orders...</span>
                                     </div>
                                 </td></tr>
                             ) : displayedOrders.length === 0 ? (
-                                <tr><td colSpan={12} className="si-empty-cell" style={{ padding: '4rem 0' }}>
-                                    {userStatusTableFilter
-                                        ? `No purchase orders with User Status "${userStatusTableFilter}" on this page.`
+                                <tr><td colSpan={13} className="si-empty-cell" style={{ padding: '4rem 0' }}>
+                                    {activeColumnFilterChips.length > 0
+                                        ? "No purchase orders match the current column filters on this page."
                                         : "No purchase orders found."}
                                 </td></tr>
                             ) : displayedOrders.map(po => {
@@ -617,17 +970,25 @@ export default function PurchaseOrdersPage() {
                                             <td>
                                                 <span className="po-vendor-name">{po.vendorName || "—"}</span>
                                             </td>
+                                            <td onClick={(e) => e.stopPropagation()}>
+                                                <select
+                                                    className="po-input-text po-origin-select"
+                                                    value={ui.origin || ""}
+                                                    onChange={(e) => handleUserInput(key, "origin", e.target.value)}
+                                                >
+                                                    <option value="">— Select —</option>
+                                                    <option value="Philippines">Philippines (Local)</option>
+                                                    <option value="China">China</option>
+                                                </select>
+                                            </td>
                                             <td>
                                                 <span className={`db-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
                                             </td>
                                             <td><span style={{ fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
                                             <td onClick={(e) => e.stopPropagation()}>
-                                                <input
-                                                    type="date"
-                                                    className="po-input-date"
-                                                    style={{ width: '100%' }}
+                                                <PoDateInput
                                                     value={ui.etd || ""}
-                                                    onChange={(e) => handleUserInput(key, 'etd', e.target.value)}
+                                                    onChange={(val) => handleUserInput(key, "etd", val)}
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
@@ -637,12 +998,9 @@ export default function PurchaseOrdersPage() {
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
-                                                <input 
-                                                    type="date" 
-                                                    className="po-input-date" 
-                                                    style={{ width: '100%' }}
+                                                <PoDateInput
                                                     value={ui.eta || ""}
-                                                    onChange={(e) => handleUserInput(key, 'eta', e.target.value)}
+                                                    onChange={(val) => handleUserInput(key, "eta", val)}
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
@@ -669,7 +1027,7 @@ export default function PurchaseOrdersPage() {
                                         </tr>
                                         {isOpen && (
                                             <tr className="po-lines-row">
-                                                <td colSpan={12}>
+                                                <td colSpan={13}>
                                                     <div className="po-lines-wrap">
                                                         <table className="po-lines-table">
                                                             <thead>

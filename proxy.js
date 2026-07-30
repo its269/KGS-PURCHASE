@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionMeta } from "@/lib/session-store";
-import { withBasePath, getBasePath, clearAllCookies } from "@/lib/base-path";
+import { buildAppRedirectUrl, getBasePath, clearAllCookies } from "@/lib/base-path";
 
 const PUBLIC_PATHS = ["/signin", "/api/auth/login", "/api/auth/logout", "/api/auth/session"];
 
@@ -13,9 +13,7 @@ function normalizePath(pathname) {
 }
 
 function redirectTo(request, pathname) {
-    const url = request.nextUrl.clone();
-    url.pathname = withBasePath(pathname);
-    return NextResponse.redirect(url);
+    return NextResponse.redirect(buildAppRedirectUrl(request, pathname));
 }
 
 function clearSessionCookie(request, response) {

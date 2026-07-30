@@ -96,7 +96,7 @@ export default function SalesPeriodicPage() {
     /* ── Fetch branches ─────────────────────────────────── */
     useEffect(() => {
         const fetchBranches = async () => {
-            const cacheKey = "branches";
+            const cacheKey = "branches_v2";
             const cached = DataCache.get(cacheKey);
             
             // Handle both legacy string cache and new object cache
@@ -106,14 +106,14 @@ export default function SalesPeriodicPage() {
             }
 
             try {
-                const res = await fetch("/api/branches");
+                const res = await fetch("/api/branches?source=mysql");
                 if (res.ok) {
                     const data = await res.json();
                     const list = Array.isArray(data) ? data : (data?.value || []);
                     
                     const options = list.map(b => {
-                        const rawName = b.Description?.value || b.BranchName?.value || b.branch_name || "";
-                        const name = rawName && !rawName.startsWith("[object") ? rawName : (b.SiteID || b.branch_id || "");
+                        const rawName = b.Description?.value || b.Description || b.BranchName?.value || b.branch_name || "";
+                        const name = rawName && !String(rawName).startsWith("[object") ? String(rawName) : (b.SiteID || b.branch_id || "");
                         return { id: b.SiteID || b.branch_id || "", name };
                     })
                     .filter(b => b.id)

@@ -68,60 +68,26 @@ export async function GET(request) {
 
                 const [inventory, globalStatsResult] = await Promise.all([inventoryPromise, statsPromise]);
 
-                const layout = inventory.dataMode === "catalog"
-                    ? "catalog"
-                    : inventory.dataMode === "warehouse-missing"
-                    ? "catalog-empty"
-                    : "warehouse";
-                const isCatalogOnly = layout === "catalog-empty";
+                const dataMode = globalStatsResult?.dataMode || inventory.dataMode || "warehouse";
+                const fromMysqlCatalog =
+                    dataMode === "catalog" || dataMode === "warehouse-missing";
 
-                if (inventory.data.length === 0) {
-                    throw new Error("EMPTY_MYSQL");
-                }
-
-                const cookie = getSessionFromRequest(request);
-
-                if (isCatalogOnly && cookie && cookie !== "__bypass__") {
-                    const live = await AcumaticaService.getStockItems({
-                        page,
-                        pageSize,
-                        search,
-                        branch,
-                        cookie,
-                        includeStats: stats,
-                    });
-                    const data = enrich ? await enrichInventoryRows(live.data, { branch, search }) : live.data;
-                    return Response.json({
-                        ...live,
-                        data,
-                        globalStats: live.globalStats || globalStatsResult || {
-                            totalStock: 0,
-                            totalValue: 0,
-                            lowStock: 0,
-                            totalLowStock: 0,
-                            outOfStock: 0,
-                            deadStock: 0,
-                            overstock: 0,
-                            lastSync: await MySqlService.getLastInventorySyncTime(),
-                        },
-                        source: "acumatica-live",
-                        companyId,
-                        page,
-                        pageSize,
-                    });
-                }
-
+                // Prefer MySQL even when warehouse levels are missing (catalog listing).
+                // Do not jump to live ERP just because branch stock rows are absent.
                 result = {
                     ...inventory,
                     data: inventory.data,
                     globalStats: globalStatsResult || undefined,
-                    dataMode: globalStatsResult?.dataMode || inventory.dataMode || layout,
-                    source: layout === "warehouse" ? "mysql" : "mysql-catalog",
+                    dataMode,
+                    source: fromMysqlCatalog ? "mysql-catalog" : "mysql",
                     companyId,
                 };
             } catch (mError) {
                 console.error("[MySQL Inventory Error]", mError.message);
 
+                // Keep Inventory on MySQL: only use ERP when the DB call itself failed
+                // and the client explicitly asked for a non-mysql source path below.
+                // For source=mysql, return an empty MySQL payload instead of FALLBACK.
                 const cookie = getSessionFromRequest(request);
                 if (!cookie) return Response.json({ message: "Unauthorized" }, { status: 401 });
 
@@ -136,16 +102,27 @@ export async function GET(request) {
                     });
                 }
 
-                result = await AcumaticaService.getStockItems({
+                return Response.json({
+                    data: [],
+                    totalCount: 0,
+                    hasMore: false,
+                    globalStats: await MySqlService.getGlobalStats(branch, search, companyId).catch(() => ({
+                        totalStock: 0,
+                        totalValue: 0,
+                        lowStock: 0,
+                        totalLowStock: 0,
+                        outOfStock: 0,
+                        deadStock: 0,
+                        overstock: 0,
+                    })),
+                    source: "mysql",
+                    dataMode: "catalog-empty",
+                    companyId,
                     page,
                     pageSize,
-                    search,
-                    branch,
-                    cookie,
-                    includeStats: stats,
-                    includeCount: count
+                    message: "Unable to read inventory from MySQL. Check Sync Center or try Refresh.",
+                    details: mError.message,
                 });
-                result.source = "acumatica-fallback";
             }
         } else {
             const cookie = getSessionFromRequest(request);

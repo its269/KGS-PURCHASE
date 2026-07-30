@@ -815,9 +815,12 @@ export const MySqlService = {
             await this.ensureInventoryPlanningColumns();
             const layout = await resolveInventoryLayout(effectiveCompanyId);
             const hasWarehouse = layout === "warehouse";
+            // Catalog rows have no branch_id — still serve them from MySQL when stock
+            // levels have not been synced yet (avoid empty → live ERP fallback).
             const queryLayout = hasWarehouse ? "warehouse" : "catalog";
 
-            if ((branch || filter) && !hasWarehouse) {
+            if (filter && !hasWarehouse) {
+                // Stock health filters need per-warehouse qty; catalog cannot answer them.
                 return { data: [], totalCount: 0, hasMore: false, dataMode: "warehouse-missing" };
             }
 
@@ -947,7 +950,11 @@ export const MySqlService = {
                 data: transformed,
                 totalCount: total,
                 hasMore: total > offset + pageSize,
-                dataMode: queryLayout === "catalog" && layout === "warehouse" ? "catalog" : layout,
+                // When warehouse levels are missing, keep warehouse-missing so the UI
+                // can prompt for Inventory sync while still listing MySQL catalog rows.
+                dataMode: !hasWarehouse
+                    ? (total > 0 ? "warehouse-missing" : layout)
+                    : (queryLayout === "catalog" ? "catalog" : layout),
             };
         } catch (err) {
             console.error("[MySQL getInventory Error]", err);
@@ -1039,7 +1046,7 @@ export const MySqlService = {
      * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
     async getGlobalStats(branch = "", search = "", companyId = "main") {
-        const cacheKey = `global-stats:${companyId}:${branch}:${search}`;
+        const cacheKey = `global-stats-v2:${companyId}:${branch}:${search}`;
         return getCached(cacheKey, 120_000, () => this._computeGlobalStats(branch, search, companyId));
     },
 
@@ -1054,8 +1061,10 @@ export const MySqlService = {
 
             const warehouseRows = await countWarehouseRows(effectiveCompanyId);
             if (warehouseRows === 0) {
+                const catalogCount = await countCatalogRows(effectiveCompanyId);
                 return {
                     ...EMPTY_GLOBAL_STATS,
+                    count: catalogCount,
                     lastSync: await this.getLastInventorySyncTime(),
                     dataMode: "warehouse-missing",
                 };
@@ -1724,9 +1733,64 @@ export const MySqlService = {
     },
 
     /**
-     * Fetch unique branches from MySQL
+     * Fetch unique branches for Inventory / PO filters.
+     * Prefer the Acumatica-synced master `branches` table so the dropdown stays
+     * complete even when warehouse inventory rows are missing or mid-sync.
+     * Also merges any branch_id still present on inventory_items.
      */
     async getBranches(companyId = "main") {
+        try {
+            const [masterBranches, invBranches] = await Promise.all([
+                this.getMasterBranches(),
+                this.getInventoryBranchIds(companyId),
+            ]);
+
+            const byId = new Map();
+            const add = (id, name = "") => {
+                const key = String(id || "").trim();
+                if (!key || key === "__catalog__") return;
+                if (isExcludedBranchAlias(key)) return;
+                if (companyId === "ecommerce" && !isEcomBranchAlias(key)) return;
+
+                const upper = key.toUpperCase();
+                const label = String(name || "").trim();
+                const existing = byId.get(upper);
+                if (!existing) {
+                    byId.set(upper, {
+                        SiteID: key,
+                        Description: { value: label || key },
+                    });
+                    return;
+                }
+                if (
+                    label &&
+                    label.toUpperCase() !== upper &&
+                    (!existing.Description?.value || existing.Description.value === existing.SiteID)
+                ) {
+                    existing.Description = { value: label };
+                }
+            };
+
+            for (const b of masterBranches) {
+                add(b.branch_id || b.SiteID, b.branch_name || b.Description);
+            }
+            for (const id of invBranches) add(id, id);
+
+            if (byId.size === 0) {
+                // Last resort: previous inventory-only query path
+                return this.getInventoryBranchesLegacy(companyId);
+            }
+
+            return [...byId.values()].sort((a, b) =>
+                String(a.SiteID).localeCompare(String(b.SiteID))
+            );
+        } catch (err) {
+            console.error("[MySQL getBranches Error]", err);
+            return this.getInventoryBranchesLegacy(companyId);
+        }
+    },
+
+    async getInventoryBranchIds(companyId = "main") {
         try {
             const branchEx = sqlExcludeBranches("inventory_items");
             let query;
@@ -1751,13 +1815,22 @@ export const MySqlService = {
             }
 
             const [rows] = await pool.execute(query, params);
+            return rows.map((r) => String(r.branch_id || "").trim()).filter(Boolean);
+        } catch (err) {
+            console.error("[MySQL getInventoryBranchIds Error]", err);
+            return [];
+        }
+    },
 
-            return rows.map(r => ({
-                SiteID: r.branch_id,
-                Description: { value: r.branch_id }
+    async getInventoryBranchesLegacy(companyId = "main") {
+        try {
+            const ids = await this.getInventoryBranchIds(companyId);
+            return ids.map((id) => ({
+                SiteID: id,
+                Description: { value: id },
             }));
         } catch (err) {
-            console.error("[MySQL getBranches Error]", err);
+            console.error("[MySQL getInventoryBranchesLegacy Error]", err);
             return [];
         }
     },

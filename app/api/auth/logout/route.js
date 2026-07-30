@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { AuthService } from "@/services/auth";
 import { getSessionFromRequest, deleteSession } from "@/lib/session-store";
-import { withBasePath, clearAllCookies } from "@/lib/base-path";
+import { buildAppRedirectUrl, clearAllCookies } from "@/lib/base-path";
 
 export async function GET(request) {
     console.log("[Logout] Clearing session and redirecting to /signin");
@@ -13,12 +13,10 @@ export async function GET(request) {
     if (sessionId) deleteSession(sessionId);
 
     const expired = request.nextUrl.searchParams.get("expired") === "1";
-    const signInUrl = request.nextUrl.clone();
-    signInUrl.pathname = withBasePath("/signin");
-    signInUrl.search = "";
-    if (expired) {
-        signInUrl.searchParams.set("expired", "1");
-    }
+    const signInUrl = buildAppRedirectUrl(
+        request,
+        expired ? "/signin?expired=1" : "/signin"
+    );
     const response = NextResponse.redirect(signInUrl);
     clearAllCookies(request, response);
     return response;
