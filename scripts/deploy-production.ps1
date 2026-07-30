@@ -130,10 +130,11 @@ try {
         return "HTTP $($page.StatusCode), CSS OK ($($asset.Content.Length) bytes)"
     }
     try {
-        $msg = Test-SignInHealthy 'http://localhost:3001/kgs-purchase'
-        Write-Host "OK  localhost:3001/kgs-purchase/signin -> $msg" -ForegroundColor Green
+        $msg = Test-SignInHealthy 'http://127.0.0.1:3001/kgs-purchase'
+        Write-Host "OK  127.0.0.1:3001/kgs-purchase/signin -> $msg" -ForegroundColor Green
     } catch {
         Write-Warning "Local health check: $($_.Exception.Message)"
+        throw "Local health check failed: $($_.Exception.Message)"
     }
     try {
         $msg2 = Test-SignInHealthy 'http://190.92.233.232/kgs-purchase'
