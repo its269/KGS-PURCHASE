@@ -383,6 +383,7 @@ export default function ReplenishmentPage() {
     const [selectedBranch, setSelectedBranch] = useState("");
     const [priorityFilter, setPriorityFilter] = useState("all");
     const [search, setSearch] = useState("");
+    const [itemClassFilter, setItemClassFilter] = useState("");
     const [loading, setLoading] = useState(true);
     const [backgroundLoading, setBackgroundLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -450,9 +451,9 @@ export default function ReplenishmentPage() {
                 const full = await load(`&page=1&pageSize=0${refreshParam}`);
                 if (gen !== fetchGenRef.current) return;
                 applyPayload(full);
-                DataCache.set(`replenishment_recs_v7_${branchToFetch}`, full, { persist: false });
+                DataCache.set(`replenishment_recs_v8_${branchToFetch}`, full, { persist: false });
             } else {
-                DataCache.set(`replenishment_recs_v7_${branchToFetch}`, first, { persist: false });
+                DataCache.set(`replenishment_recs_v8_${branchToFetch}`, first, { persist: false });
             }
         } catch (err) {
             if (err.message === "Unauthorized") return;
@@ -519,7 +520,7 @@ export default function ReplenishmentPage() {
         let active = true;
         if (!activeBranch) return undefined;
 
-        const cacheKey = `replenishment_recs_v7_${activeBranch}`;
+        const cacheKey = `replenishment_recs_v8_${activeBranch}`;
         const cached = DataCache.get(cacheKey);
 
         (async () => {
@@ -556,6 +557,15 @@ export default function ReplenishmentPage() {
         return { urgent, soon, zeroOrder, totalSuggested };
     }, [recs, meta]);
 
+    const itemClassOptions = useMemo(() => {
+        const set = new Set();
+        for (const r of recs) {
+            const cls = String(r.itemClass || "").trim();
+            if (cls) set.add(cls);
+        }
+        return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    }, [recs]);
+
     const filteredRecs = useMemo(() => {
         let list = recs;
         if (priorityFilter === "urgent") {
@@ -566,15 +576,21 @@ export default function ReplenishmentPage() {
                 ? soonItems
                 : list.filter((r) => (r.suggestedQty ?? 0) === 0);
         }
+        if (itemClassFilter) {
+            list = list.filter(
+                (r) => String(r.itemClass || "").trim().toLowerCase() === itemClassFilter.toLowerCase()
+            );
+        }
         const q = search.trim().toLowerCase();
         if (q) {
             list = list.filter((r) =>
                 (r.itemId || "").toLowerCase().includes(q) ||
-                (r.description || "").toLowerCase().includes(q)
+                (r.description || "").toLowerCase().includes(q) ||
+                (r.itemClass || "").toLowerCase().includes(q)
             );
         }
         return list;
-    }, [recs, priorityFilter, search]);
+    }, [recs, priorityFilter, search, itemClassFilter]);
 
     const showingSoonFallback = useMemo(() => {
         if (priorityFilter !== "soon") return false;
@@ -583,8 +599,14 @@ export default function ReplenishmentPage() {
 
     useEffect(() => {
         setPage(1);
+        setItemClassFilter("");
         closeAiExplain();
-    }, [priorityFilter, search, viewMode, selectedBranch, closeAiExplain]);
+    }, [viewMode, selectedBranch, closeAiExplain]);
+
+    useEffect(() => {
+        setPage(1);
+        closeAiExplain();
+    }, [priorityFilter, search, itemClassFilter, closeAiExplain]);
 
     const totalPages = Math.max(1, Math.ceil(filteredRecs.length / PAGE_SIZE));
     const paginatedRecs = useMemo(() => {
@@ -611,8 +633,8 @@ export default function ReplenishmentPage() {
         if (!rows.length) return;
 
         const headers = isMain
-            ? ["Status", "Product ID", "Description", "Branch Order Qty", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"]
-            : ["Status", "Product ID", "Description", "Branch Stock", "Coming PO", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"];
+            ? ["Status", "Product ID", "Description", "Item Class", "Branch Order Qty", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"]
+            : ["Status", "Product ID", "Description", "Item Class", "Branch Stock", "Coming PO", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"];
 
         const csvRows = rows.map((rec) => {
             const ai = rec.aiInsights || {};
@@ -621,6 +643,7 @@ export default function ReplenishmentPage() {
                 priorityLabel(rec.priorityLevel),
                 rec.itemId,
                 rec.description || "",
+                rec.itemClass || "",
             ];
             if (isMain) {
                 base.push(
@@ -780,6 +803,24 @@ export default function ReplenishmentPage() {
                                 </button>
                             )}
                         </div>
+
+                        <div className="repl-item-class-field">
+                            <label htmlFor="repl-item-class">Item Class</label>
+                            <div className="db-select-wrapper">
+                                <select
+                                    id="repl-item-class"
+                                    className="db-select"
+                                    value={itemClassFilter}
+                                    onChange={(e) => setItemClassFilter(e.target.value)}
+                                >
+                                    <option value="">All Item Classes</option>
+                                    {itemClassOptions.map((cls) => (
+                                        <option key={cls} value={cls}>{cls}</option>
+                                    ))}
+                                </select>
+                                <IconChevron />
+                            </div>
+                        </div>
                     </div>
 
                     <div className="db-toolbar-right">
@@ -794,7 +835,7 @@ export default function ReplenishmentPage() {
                             className="db-refresh-btn"
                             onClick={() => {
                                 if (!activeBranch) return;
-                                DataCache.delete(`replenishment_recs_v7_${activeBranch}`);
+                                DataCache.delete(`replenishment_recs_v8_${activeBranch}`);
                                 fetchRecommendations(false, activeBranch, true);
                             }}
                             disabled={loading || !activeBranch}

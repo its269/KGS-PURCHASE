@@ -155,9 +155,30 @@
 }
 
 .repl-branch-field .db-select,
-.repl-priority-field .db-select {
+.repl-priority-field .db-select,
+.repl-item-class-field .db-select {
     min-width: 140px;
     height: 38px;
+}
+
+.repl-item-class-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 180px;
+}
+
+.repl-item-class-field label {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.repl-item-class-field .db-select {
+    min-width: 180px;
+    max-width: 240px;
 }
 
 .repl-search {

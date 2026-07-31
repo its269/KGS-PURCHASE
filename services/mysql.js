@@ -3302,7 +3302,7 @@ export const MySqlService = {
     },
 
     async ensureReplenishmentCacheTable() {
-        return getCached("replenishment:table-ready", 3_600_000, async () => {
+        return getCached("replenishment:table-ready:v2", 3_600_000, async () => {
         try {
             await purchasePool.query(`
                 CREATE TABLE IF NOT EXISTS replenishment_cache (
@@ -3310,6 +3310,7 @@ export const MySqlService = {
                     branch_id VARCHAR(100) NOT NULL,
                     inventory_id VARCHAR(100) NOT NULL,
                     description VARCHAR(500) NULL,
+                    item_class VARCHAR(100) NULL,
                     current_stock DECIMAL(18,4) DEFAULT 0,
                     qty_sold_90 DECIMAL(18,4) DEFAULT 0,
                     sales_velocity DECIMAL(18,6) DEFAULT 0,
@@ -3334,6 +3335,14 @@ export const MySqlService = {
                     KEY idx_repl_updated (updated_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             `);
+            try {
+                await purchasePool.query(
+                    `ALTER TABLE replenishment_cache ADD COLUMN item_class VARCHAR(100) NULL AFTER description`
+                );
+            } catch (alterErr) {
+                // Column already exists on upgraded DBs
+                if (alterErr?.code !== "ER_DUP_FIELDNAME") throw alterErr;
+            }
             return true;
         } catch (err) {
             console.error("[MySQL ensureReplenishmentCacheTable Error]", err);
@@ -3398,6 +3407,7 @@ export const MySqlService = {
             branchId,
             rec.itemId,
             rec.description || "",
+            rec.itemClass || "",
             rec.currentStock ?? 0,
             rec.qtySold90 ?? 0,
             ads,
@@ -3445,6 +3455,7 @@ export const MySqlService = {
             recommendationId: `REC-C${index}`,
             itemId: row.inventory_id,
             description: row.description,
+            itemClass: row.item_class || "",
             currentStock: Number(row.current_stock) || 0,
             suggestedQty: Number(row.suggested_qty) || 0,
             priorityLevel: row.priority_level,
@@ -3509,7 +3520,7 @@ export const MySqlService = {
             const limit = Math.max(1, Math.min(pageSize, 5000));
             const offset = (safePage - 1) * limit;
             const cols = slim
-                ? `inventory_id, description, current_stock, qty_sold_90, sales_velocity, days_remaining,
+                ? `inventory_id, description, item_class, current_stock, qty_sold_90, sales_velocity, days_remaining,
                    suggested_qty, priority_level, lead_time_days, vendor_id, branch_order_qty,
                    main_inventory, coming_po, total_branch_replenishment, sales_scope, restock_source,
                    what_to_do, ai_preview, is_main_warehouse_view, updated_at, branch_id`
@@ -3524,9 +3535,29 @@ export const MySqlService = {
                 [companyId, branchId, limit, offset]
             );
 
-            const recommendations = rows.map((row, i) =>
+            let recommendations = rows.map((row, i) =>
                 this.cacheRowToRecommendation(row, offset + i, { slim })
             );
+
+            // Backfill item class for older cache rows written before item_class existed
+            const missingClassIds = recommendations
+                .filter((r) => !String(r.itemClass || "").trim())
+                .map((r) => r.itemId)
+                .filter(Boolean);
+            if (missingClassIds.length > 0) {
+                const catalog = await this.getCatalogItemsByIds(missingClassIds, companyId);
+                const classById = new Map(
+                    catalog.map((c) => [
+                        String(c.inventoryId || "").toUpperCase().trim(),
+                        c.itemClass || "",
+                    ])
+                );
+                recommendations = recommendations.map((r) => {
+                    if (String(r.itemClass || "").trim()) return r;
+                    const key = String(r.itemId || "").toUpperCase().trim();
+                    return { ...r, itemClass: classById.get(key) || "" };
+                });
+            }
 
             return {
                 recommendations,
@@ -3575,7 +3606,7 @@ export const MySqlService = {
 
             const sql = `
                 INSERT INTO replenishment_cache (
-                    company_id, branch_id, inventory_id, description, current_stock,
+                    company_id, branch_id, inventory_id, description, item_class, current_stock,
                     qty_sold_90, sales_velocity, days_remaining, suggested_qty, priority_level,
                     lead_time_days, vendor_id, branch_order_qty, main_inventory, coming_po,
                     total_branch_replenishment, sales_scope, restock_source, what_to_do,
