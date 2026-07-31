@@ -398,7 +398,9 @@ export default function DashboardPage() {
         const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
 
         const cached = DataCache.get(cacheKey);
-        if (cached && !String(cached.source || "").startsWith("acumatica")) {
+        // Always refetch when searching so results are not stuck on a stale empty cache
+        const skipCache = Boolean(debouncedSearch);
+        if (!skipCache && cached && !String(cached.source || "").startsWith("acumatica")) {
             setAllInventory(cached.data || []);
             setTotalCount(cached.totalCount || 0);
             setHasMore(!!cached.hasMore);
