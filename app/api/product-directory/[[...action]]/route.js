@@ -5,9 +5,10 @@
  *   GET  /api/product-directory/health
  *   POST /api/product-directory/browse
  *   POST /api/product-directory/inventory_browse
+ *   POST /api/product-directory/action_log
  *   POST /api/product-directory?action=search
  *
- * Admin mutations (folder/product create/delete) require header
+ * Admin mutations (folder/product create/delete, action_logs list) require header
  * X-Inventory-Admin-Token when INVENTORY_ADMIN_TOKEN is set.
  */
 import { NextResponse } from "next/server";
@@ -67,10 +68,15 @@ async function handle(request, context) {
     let actionKey = resolveAction(request, params);
     const body = await parseBody(request);
 
+    // Only use body.action for routing when it maps to a known endpoint.
+    // (action_log payloads also send body.action = opened_product|searched|downloaded)
     if (!actionKey && body.action) {
-        actionKey = String(body.action)
+        const fromBody = String(body.action)
             .toLowerCase()
             .replace(/[^a-z0-9_]/g, "");
+        if (PRODUCT_DIRECTORY_ACTIONS[fromBody]) {
+            actionKey = fromBody;
+        }
     }
 
     if (!actionKey) {
@@ -96,6 +102,7 @@ async function handle(request, context) {
             "productCreate",
             "folderDelete",
             "productDelete",
+            "actionLogsList",
         ].includes(methodName);
 
         const data = needsRequest

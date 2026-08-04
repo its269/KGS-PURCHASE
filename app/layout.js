@@ -1,5 +1,6 @@
 import "./globals.css";
 import AuthBootstrap from "@/components/AuthBootstrap";
+import BackgroundIncrementalSync from "@/components/BackgroundIncrementalSync";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { withBasePath } from "@/lib/base-path";
 
@@ -36,6 +37,7 @@ export default function RootLayout({ children }) {
       <body>
         <ThemeProvider>
           <AuthBootstrap />
+          <BackgroundIncrementalSync />
           {children}
         </ThemeProvider>
       </body>

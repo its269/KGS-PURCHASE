@@ -44,6 +44,31 @@ const purchasePool = mysql.createPool({
     keepAliveInitialDelay: 10000,
 });
 
+function isTransientMysqlError(err) {
+    const code = String(err?.code || "");
+    const msg = String(err?.message || "");
+    return /ENETUNREACH|ECONNRESET|ETIMEDOUT|ECONNREFUSED|PROTOCOL_CONNECTION_LOST|EPIPE|ER_LOCK_DEADLOCK/i.test(
+        `${code} ${msg}`
+    );
+}
+
+async function withMysqlRetry(label, fn, retries = 3) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            if (!isTransientMysqlError(err) || attempt >= retries) throw err;
+            console.warn(
+                `[MySQL ${label}] transient ${err.code || err.message} — retry ${attempt}/${retries}`
+            );
+            await new Promise((r) => setTimeout(r, 800 * attempt));
+        }
+    }
+    throw lastErr;
+}
+
 async function countWarehouseRows(companyId = "main") {
     return getCached(`wh-count:${companyId}`, 60_000, async () => {
         const [[row]] = await pool.query(
@@ -2388,52 +2413,54 @@ export const MySqlService = {
      */
     async upsertPeriodicSales(rows) {
         if (!rows.length) return;
-        const connection = await purchasePool.getConnection();
-        try {
-            await connection.beginTransaction();
-            for (const r of rows) {
-                await connection.execute(
-                    `INSERT INTO product_periodic_sales
-                        (id, branch_name, order_type, financial_period, document_date,
-                         description, qty, total_amount, item_class, inventory_id,
-                         posting_class, last_sync)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                        branch_name      = VALUES(branch_name),
-                        order_type       = VALUES(order_type),
-                        financial_period = VALUES(financial_period),
-                        document_date    = VALUES(document_date),
-                        description      = VALUES(description),
-                        qty              = VALUES(qty),
-                        total_amount     = VALUES(total_amount),
-                        item_class       = VALUES(item_class),
-                        inventory_id     = VALUES(inventory_id),
-                        posting_class    = VALUES(posting_class),
-                        last_sync        = VALUES(last_sync)`,
-                    [
-                        r.id,
-                        r.branch_name ?? null,
-                        r.order_type ?? null,
-                        r.financial_period ?? null,
-                        r.document_date ?? null,
-                        r.description ?? null,
-                        r.qty ?? null,
-                        r.total_amount ?? null,
-                        r.item_class ?? null,
-                        r.inventory_id ?? null,
-                        r.posting_class ?? null,
-                        r.last_sync ? new Date(r.last_sync) : new Date(),
-                    ]
-                );
+        return withMysqlRetry("upsertPeriodicSales", async () => {
+            const connection = await purchasePool.getConnection();
+            try {
+                await connection.beginTransaction();
+                for (const r of rows) {
+                    await connection.execute(
+                        `INSERT INTO product_periodic_sales
+                            (id, branch_name, order_type, financial_period, document_date,
+                             description, qty, total_amount, item_class, inventory_id,
+                             posting_class, last_sync)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                            branch_name      = VALUES(branch_name),
+                            order_type       = VALUES(order_type),
+                            financial_period = VALUES(financial_period),
+                            document_date    = VALUES(document_date),
+                            description      = VALUES(description),
+                            qty              = VALUES(qty),
+                            total_amount     = VALUES(total_amount),
+                            item_class       = VALUES(item_class),
+                            inventory_id     = VALUES(inventory_id),
+                            posting_class    = VALUES(posting_class),
+                            last_sync        = VALUES(last_sync)`,
+                        [
+                            r.id,
+                            r.branch_name ?? null,
+                            r.order_type ?? null,
+                            r.financial_period ?? null,
+                            r.document_date ?? null,
+                            r.description ?? null,
+                            r.qty ?? null,
+                            r.total_amount ?? null,
+                            r.item_class ?? null,
+                            r.inventory_id ?? null,
+                            r.posting_class ?? null,
+                            r.last_sync ? new Date(r.last_sync) : new Date(),
+                        ]
+                    );
+                }
+                await connection.commit();
+            } catch (err) {
+                await connection.rollback();
+                console.error("[MySQL upsertPeriodicSales Error]", err);
+                throw err;
+            } finally {
+                connection.release();
             }
-            await connection.commit();
-        } catch (err) {
-            await connection.rollback();
-            console.error("[MySQL upsertPeriodicSales Error]", err);
-            throw err;
-        } finally {
-            connection.release();
-        }
+        });
     },
 
     /**
@@ -2479,14 +2506,16 @@ export const MySqlService = {
      */
     async logSyncEvent(mode, section, status, records = 0, message = null) {
         try {
-            await purchasePool.query(
-                `INSERT INTO sync_logs (mode, section, status, records_processed, message)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [mode, section, status, records, message]
+            await withMysqlRetry("logSyncEvent", () =>
+                purchasePool.query(
+                    `INSERT INTO sync_logs (mode, section, status, records_processed, message)
+                     VALUES (?, ?, ?, ?, ?)`,
+                    [mode, section, status, records, message]
+                )
             );
             return true;
         } catch (err) {
-            console.error("[MySQL logSyncEvent Error]", err);
+            console.error("[MySQL logSyncEvent Error]", err?.code || err?.message || err);
             return false;
         }
     },

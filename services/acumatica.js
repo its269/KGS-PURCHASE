@@ -330,8 +330,9 @@ export const AcumaticaService = {
             ? { "Authorization": `Bearer ${credential.slice(10)}` }
             : { "Cookie": credential || "" };
 
+        const maxAttempts = 5;
         let lastError = null;
-        for (let attempts = 1; attempts <= 3; attempts++) {
+        for (let attempts = 1; attempts <= maxAttempts; attempts++) {
             try {
                 const res = await fetch(url, {
                     ...options,
@@ -356,6 +357,18 @@ export const AcumaticaService = {
             } catch (err) {
                 if (err.name === 'AbortError') throw err;
                 lastError = err;
+                // Transient DNS / network blips (ENOTFOUND, ENETUNREACH, ECONNRESET, …)
+                const code = err?.cause?.code || err?.code || "";
+                const transient =
+                    /ENOTFOUND|ENETUNREACH|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|fetch failed/i.test(
+                        `${code} ${err?.message || ""}`
+                    );
+                if (!transient || attempts >= maxAttempts) break;
+                console.warn(
+                    `>>> [Acumatica] Network retry ${attempts}/${maxAttempts}:`,
+                    err?.message || code
+                );
+                await new Promise((r) => setTimeout(r, 1500 * attempts));
             }
         }
         throw lastError;
@@ -734,26 +747,35 @@ export const AcumaticaService = {
 
     /**
      * Pull sales documents from Acumatica for MySQL sync (SalesInvoice + AR memos).
+     *
+     * Incremental mode prefers LastModified* filters. Acumatica often rejects
+     * LastModifiedDateTime + $expand=Details over a large window
+     * ("An error has occurred") — we fall back to short Date windows.
+     *
+     * @param {object} opts
+     * @param {Function} [opts.onBatch] - async (rows) => {} called after each chunk so MySQL can checkpoint
      */
-    async fetchPeriodicSalesForSync({ cookie, startDate, endDate, lastModifiedAfter = null }) {
-        let dateFilter = `Date ge datetimeoffset'${startDate}T00:00:00Z' and Date le datetimeoffset'${endDate}T23:59:59Z'`;
-        if (lastModifiedAfter) {
-            dateFilter = `LastModifiedDateTime gt datetimeoffset'${lastModifiedAfter}'`;
-        }
+    async fetchPeriodicSalesForSync({
+        cookie,
+        startDate,
+        endDate,
+        lastModifiedAfter = null,
+        onBatch = null,
+        maxCatchupDays = 14,
+    }) {
+        const pageSize = 50;
+        /** Cap long catch-ups so one sync doesn't run for hours / trip the network. */
+        const CATCHUP_DAYS = Math.max(1, Math.min(60, Number(maxCatchupDays) || 14));
 
-        const fetchEntity = async (entity, extraFilter) => {
-            const filterParts = [dateFilter];
-            if (extraFilter) filterParts.push(extraFilter);
-
-            const encoded = encodeURIComponent(filterParts.join(" and "));
-            const pageSize = 50;
+        const fetchEntityPages = async (entity, filter) => {
+            const encoded = encodeURIComponent(filter);
             const all = [];
             let skip = 0;
             while (true) {
-                const url = `${ACU_BASE}/${entity}?$expand=Details&$top=${pageSize}&$skip=${skip}&$filter=${encoded}&$orderby=${encodeURIComponent("Date desc")}`;
+                const url = `${ACU_BASE}/${entity}?$expand=Details&$top=${pageSize}&$skip=${skip}&$filter=${encoded}`;
                 const res = await this.fetchWithRetry(url, cookie);
                 const data = await res.json();
-                const batch = data.value || [];
+                const batch = data.value || (Array.isArray(data) ? data : []);
                 all.push(...batch);
                 if (batch.length < pageSize) break;
                 skip += pageSize;
@@ -761,18 +783,192 @@ export const AcumaticaService = {
             return all;
         };
 
-        const [salesInvoices, creditMemos, debitMemos] = await Promise.all([
-            fetchEntity("SalesInvoice"),
-            fetchEntity("Invoice", "Type eq 'Credit Memo'"),
-            fetchEntity("Invoice", "Type eq 'Debit Memo'"),
-        ]);
+        /** Sequential entity fetches — fewer parallel Acumatica hits, more stable on flaky networks. */
+        const fetchAllEntities = async (baseFilter) => {
+            const salesInvoices = await fetchEntityPages("SalesInvoice", baseFilter);
+            const creditMemos = await fetchEntityPages(
+                "Invoice",
+                `${baseFilter} and Type eq 'Credit Memo'`
+            );
+            const debitMemos = await fetchEntityPages(
+                "Invoice",
+                `${baseFilter} and Type eq 'Debit Memo'`
+            );
+            return { salesInvoices, creditMemos, debitMemos };
+        };
 
-        const rows = [
-            ...invoicesToPeriodicSalesRows(salesInvoices, { idPrefix: "SI", defaultOrderType: "Invoice" }),
-            ...invoicesToPeriodicSalesRows(creditMemos, { idPrefix: "CM", defaultOrderType: "Credit Memo" }),
-            ...invoicesToPeriodicSalesRows(debitMemos, { idPrefix: "DM", defaultOrderType: "Debit Memo" }),
-        ];
-        return rows;
+        const toDay = (d) => {
+            const x = d instanceof Date ? d : new Date(d);
+            return Number.isFinite(x.getTime()) ? x.toISOString().slice(0, 10) : null;
+        };
+
+        const formatOData = (date) => date.toISOString().replace(/\.\d{3}/, "");
+
+        /** Inclusive UTC day windows (keeps $expand=Details payloads small). */
+        const dayWindows = (fromDay, toDay, sizeDays = 2) => {
+            const windows = [];
+            if (!fromDay || !toDay) return windows;
+            let cursor = new Date(`${fromDay}T00:00:00Z`);
+            const end = new Date(`${toDay}T00:00:00Z`);
+            if (cursor > end) return windows;
+            while (cursor <= end) {
+                const winEnd = new Date(cursor);
+                winEnd.setUTCDate(winEnd.getUTCDate() + Math.max(1, sizeDays) - 1);
+                if (winEnd > end) winEnd.setTime(end.getTime());
+                windows.push({
+                    start: cursor.toISOString().slice(0, 10),
+                    end: winEnd.toISOString().slice(0, 10),
+                });
+                cursor = new Date(winEnd);
+                cursor.setUTCDate(cursor.getUTCDate() + 1);
+            }
+            return windows;
+        };
+
+        const docsToRows = (docs, lastSyncOverride = null) => {
+            const { salesInvoices, creditMemos, debitMemos } = docs || {
+                salesInvoices: [],
+                creditMemos: [],
+                debitMemos: [],
+            };
+            const rows = [
+                ...invoicesToPeriodicSalesRows(salesInvoices, { idPrefix: "SI", defaultOrderType: "Invoice" }),
+                ...invoicesToPeriodicSalesRows(creditMemos, { idPrefix: "CM", defaultOrderType: "Credit Memo" }),
+                ...invoicesToPeriodicSalesRows(debitMemos, { idPrefix: "DM", defaultOrderType: "Debit Memo" }),
+            ];
+            if (lastSyncOverride) {
+                for (const r of rows) r.last_sync = lastSyncOverride;
+            }
+            return rows;
+        };
+
+        const emit = async (rows) => {
+            if (!rows.length) return rows;
+            if (typeof onBatch === "function") {
+                await onBatch(rows);
+            }
+            return rows;
+        };
+
+        const allRows = [];
+
+        if (lastModifiedAfter) {
+            const sinceRaw = String(lastModifiedAfter).trim();
+            let sinceIso = sinceRaw.includes("T")
+                ? sinceRaw.replace(/\.\d{3}/, "")
+                : `${sinceRaw}T00:00:00Z`;
+            let sinceDate = new Date(sinceIso);
+            const untilDay = endDate || toDay(new Date());
+
+            const capDate = new Date();
+            capDate.setUTCDate(capDate.getUTCDate() - CATCHUP_DAYS);
+            if (Number.isFinite(sinceDate.getTime()) && sinceDate < capDate) {
+                console.warn(
+                    `>>> [SalesSync] Watermark ${sinceIso} is older than ${CATCHUP_DAYS}d — capping catch-up to ${formatOData(capDate)}`
+                );
+                sinceDate = capDate;
+                sinceIso = formatOData(capDate);
+            }
+            const sinceDay = toDay(sinceDate) || startDate;
+
+            let docs = null;
+            const strategies = [
+                {
+                    name: "LastModifiedDateTime",
+                    run: () =>
+                        fetchAllEntities(`LastModifiedDateTime gt datetimeoffset'${sinceIso}'`),
+                },
+                {
+                    name: "LastModified",
+                    run: () => fetchAllEntities(`LastModified gt datetimeoffset'${sinceIso}'`),
+                },
+            ];
+
+            for (const strategy of strategies) {
+                try {
+                    console.log(`>>> [SalesSync] Trying filter strategy: ${strategy.name} since ${sinceIso}`);
+                    docs = await strategy.run();
+                    console.log(`>>> [SalesSync] Strategy ${strategy.name} succeeded`);
+                    break;
+                } catch (err) {
+                    console.warn(
+                        `>>> [SalesSync] Strategy ${strategy.name} failed:`,
+                        err?.message || err
+                    );
+                }
+            }
+
+            if (docs) {
+                const rows = docsToRows(docs);
+                await emit(rows);
+                allRows.push(...rows);
+            } else {
+                console.warn(
+                    `>>> [SalesSync] Falling back to Date windows ${sinceDay} → ${untilDay}`
+                );
+                const windows = dayWindows(sinceDay, untilDay, 2);
+                for (let i = 0; i < windows.length; i++) {
+                    const w = windows[i];
+                    const filter =
+                        `Date ge datetimeoffset'${w.start}T00:00:00Z' and ` +
+                        `Date le datetimeoffset'${w.end}T23:59:59Z'`;
+                    console.log(
+                        `>>> [SalesSync] Date window ${i + 1}/${windows.length}: ${w.start} .. ${w.end}`
+                    );
+                    try {
+                        const winDocs = await fetchAllEntities(filter);
+                        // Checkpoint watermark at window end so a mid-sync failure can resume
+                        const rows = docsToRows(winDocs, new Date(`${w.end}T23:59:59Z`));
+                        await emit(rows);
+                        allRows.push(...rows);
+                    } catch (winErr) {
+                        console.error(
+                            `>>> [SalesSync] Window ${w.start}..${w.end} failed:`,
+                            winErr?.message || winErr
+                        );
+                        if (allRows.length > 0) {
+                            console.warn(
+                                `>>> [SalesSync] Partial success — ${allRows.length} line(s) saved; resume next run from last checkpoint`
+                            );
+                            return allRows;
+                        }
+                        throw winErr;
+                    }
+                }
+            }
+        } else {
+            const fromDay = startDate;
+            const untilDay = endDate || toDay(new Date());
+            const from = new Date(`${fromDay}T00:00:00Z`);
+            const to = new Date(`${untilDay}T00:00:00Z`);
+            const spanDays = Math.max(0, Math.round((to - from) / 86400000));
+
+            if (spanDays > 7) {
+                console.log(
+                    `>>> [SalesSync] Full range ${fromDay}→${untilDay} (${spanDays}d) — chunking by week`
+                );
+                for (const w of dayWindows(fromDay, untilDay, 7)) {
+                    const filter =
+                        `Date ge datetimeoffset'${w.start}T00:00:00Z' and ` +
+                        `Date le datetimeoffset'${w.end}T23:59:59Z'`;
+                    console.log(`>>> [SalesSync] Date window ${w.start} .. ${w.end}`);
+                    const winDocs = await fetchAllEntities(filter);
+                    const rows = docsToRows(winDocs, new Date(`${w.end}T23:59:59Z`));
+                    await emit(rows);
+                    allRows.push(...rows);
+                }
+            } else {
+                const filter =
+                    `Date ge datetimeoffset'${fromDay}T00:00:00Z' and ` +
+                    `Date le datetimeoffset'${untilDay}T23:59:59Z'`;
+                const docs = await fetchAllEntities(filter);
+                const rows = docsToRows(docs);
+                await emit(rows);
+                allRows.push(...rows);
+            }
+        }
+
+        return allRows;
     },
 
     /** ── VENDORS ── */

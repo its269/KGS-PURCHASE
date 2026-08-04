@@ -9,6 +9,9 @@ import mysql from "mysql2/promise";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** Prevent overlapping syncs in this Node process (manual + auto-sync). */
+let syncInProgress = false;
+
 async function systemLoginForCompany(acumaticaCompany) {
     const loginRes = await fetch(`${process.env.ACUMATICA_BASE_URL}/entity/auth/login`, {
         method: "POST",
@@ -39,6 +42,14 @@ export async function POST(request) {
     const isSecretValid = process.env.SYNC_SECRET && syncSecret === process.env.SYNC_SECRET;
 
     if (!cookie && !isSecretValid) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+
+    if (syncInProgress) {
+        return NextResponse.json(
+            { message: "A synchronization is already in progress. Try again shortly." },
+            { status: 409 }
+        );
+    }
+    syncInProgress = true;
     
     let effectiveCookie = cookie;
     if (isSecretValid && !cookie) {
@@ -61,11 +72,13 @@ export async function POST(request) {
             console.log(">>> [Sync API] System login successful. Captured cookies.");
         } catch (loginErr) {
             console.error(">>> [Sync API] System login failed:", loginErr.message);
+            syncInProgress = false;
             return NextResponse.json({ message: "System login failed" }, { status: 500 });
         }
     }
 
     if (effectiveCookie === "__bypass__" && !isSecretValid) {
+        syncInProgress = false;
         return NextResponse.json({ 
             message: "Synchronization is unavailable in Bypass Mode because the Acumatica API Limit is currently reached. Please try again later when Acumatica sessions have expired." 
         }, { status: 403 });
@@ -381,7 +394,11 @@ export async function POST(request) {
                     try { controller.enqueue(encoder.encode(JSON.stringify({ ping: true }) + "\n")); } catch { }
                 }
             }, 15000);
-            const finish = () => { clearInterval(keepAlive); controller.close(); };
+            const finish = () => {
+                clearInterval(keepAlive);
+                syncInProgress = false;
+                controller.close();
+            };
 
             const getF = (obj, keyName) => {
                 if (!obj) return "";
@@ -475,9 +492,11 @@ export async function POST(request) {
                 // Get last sync timestamps for incremental mode
                 let lastInvSync = null;
                 let lastSalesSync = null;
+                let lastPoSync = null;
                 if (isDelta) {
                     lastInvSync = await MySqlService.getLastInventorySyncTime();
                     lastSalesSync = await MySqlService.getLastSalesSyncTime();
+                    lastPoSync = await MySqlService.getLastPOSyncTime();
                     
                     // Add 5-minute safety overlap buffer if timestamp exists
                     // Also format to ISO without milliseconds for better OData compatibility
@@ -491,7 +510,25 @@ export async function POST(request) {
                         const d = new Date(new Date(lastSalesSync).getTime() - (5 * 60 * 1000));
                         lastSalesSync = formatOData(d);
                     }
+                    if (lastPoSync) {
+                        const d = new Date(new Date(lastPoSync).getTime() - (5 * 60 * 1000));
+                        lastPoSync = formatOData(d);
+                    }
+
+                    // "Sync Today's Changes" — clamp watermarks to start of today (UTC)
+                    if (options.mode === "delta") {
+                        const startOfToday = new Date();
+                        startOfToday.setUTCHours(0, 0, 0, 0);
+                        const todayStamp = formatOData(new Date(startOfToday.getTime() - (5 * 60 * 1000)));
+                        lastInvSync = todayStamp;
+                        lastSalesSync = todayStamp;
+                        lastPoSync = todayStamp;
+                    }
                 }
+
+                let inventoryRowsSynced = 0;
+                let salesRowsSynced = 0;
+                let poRowsSynced = 0;
 
                 // 1. BRANCHES + WAREHOUSES (Always fast — master list for replenishment picker)
                 send({ section: "Inventory", details: "Updating branches...", progress: 5 });
@@ -726,6 +763,7 @@ export async function POST(request) {
                         await MySqlService.sanitizeCatalogStockFields("ecommerce").catch(() => 0);
 
                         await MySqlService.logSyncEvent(options.mode, "Inventory", "completed", totalSynced, `${totalLevelsSynced} stock rows`);
+                        inventoryRowsSynced = totalLevelsSynced || totalSynced;
                         send({ section: "Inventory", status: "done", details: `Inventory sync complete (${totalLevelsSynced} stock rows).`, progress: 100 });
                     }
                 }
@@ -743,37 +781,78 @@ export async function POST(request) {
                     }
 
                     let sTotal = 0;
+                    let salesFinished = false;
                     try {
                         const salesRows = await AcumaticaService.fetchPeriodicSalesForSync({
                             cookie: effectiveCookie,
                             startDate: sStart,
                             endDate: sEnd,
                             lastModifiedAfter: isDelta && lastSalesSync ? lastSalesSync : null,
+                            maxCatchupDays: 14,
+                            onBatch: async (batch) => {
+                                if (signal.aborted || !batch?.length) return;
+                                await MySqlService.upsertPeriodicSales(batch);
+                                sTotal += batch.length;
+                                if (options.mode === "delta") {
+                                    for (const r of batch) {
+                                        if (r.inventory_id) affectedInventoryIds.add(r.inventory_id);
+                                    }
+                                }
+                                const salesProg = Math.min(95, 10 + Math.floor(sTotal / 20));
+                                send({
+                                    section: "Sales history",
+                                    details: `Synced ${sTotal} line(s)...`,
+                                    progress: salesProg,
+                                    count: sTotal,
+                                });
+                            },
                         });
 
-                        if (options.mode === "delta") {
-                            for (const r of salesRows) {
-                                if (r.inventory_id) affectedInventoryIds.add(r.inventory_id);
+                        // Safety: upsert return value only if onBatch did not run
+                        if (sTotal === 0 && salesRows?.length) {
+                            const CHUNK = 400;
+                            for (let i = 0; i < salesRows.length; i += CHUNK) {
+                                if (signal.aborted) break;
+                                const chunk = salesRows.slice(i, i + CHUNK);
+                                await MySqlService.upsertPeriodicSales(chunk);
+                                sTotal += chunk.length;
+                                if (options.mode === "delta") {
+                                    for (const r of chunk) {
+                                        if (r.inventory_id) affectedInventoryIds.add(r.inventory_id);
+                                    }
+                                }
                             }
-                        }
-
-                        const CHUNK = 400;
-                        for (let i = 0; i < salesRows.length; i += CHUNK) {
-                            if (signal.aborted) break;
-                            const chunk = salesRows.slice(i, i + CHUNK);
-                            await MySqlService.upsertPeriodicSales(chunk);
-                            sTotal += chunk.length;
-                            const salesProg = Math.min(95, 10 + Math.floor(sTotal / 20));
-                            send({ section: "Sales history", details: `Synced ${sTotal} line(s)...`, progress: salesProg, count: sTotal });
                         }
                     } catch (salesFetchErr) {
                         console.error(`>>> [Sync API] Sales Fetch Error:`, salesFetchErr.message);
                         send({ section: "Sales history", details: `Sales sync error: ${salesFetchErr.message}`, progress: 10 });
-                        throw salesFetchErr;
+                        if (sTotal > 0) {
+                            console.warn(`>>> [Sync API] Sales partial sync kept (${sTotal} lines).`);
+                            salesRowsSynced = sTotal;
+                            await MySqlService.logSyncEvent(
+                                options.mode,
+                                "Sales history",
+                                "completed",
+                                sTotal,
+                                `Partial: ${salesFetchErr.message}`
+                            );
+                            send({
+                                section: "Sales history",
+                                status: "done",
+                                details: `Sales sync partial (${sTotal} lines). Will resume next run.`,
+                                progress: 100,
+                            });
+                            salesFinished = true;
+                        } else {
+                            throw salesFetchErr;
+                        }
                     }
 
-                    await MySqlService.logSyncEvent(options.mode, "Sales history", "completed", sTotal);
-                    send({ section: "Sales history", status: "done", details: `Sales sync complete (${sTotal} lines).`, progress: 100 });
+                    if (!salesFinished) {
+                        salesRowsSynced = sTotal;
+                        await MySqlService.logSyncEvent(options.mode, "Sales history", "completed", sTotal);
+                        send({ section: "Sales history", status: "done", details: `Sales sync complete (${sTotal} lines).`, progress: 100 });
+                    }
                 }
 
                 // 3.5 PURCHASE ORDERS (Incoming PO Details — runs with inventory or sales sync)
@@ -781,15 +860,42 @@ export async function POST(request) {
                     send({ section: "Incoming PO", details: "Updating purchase order details...", progress: 50 });
                     try {
                         let poStart = options.startDate || "2024-01-01";
+                        if (isDelta && lastPoSync) {
+                            // Prefer last PO watermark day so receipt map stays light
+                            poStart = String(lastPoSync).slice(0, 10) || poStart;
+                        }
                         const receiptDateByOrder = await buildReceiptDateMap(ACU_BASE, poStart);
-                        const poFilter = `Date ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
+
+                        let poFilter;
+                        if (isDelta && lastPoSync) {
+                            poFilter = `LastModifiedDateTime gt datetimeoffset'${lastPoSync}' and Status ne 'Cancelled'`;
+                        } else {
+                            poFilter = `Date ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
+                        }
+
                         let poSkip = 0;
                         let poTotal = 0;
+                        let usedPoFallback = false;
                         while (!signal.aborted) {
-                            const url = `${ACU_BASE}/PurchaseOrder?$expand=Details&$top=50&$skip=${poSkip}&$filter=${encodeURIComponent(poFilter)}`;
-                            const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
-                            const data = await res.json();
-                            const orders = parseAcumaticaRows(data);
+                            let orders = [];
+                            try {
+                                const url = `${ACU_BASE}/PurchaseOrder?$expand=Details&$top=50&$skip=${poSkip}&$filter=${encodeURIComponent(poFilter)}`;
+                                const res = await AcumaticaService.fetchWithRetry(url, effectiveCookie);
+                                const data = await res.json();
+                                orders = parseAcumaticaRows(data);
+                            } catch (poFetchErr) {
+                                if (isDelta && lastPoSync && !usedPoFallback) {
+                                    console.warn(
+                                        ">>> [Sync API] PO LastModifiedDateTime failed — falling back to Date filter:",
+                                        poFetchErr.message
+                                    );
+                                    usedPoFallback = true;
+                                    poFilter = `Date ge datetimeoffset'${poStart}T00:00:00Z' and Status ne 'Cancelled'`;
+                                    poSkip = 0;
+                                    continue;
+                                }
+                                throw poFetchErr;
+                            }
                             if (orders.length === 0) break;
 
                             const historyRows = [];
@@ -850,6 +956,7 @@ export async function POST(request) {
                             });
                             if (orders.length < 50) break;
                         }
+                        poRowsSynced = poTotal;
                         await MySqlService.logSyncEvent(options.mode, "Incoming PO", "completed", poTotal);
                         send({ section: "Incoming PO", status: "done", details: "Purchase order sync complete.", progress: 100 });
                     } catch (poErr) {
@@ -916,8 +1023,10 @@ export async function POST(request) {
                     send({ section: "Inventory", status: "done", details: "Stock refresh complete.", progress: 100 });
                 }
 
-                // 5. FINAL ENRICHMENT (Optional but recommended for full data accuracy)
-                if (options.sales || options.inventory) {
+                // 5. FINAL ENRICHMENT — full sync always; incremental only when data changed
+                const dataChanged =
+                    inventoryRowsSynced > 0 || salesRowsSynced > 0 || poRowsSynced > 0;
+                if ((options.sales || options.inventory) && (options.mode === "full" || dataChanged)) {
                     send({ section: "Data Enrichment", details: "Filling missing categories...", progress: 98 });
                     try {
                         await MySqlService.enrichSalesData();
@@ -938,6 +1047,13 @@ export async function POST(request) {
                         await MySqlService.logSyncEvent(options.mode, "Data Enrichment", "error", 0, e.message);
                     }
                     send({ section: "Data Enrichment", status: "done", details: "Enrichment complete.", progress: 100 });
+                } else if (options.sales || options.inventory) {
+                    send({
+                        section: "Data Enrichment",
+                        status: "done",
+                        details: "Skipped enrichment (no new/changed rows).",
+                        progress: 100,
+                    });
                 }
 
                 await MySqlService.logSyncEvent(options.mode, "All", "completed", 0, "Sync finished successfully");

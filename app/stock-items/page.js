@@ -236,52 +236,84 @@ export default function StockItemsPage() {
     const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
     return (
-        <div className="db-root">
-            <main className="db-main">
-                <div className="db-page-title">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <h1>Stock Items Masterlist</h1>
-                        <span className="si-company-badge">{companyLabel}</span>
-                        <span className={`db-data-source ${dataSource.includes("acumatica") ? 'db-data-source-fallback' : 'db-data-source-live'}`} style={{ fontSize: '0.65rem', padding: '0.2rem 0.6rem' }}>
-                            {dataSource === "mysql"
-                                ? "Live from MySQL"
-                                : dataSource === "mysql-catalog"
-                                ? "MySQL catalog (run sync for stock)"
-                                : dataSource === "acumatica-fallback"
-                                ? "Fallback: Live ERP"
-                                : "Live from ERP"}
-                        </span>
-                    </div>
-                    <p>View all products and their configurations. Click a row to see detailed branch availability.</p>
-                </div>
-
-                <div className="db-stats">
-                    <div className="db-stat-card db-stat-blue">
-                        <span className="db-stat-label">Total Product Types</span>
-                        <span className="db-stat-value">{loading && totalCount === 0 ? "..." : (totalCount || 0).toLocaleString()}</span>
-                        <span className="db-stat-sub">Distinct Inventory IDs</span>
-                    </div>
-                    <div className="db-stat-card">
-                        <span className="db-stat-label">Total Stocks</span>
-                        <span className="db-stat-value">{loading && totalStock === 0 ? "..." : (totalStock || 0).toLocaleString()}</span>
-                        <span className="db-stat-sub">Sum of all On-Hand units</span>
-                    </div>
-                </div>
-
-                <div className="db-toolbar">
-                    <div className="db-toolbar-left">
-                        <div className="db-search-wrapper" style={{ width: '100%', maxWidth: '500px' }}>
-                            <IconSearch />
-                            <input
-                                className="db-search"
-                                type="text"
-                                placeholder="Search by ID or Description..."
-                                value={search}
-                                onChange={e => setSearch(e.target.value)}
-                            />
+        <div className="db-root si-page">
+            <main className="db-main si-main">
+                <header className="si-hero">
+                    <div className="si-hero-top">
+                        <div className="si-hero-copy">
+                            <p className="si-eyebrow">Product catalog</p>
+                            <h1 className="si-title">Stock Items Masterlist</h1>
+                            <p className="si-subtitle">
+                                Browse products and configurations. Select a row for branch availability.
+                            </p>
+                        </div>
+                        <div className="si-hero-meta" aria-label="Data context">
+                            <span className="si-chip si-chip-company">{companyLabel}</span>
+                            <span
+                                className={`si-chip ${
+                                    dataSource.includes("acumatica")
+                                        ? "si-chip-warn"
+                                        : "si-chip-live"
+                                }`}
+                            >
+                                <span className="si-chip-dot" aria-hidden="true" />
+                                {dataSource === "mysql"
+                                    ? "Live from MySQL"
+                                    : dataSource === "mysql-catalog"
+                                    ? "MySQL catalog (run sync for stock)"
+                                    : dataSource === "acumatica-fallback"
+                                    ? "Fallback: Live ERP"
+                                    : "Live from ERP"}
+                            </span>
                         </div>
                     </div>
-                    <div className="db-toolbar-right">
+
+                    <div className="si-metrics" role="group" aria-label="Catalog totals">
+                        <div className="si-metric">
+                            <span className="si-metric-label">Product types</span>
+                            <span className="si-metric-value">
+                                {loading && totalCount === 0
+                                    ? "…"
+                                    : (totalCount || 0).toLocaleString()}
+                            </span>
+                            <span className="si-metric-hint">Distinct inventory IDs</span>
+                        </div>
+                        <div className="si-metric si-metric-accent">
+                            <span className="si-metric-label">On-hand stock</span>
+                            <span className="si-metric-value">
+                                {loading && totalStock === 0
+                                    ? "…"
+                                    : (totalStock || 0).toLocaleString()}
+                            </span>
+                            <span className="si-metric-hint">Sum of all warehouse units</span>
+                        </div>
+                    </div>
+                </header>
+
+                <div className="si-toolbar">
+                    <div className="si-search-wrap">
+                        <IconSearch />
+                        <input
+                            className="si-search"
+                            type="search"
+                            placeholder="Search by ID or description…"
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            aria-label="Search stock items"
+                        />
+                        {search ? (
+                            <button
+                                type="button"
+                                className="si-search-clear"
+                                onClick={() => setSearch("")}
+                                aria-label="Clear search"
+                            >
+                                ×
+                            </button>
+                        ) : null}
+                    </div>
+
+                    <div className="si-actions">
                         <input
                             ref={fileInputRef}
                             type="file"
@@ -292,16 +324,15 @@ export default function StockItemsPage() {
                         <div className="si-import-group" ref={importInfoRef}>
                             <button
                                 type="button"
-                                className="si-view-btn"
-                                style={{ display: "flex", alignItems: "center", gap: "0.5rem", height: "42px" }}
+                                className="si-btn si-btn-ghost"
                                 onClick={() => fileInputRef.current?.click()}
                                 disabled={importing}
                             >
-                                {importing ? "Importing…" : "Import Dimensions"}
+                                {importing ? "Importing…" : "Import dimensions"}
                             </button>
                             <button
                                 type="button"
-                                className="si-import-info-btn"
+                                className="si-icon-btn"
                                 aria-label="Import file format requirements"
                                 aria-expanded={showImportInfo}
                                 onClick={() => setShowImportInfo((v) => !v)}
@@ -312,34 +343,56 @@ export default function StockItemsPage() {
                             {showImportInfo && (
                                 <div className="si-import-info-panel" role="dialog" aria-label="Import format guide">
                                     <strong>Required file format</strong>
-                                    <p>Upload an Excel (.xlsx, .xls) or CSV file with a header row. The first column must match stock items by Inventory ID.</p>
+                                    <p>
+                                        Upload an Excel (.xlsx, .xls) or CSV file with a header row. The
+                                        first column must match stock items by Inventory ID.
+                                    </p>
                                     <ul>
-                                        <li><strong>Inventory ID</strong> — must match an existing stock item</li>
+                                        <li>
+                                            <strong>Inventory ID</strong> — must match an existing stock
+                                            item
+                                        </li>
                                         {DIMENSION_FIELDS.map((f) => (
-                                            <li key={f.key}><strong>{f.label}</strong> — optional numeric value</li>
+                                            <li key={f.key}>
+                                                <strong>{f.label}</strong> — optional numeric value
+                                            </li>
                                         ))}
                                     </ul>
                                     <p className="si-import-info-note">
-                                        Unknown Inventory IDs are skipped. Existing dimension values are not overwritten — only empty fields are filled.
+                                        Unknown Inventory IDs are skipped. Existing dimension values are
+                                        not overwritten — only empty fields are filled.
                                     </p>
                                 </div>
                             )}
                         </div>
 
-                        <button 
-                            className="si-view-btn" 
-                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--text-primary)', color: 'var(--text-inverse)', border: 'none', padding: '0.6rem 1.25rem', height: '42px' }}
+                        <button
+                            type="button"
+                            className="si-btn si-btn-secondary"
                             onClick={handleExport}
                             disabled={exporting}
                         >
-                            <IconDownload /> {exporting ? "Exporting..." : "Export CSV"}
+                            <IconDownload /> {exporting ? "Exporting…" : "Export CSV"}
                         </button>
-                        
-                        <button className="db-refresh-btn" onClick={() => fetchItems()} disabled={loading}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                {loading && <div className="db-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px', borderTopColor: 'var(--text-secondary)' }}></div>}
-                                <span>{loading ? "Loading..." : "Refresh List"}</span>
-                            </div>
+
+                        <button
+                            type="button"
+                            className="si-btn si-btn-primary"
+                            onClick={() => fetchItems()}
+                            disabled={loading}
+                        >
+                            {loading && (
+                                <span
+                                    className="db-spinner"
+                                    style={{
+                                        width: "14px",
+                                        height: "14px",
+                                        borderWidth: "2px",
+                                        borderTopColor: "currentColor",
+                                    }}
+                                />
+                            )}
+                            <span>{loading ? "Refreshing…" : "Refresh"}</span>
                         </button>
                     </div>
                 </div>
@@ -368,88 +421,183 @@ export default function StockItemsPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap">
-                    <table className="db-table db-table--fit">
-                        <thead>
-                            <tr>
-                                <th style={{ width: '180px' }}>Inventory ID</th>
-                                <th>Description</th>
-                                <th style={{ width: '130px' }}>Item Class</th>
-                                <th style={{ width: '80px', textAlign: 'right' }}>MOQ</th>
-                                <th style={{ width: '100px', textAlign: 'center' }}>Price</th>
-                                <th style={{ width: '80px', textAlign: 'center' }}>Unit</th>
-                                <th style={{ width: '100px', textAlign: 'center' }}>Status</th>
-                                <th style={{ width: '100px', textAlign: 'right' }}>Qty Sold</th>
-                                <th style={{ width: '120px', textAlign: 'right' }}>Total Sales</th>
-                                <th style={{ width: '100px', textAlign: 'center' }}>Dimensions</th>
-                                <th style={{ width: '120px', textAlign: 'center' }}>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {loading && items.length === 0 ? (
-                                <tr><td colSpan={11} className="si-loading-cell">
-                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
-                                        <div className="db-spinner db-spinner-lg"></div>
-                                        <span>Fetching items...</span>
-                                    </div>
-                                </td></tr>
-                            ) : items.length === 0 ? (
-                                <tr><td colSpan={11} className="si-empty-cell">No items found matching your search.</td></tr>
-                            ) : items.map(item => (
-                                <tr
-                                    key={item.inventoryId}
-                                    className={`db-clickable-row ${selectedId === item.inventoryId ? "si-row-selected" : ""}`}
-                                    onClick={() => setSelectedId(item.inventoryId)}
-                                >
-                                    <td><span className="db-inv-id">{item.inventoryId}</span></td>
-                                    <td className="db-desc" style={{ fontWeight: '500' }}>{item.description}</td>
-                                    <td><span className="db-class-tag">{item.itemClass}</span></td>
-                                    <td className="db-num" style={{ textAlign: 'right' }}>
-                                        {item.moq != null && item.moq !== "" ? Number(item.moq).toLocaleString() : "—"}
-                                    </td>
-                                    <td className="db-num">₱{(Number(item.price) || 0).toLocaleString()}</td>
-                                    <td style={{ textAlign: 'center' }}>{item.baseUnit}</td>
-                                    <td style={{ textAlign: 'center' }}>
-                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                                            <span className={`idm-status-pill idm-status-pill-sm ${item.itemStatus?.toLowerCase() === 'active' ? 'status-in' : 'status-out'}`}>
-                                                {item.itemStatus}
-                                            </span>
-                                            {item.totalOnHand <= 0 ? (
-                                                <span className="db-status-badge db-status-out" style={{ fontSize: '0.6rem' }}>OUT OF STOCK</span>
-                                            ) : item.totalOnHand < 10 ? (
-                                                <span className="db-status-badge db-status-low" style={{ fontSize: '0.6rem' }}>LOW STOCK</span>
-                                            ) : null}
-                                        </div>
-                                    </td>
-                                    <td className="db-num" style={{ fontWeight: '500' }}>{Number(item.totalQtySold) > 0 ? Number(item.totalQtySold).toLocaleString() : "—"}</td>
-                                    <td className="db-num" style={{ color: 'var(--accent-primary)' }}>{Number(item.totalSales) > 0 ? `₱${Number(item.totalSales).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}</td>
-                                    <td style={{ textAlign: 'center' }}>
-                                        {item.hasDimensions ? (
-                                            <span className="si-dim-badge">Set</span>
-                                        ) : (
-                                            <span className="si-dim-badge empty">—</span>
-                                        )}
-                                    </td>
-                                    <td style={{ textAlign: 'center' }}>
-                                        <button type="button" className="si-view-btn" onClick={(e) => { e.stopPropagation(); setSelectedId(item.inventoryId); }}>View Details</button>
-                                    </td>
+                <div className="si-table-panel">
+                    <div className="si-table-scroll">
+                        <table className="si-table">
+                            <thead>
+                                <tr>
+                                    <th className="si-col-id">Inventory ID</th>
+                                    <th className="si-col-desc">Description</th>
+                                    <th className="si-col-class">Item class</th>
+                                    <th className="si-col-num">MOQ</th>
+                                    <th className="si-col-num">Price</th>
+                                    <th className="si-col-unit">Unit</th>
+                                    <th className="si-col-status">Status</th>
+                                    <th className="si-col-num">Qty sold</th>
+                                    <th className="si-col-num">Total sales</th>
+                                    <th className="si-col-dim">Dims</th>
+                                    <th className="si-col-action">
+                                        <span className="si-sr-only">Action</span>
+                                    </th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {loading && items.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={11} className="si-loading-cell">
+                                            <div className="si-empty-state">
+                                                <div className="db-spinner db-spinner-lg" />
+                                                <span>Fetching items…</span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ) : items.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={11} className="si-empty-cell">
+                                            <div className="si-empty-state">
+                                                <strong>No matching items</strong>
+                                                <span>Try a different search term or clear filters.</span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    items.map((item) => {
+                                        const active =
+                                            String(item.itemStatus || "").toLowerCase() === "active";
+                                        const onHand = Number(item.totalOnHand) || 0;
+                                        const stockTone =
+                                            onHand <= 0 ? "out" : onHand < 10 ? "low" : "ok";
+                                        return (
+                                            <tr
+                                                key={item.inventoryId}
+                                                className={`si-row ${
+                                                    selectedId === item.inventoryId
+                                                        ? "si-row-selected"
+                                                        : ""
+                                                }`}
+                                                onClick={() => setSelectedId(item.inventoryId)}
+                                            >
+                                                <td className="si-col-id">
+                                                    <span className="si-inv-id">{item.inventoryId}</span>
+                                                </td>
+                                                <td className="si-col-desc">
+                                                    <span className="si-desc" title={item.description}>
+                                                        {item.description || "—"}
+                                                    </span>
+                                                </td>
+                                                <td className="si-col-class">
+                                                    {item.itemClass ? (
+                                                        <span className="si-class">{item.itemClass}</span>
+                                                    ) : (
+                                                        <span className="si-muted">—</span>
+                                                    )}
+                                                </td>
+                                                <td className="si-col-num">
+                                                    {item.moq != null && item.moq !== "" ? (
+                                                        Number(item.moq).toLocaleString()
+                                                    ) : (
+                                                        <span className="si-muted">—</span>
+                                                    )}
+                                                </td>
+                                                <td className="si-col-num si-price">
+                                                    ₱{(Number(item.price) || 0).toLocaleString()}
+                                                </td>
+                                                <td className="si-col-unit">
+                                                    {item.baseUnit || <span className="si-muted">—</span>}
+                                                </td>
+                                                <td className="si-col-status">
+                                                    <div className="si-status-stack">
+                                                        <span
+                                                            className={`si-status-pill ${
+                                                                active ? "is-active" : "is-inactive"
+                                                            }`}
+                                                        >
+                                                            {item.itemStatus || "—"}
+                                                        </span>
+                                                        {stockTone !== "ok" ? (
+                                                            <span
+                                                                className={`si-stock-flag is-${stockTone}`}
+                                                            >
+                                                                {stockTone === "out"
+                                                                    ? "Out of stock"
+                                                                    : "Low stock"}
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
+                                                </td>
+                                                <td className="si-col-num">
+                                                    {Number(item.totalQtySold) > 0 ? (
+                                                        Number(item.totalQtySold).toLocaleString()
+                                                    ) : (
+                                                        <span className="si-muted">—</span>
+                                                    )}
+                                                </td>
+                                                <td className="si-col-num si-sales">
+                                                    {Number(item.totalSales) > 0 ? (
+                                                        `₱${Number(item.totalSales).toLocaleString(
+                                                            undefined,
+                                                            { minimumFractionDigits: 2 }
+                                                        )}`
+                                                    ) : (
+                                                        <span className="si-muted">—</span>
+                                                    )}
+                                                </td>
+                                                <td className="si-col-dim">
+                                                    {item.hasDimensions ? (
+                                                        <span className="si-dim-badge">Set</span>
+                                                    ) : (
+                                                        <span className="si-muted">—</span>
+                                                    )}
+                                                </td>
+                                                <td className="si-col-action">
+                                                    <button
+                                                        type="button"
+                                                        className="si-row-action"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setSelectedId(item.inventoryId);
+                                                        }}
+                                                    >
+                                                        View
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
                 {!loading && totalPages > 1 && (
-                    <div className="db-pagination">
-                        <span className="db-page-info">
-                            Showing <strong>{((page - 1) * PAGE_SIZE) + 1}</strong> to <strong>{Math.min(page * PAGE_SIZE, totalCount)}</strong> of <strong>{totalCount}</strong> items
+                    <div className="si-pagination">
+                        <span className="si-page-info">
+                            Showing{" "}
+                            <strong>{(page - 1) * PAGE_SIZE + 1}</strong> to{" "}
+                            <strong>{Math.min(page * PAGE_SIZE, totalCount)}</strong> of{" "}
+                            <strong>{totalCount.toLocaleString()}</strong>
                         </span>
-                        <div className="db-page-btns">
-                            <button className="db-page-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
+                        <div className="si-page-btns">
+                            <button
+                                type="button"
+                                className="si-page-btn"
+                                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                disabled={page === 1}
+                                aria-label="Previous page"
+                            >
                                 <IconChevronLeft />
                             </button>
-                            <span className="db-page-dots">Page {page} of {totalPages}</span>
-                            <button className="db-page-btn" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}>
+                            <span className="si-page-dots">
+                                Page {page} of {totalPages}
+                            </span>
+                            <button
+                                type="button"
+                                className="si-page-btn"
+                                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                disabled={page === totalPages}
+                                aria-label="Next page"
+                            >
                                 <IconChevronRight />
                             </button>
                         </div>
