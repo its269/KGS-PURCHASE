@@ -25,6 +25,10 @@ const getAny = (obj, ...keys) => {
 
 const ACU_BASE = `${process.env.ACUMATICA_BASE_URL}/entity/Default/20.200.001`;
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE = { headers: { "Cache-Control": "no-store" } };
+
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
@@ -65,19 +69,19 @@ export async function GET(request) {
             console.log(`[Sales Periodic API] Fetching 90-day analysis from MySQL as of ${asOfStr}`);
             const mysqlResult = await MySqlService.getSalesAnalysis({
                 branch,
-                periods
+                periods,
+                page,
+                pageSize,
             });
 
             if (mysqlResult && mysqlResult.data) {
-                const totalItems = mysqlResult.data.length;
+                const totalItems = mysqlResult.totalItems ?? mysqlResult.data.length;
                 const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
                 const safePage = Math.min(Math.max(page, 1), totalPages);
-                const start = (safePage - 1) * pageSize;
-                const pageData = mysqlResult.data.slice(start, start + pageSize);
 
                 return NextResponse.json({
                     ...mysqlResult,
-                    data: pageData,
+                    data: mysqlResult.data,
                     months: periods.map(p => ({ key: p.key, label: p.label, range: p.range })),
                     pagination: {
                         page: safePage,
@@ -86,7 +90,7 @@ export async function GET(request) {
                         totalPages,
                     },
                     source: "mysql"
-                });
+                }, NO_STORE);
             }
         } catch (mysqlErr) {
             console.error("[Sales Periodic API] MySQL Error, will try Acumatica fallback:", mysqlErr.message);
@@ -103,7 +107,7 @@ export async function GET(request) {
                 metrics: { totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 },
                 pagination: { totalItems: 0, totalPages: 0 },
                 source: "mysql-bypass-empty"
-            });
+            }, NO_STORE);
         }
 
         console.log(`[Sales Periodic API] Fallback: Live fetch from Acumatica for 90 days`);
@@ -187,7 +191,7 @@ export async function GET(request) {
                 totalPages: Math.ceil(finalResults.length / pageSize)
             },
             source: "acumatica"
-        });
+        }, NO_STORE);
 
     } catch (err) {
         console.error("[Periodic Sales API Error]", err);

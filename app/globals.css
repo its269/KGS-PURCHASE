@@ -97,6 +97,16 @@ body {
   font-family: var(--font-inter);
 }
 
+/* Shared page shells — keep module content inside the viewport */
+.db-root,
+.si-page,
+.po-root,
+.repl-main,
+.sync-root {
+  max-width: 100%;
+  min-width: 0;
+}
+
 /* Instant dark/light switch — no color fade anywhere */
 html.no-theme-transition,
 html.no-theme-transition *,

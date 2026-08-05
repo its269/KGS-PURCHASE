@@ -1,9 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
-import { DataCache } from "@/lib/data-cache";
-import { loadListWithCache } from "@/lib/list-cache";
-import { prefetchRemainingPages } from "@/lib/progressive-load";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
@@ -137,7 +134,6 @@ export default function SuppliersPage() {
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [loading, setLoading] = useState(true);
-    const [backgroundLoading, setBackgroundLoading] = useState(false);
     const [error, setError] = useState(null);
     const [leadTimes, setLeadTimes] = useState({});
     const [showReliabilityInfo, setShowReliabilityInfo] = useState(false);
@@ -148,7 +144,6 @@ export default function SuppliersPage() {
     const [expandedOrderNbr, setExpandedOrderNbr] = useState(null);
 
     const isInitialMount = useRef(true);
-    const prefetchAbortRef = useRef(null);
     const saveTimeoutRef = useRef({});
 
     const vendorParamsFor = useCallback((pageNum) => {
@@ -157,9 +152,6 @@ export default function SuppliersPage() {
         return params;
     }, [debouncedSearch]);
 
-    const vendorCacheKeyFor = useCallback((pageNum) => {
-        return `vendors_v2_${vendorParamsFor(pageNum).toString()}`;
-    }, [vendorParamsFor]);
 
     // Initial restoration & Hydration fix
     useEffect(() => {
@@ -193,15 +185,6 @@ export default function SuppliersPage() {
                 if (savedLeadTimes) setLeadTimes(JSON.parse(savedLeadTimes));
             }
 
-            const params = new URLSearchParams({ page: String(initialPage), pageSize: String(PAGE_SIZE) });
-            if (savedSearch) params.set("search", savedSearch);
-            const cached = DataCache.get(`vendors_v2_${params.toString()}`);
-            if (cached) {
-                setVendors(cached.vendors ?? []);
-                setHasMore(cached.hasMore ?? false);
-                setTotalCount(cached.totalCount ?? 0);
-            }
-            
             isInitialMount.current = false;
         });
     }, []);
@@ -248,12 +231,11 @@ export default function SuppliersPage() {
         Promise.resolve().then(() => setPage(1));
     }, [debouncedSearch]);
 
-    const fetchVendors = useCallback(async (pageNum = page, { background = false } = {}) => {
-        if (!background) setLoading(true);
-        if (!background) setError(null);
+    const fetchVendors = useCallback(async (pageNum = page) => {
+        setLoading(true);
+        setError(null);
         try {
             const params = vendorParamsFor(pageNum);
-            const cacheKey = vendorCacheKeyFor(pageNum);
 
             const res = await fetchWithAuth(`/api/vendors?${params}`);
             if (!res.ok) {
@@ -261,63 +243,20 @@ export default function SuppliersPage() {
                 throw new Error(body.message || `HTTP ${res.status}`);
             }
             const data = await res.json();
-            if (!background || pageNum === page) {
-                setVendors(data.vendors ?? []);
-                setHasMore(data.hasMore ?? false);
-                setTotalCount(data.totalCount ?? 0);
-            }
-            DataCache.set(cacheKey, data, { persist: false });
-
-            if (pageNum === 1 && !background) {
-                prefetchAbortRef.current?.();
-                const total = data.totalCount ?? 0;
-                if (total > PAGE_SIZE) {
-                    setBackgroundLoading(true);
-                    prefetchAbortRef.current = prefetchRemainingPages({
-                        pageSize: PAGE_SIZE,
-                        totalCount: total,
-                        cacheKeyForPage: vendorCacheKeyFor,
-                        fetchPage: (p) => fetchVendors(p, { background: true }),
-                        onComplete: () => setBackgroundLoading(false),
-                    });
-                }
-            }
+            setVendors(data.vendors ?? []);
+            setHasMore(data.hasMore ?? false);
+            setTotalCount(data.totalCount ?? 0);
         } catch (err) {
             if (err.message === "Unauthorized") return;
-            if (!background) setError(err.message || "Failed to load suppliers. Please try again.");
+            setError(err.message || "Failed to load suppliers. Please try again.");
         } finally {
-            if (!background) setLoading(false);
+            setLoading(false);
         }
-    }, [page, vendorParamsFor, vendorCacheKeyFor]);
+    }, [page, vendorParamsFor]);
 
     useEffect(() => {
-        prefetchAbortRef.current?.();
-        const cacheKey = vendorCacheKeyFor(page);
-
-        const cached = DataCache.get(cacheKey);
-        loadListWithCache({
-            cacheKey,
-            cached,
-            apply: (data) => {
-                setVendors(data.vendors ?? []);
-                setHasMore(data.hasMore ?? false);
-                setTotalCount(data.totalCount ?? 0);
-            },
-            setLoading,
-            refetch: () => fetchVendors(page, { background: false }),
-        });
-
-        if (page === 1 && cached?.totalCount > PAGE_SIZE) {
-            setBackgroundLoading(true);
-            prefetchAbortRef.current = prefetchRemainingPages({
-                pageSize: PAGE_SIZE,
-                totalCount: cached.totalCount,
-                cacheKeyForPage: vendorCacheKeyFor,
-                fetchPage: (p) => fetchVendors(p, { background: true }),
-                onComplete: () => setBackgroundLoading(false),
-            });
-        }
-    }, [fetchVendors, page, debouncedSearch, vendorCacheKeyFor]);
+        fetchVendors(page);
+    }, [fetchVendors, page, debouncedSearch]);
 
     const stats = useMemo(() => {
         const total = vendors.length;
@@ -420,13 +359,13 @@ export default function SuppliersPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap" style={{ borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border-light)', boxShadow: 'var(--shadow-md)' }}>
+                <div className="db-table-wrap">
                     <table className="db-table db-table--fit">
                         <thead style={{ background: 'var(--bg-main)' }}>
                             <tr>
-                                <th style={{ width: '200px', padding: '1.25rem' }}>Supplier ID</th>
-                                <th style={{ padding: '1.25rem' }}>Supplier Name</th>
-                                <th style={{ width: '180px', padding: '1.25rem', textAlign: 'center' }}>
+                                <th style={{ width: '18%' }}>Supplier ID</th>
+                                <th>Supplier Name</th>
+                                <th style={{ width: '20%', textAlign: 'center' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
                                         Reliability Score
                                         <button 
@@ -450,7 +389,7 @@ export default function SuppliersPage() {
                                         </button>
                                     </div>
                                 </th>
-                                <th style={{ width: '220px', padding: '1.25rem' }}>Avg. Lead Time</th>
+                                <th style={{ width: '18%' }}>Avg. Lead Time</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -524,13 +463,6 @@ export default function SuppliersPage() {
                         </tbody>
                     </table>
                 </div>
-
-                {backgroundLoading && (
-                    <div className="db-bg-loading">
-                        <div className="db-spinner" />
-                        Loading remaining rows in the background…
-                    </div>
-                )}
 
                 {!loading && (
                     <div className="db-pagination" style={{ marginTop: '2rem' }}>

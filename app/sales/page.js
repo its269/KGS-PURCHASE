@@ -2,8 +2,6 @@
 
 import { useState, useCallback, useEffect, memo, Fragment, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { DataCache } from "@/lib/data-cache";
-import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 import "@/styles/sales.css";
@@ -68,18 +66,6 @@ export default function SalesPeriodicPage() {
 
             if (b) setSelectedBranch(b);
             if (d) setTargetDate(d);
-
-            const params = new URLSearchParams({
-                branch: b,
-                asOfDate: d
-            });
-            const cached = DataCache.get(`sales_90d_${params.toString()}`);
-            if (cached) {
-                setAllSalesData(cached.data || []);
-                setPeriods(cached.months || []);
-                setPagination(cached.pagination || { totalItems: 0, totalPages: 0 });
-                setMetrics(cached.metrics || { overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
-            }
         });
     }, []);
 
@@ -96,15 +82,6 @@ export default function SalesPeriodicPage() {
     /* ── Fetch branches ─────────────────────────────────── */
     useEffect(() => {
         const fetchBranches = async () => {
-            const cacheKey = "branches_v2";
-            const cached = DataCache.get(cacheKey);
-            
-            // Handle both legacy string cache and new object cache
-            if (cached && Array.isArray(cached) && cached.length > 0) {
-                const normalized = cached.map(b => typeof b === 'string' ? { id: b, name: b } : b);
-                setBranchOptions(normalized);
-            }
-
             try {
                 const res = await fetch("/api/branches?source=mysql");
                 if (res.ok) {
@@ -121,7 +98,6 @@ export default function SalesPeriodicPage() {
                     .sort((a, z) => a.name.localeCompare(z.name));
 
                     setBranchOptions(options);
-                    DataCache.set(cacheKey, options);
                 }
             } catch { }
         };
@@ -147,8 +123,6 @@ export default function SalesPeriodicPage() {
                 page: String(pageOverride),
                 pageSize: String(pageSize),
             });
-            const cacheKey = `sales_90d_${params.toString()}`;
-
             const res = await fetchWithAuth(`/api/sales-periodic?${params.toString()}`);
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
@@ -160,7 +134,6 @@ export default function SalesPeriodicPage() {
             setPeriods(result.months || []);
             setPagination(result.pagination || { totalItems: 0, totalPages: 0 });
             setMetrics(result.metrics || { overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
-            DataCache.set(cacheKey, result, { persist: false });
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (!isBackground) setError("Unable to connect to the server.");
@@ -177,26 +150,7 @@ export default function SalesPeriodicPage() {
 
     useEffect(() => {
         if (!mounted) return;
-        const params = new URLSearchParams({
-            branch: selectedBranch,
-            asOfDate: targetDate,
-            page: String(currentPage),
-            pageSize: String(pageSize),
-        });
-        const cacheKey = `sales_90d_${params.toString()}`;
-        const cached = DataCache.get(cacheKey);
-        if (cached) {
-            setAllSalesData(cached.data || []);
-            setPeriods(cached.months || []);
-            setPagination(cached.pagination || { totalItems: 0, totalPages: 0 });
-            setMetrics(cached.metrics || { overallStocks: 0, totalRevenue: 0, uniqueProducts: 0, totalQtySold: 0 });
-            setLoading(false);
-            if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
-                Promise.resolve().then(() => fetchSales(true, currentPage));
-            }
-        } else {
-            Promise.resolve().then(() => fetchSales(false, currentPage));
-        }
+        fetchSales(false, currentPage);
     }, [fetchSales, selectedBranch, targetDate, currentPage, mounted, pageSize]);
 
     /* ── Export CSV ─────────────────────────────────────── */

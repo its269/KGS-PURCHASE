@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef, memo } from "react";
-import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/dashboard.css";
 
@@ -72,7 +71,6 @@ IconClose.displayName = "IconClose";
 /* ── Constants ────────────────────────────────────────────── */
 const ROWS_PER_PAGE = 10;
 const LOW_STOCK_THRESHOLD = 10;
-const CACHE_FRESH_MS = 60_000;
 const EMPTY_GLOBAL_STATS = {
     totalStock: 0,
     totalValue: 0,
@@ -160,29 +158,7 @@ export default function DashboardPage() {
     const [statsLoading, setStatsLoading] = useState(true);
     const [companyLabel, setCompanyLabel] = useState("KGSC");
 
-    const inventoryCachePrefix = () =>
-        `inventory_${localStorage.getItem("activeCompanyId") || "main"}_`;
-
-    const cacheFreshnessRef = useRef({});
-
-    const clearInventoryCache = () => {
-        DataCache.deleteByPrefix(inventoryCachePrefix());
-        cacheFreshnessRef.current = {};
-    };
-
-    const isCacheFresh = (key) => {
-        const ts = cacheFreshnessRef.current[key];
-        return ts && Date.now() - ts < CACHE_FRESH_MS;
-    };
-
-    const markCacheFresh = (key) => {
-        cacheFreshnessRef.current[key] = Date.now();
-    };
-
-    const shouldUseCachedStats = (stats) =>
-        stats && stats.dataMode !== "warehouse-missing";
-
-    // Hydration fix & Initial Restoration
+    const searchTimer = useRef(null);
     useEffect(() => {
         Promise.resolve().then(() => {
             const b = localStorage.getItem("db_filter_branch") || "";
@@ -194,41 +170,6 @@ export default function DashboardPage() {
             if (s) setSearch(s);
             if (p > 1) setPage(p);
             if (u !== "User") setUserName(u);
-
-            const tableParams = new URLSearchParams({
-                page: String(p),
-                pageSize: String(ROWS_PER_PAGE),
-                search: s,
-                branch: b,
-                count: "true",
-                stats: "false",
-                enrich: "false",
-                source: "mysql"
-            });
-            const statsParams = new URLSearchParams({
-                search: s,
-                branch: b,
-                statsOnly: "true",
-                source: "mysql"
-            });
-            const tableCacheKey = `${inventoryCachePrefix()}${tableParams.toString()}`;
-            const statsCacheKey = `${inventoryCachePrefix()}${statsParams.toString()}`;
-
-            const cachedTable = DataCache.get(tableCacheKey);
-            if (cachedTable && !String(cachedTable.source || "").startsWith("acumatica")) {
-                setAllInventory(cachedTable.data || []);
-                setTotalCount(cachedTable.totalCount || 0);
-                setHasMore(!!cachedTable.hasMore);
-                if (cachedTable.source) setDataSource(cachedTable.source);
-                markCacheFresh(tableCacheKey);
-            }
-
-            const cachedStats = DataCache.get(statsCacheKey);
-            if (cachedStats?.globalStats && shouldUseCachedStats(cachedStats.globalStats)) {
-                setGlobalStats(cachedStats.globalStats);
-                setStatsLoading(false);
-                markCacheFresh(statsCacheKey);
-            }
         });
     }, []);
 
@@ -247,7 +188,6 @@ export default function DashboardPage() {
         const onCompanyChange = () => {
             setPage(1);
             setAllInventory([]);
-            DataCache.clear();
             loadCompany();
             setSelectedBranch("");
         };
@@ -268,26 +208,11 @@ export default function DashboardPage() {
         setGlobalStats({ ...EMPTY_GLOBAL_STATS, count: 0 });
         setAllInventory([]);
         setTotalCount(0);
-        clearInventoryCache();
     };
-
-    const searchTimer = useRef(null);
 
     /* ── Init Data ────────────────────────────────────────── */
     useEffect(() => {
         const fetchBranches = async () => {
-            const companyKey = localStorage.getItem("activeCompanyId") || "main";
-            const cacheKey = `branches_v2_${companyKey}`;
-            const cached = DataCache.get(cacheKey);
-            // Guard: only use cache if it's already the {id,name} format
-            if (cached && Array.isArray(cached) && cached.length > 0 && typeof cached[0] === "object" && cached[0].id) {
-                setBranchOptions(cached);
-                if (!selectedBranch) {
-                    const main = cached.find(b => b.id.toUpperCase() === "MAIN") || cached.find(b => b.id.toUpperCase().includes("MAIN"));
-                    if (main) setSelectedBranch(main.id);
-                }
-            }
-
             try {
                 const res = await fetchWithAuth("/api/branches?source=mysql");
                 if (res.ok) {
@@ -303,7 +228,6 @@ export default function DashboardPage() {
                         .filter((b, i, arr) => arr.findIndex(x => x.id === b.id) === i)
                         .sort((a, z) => a.name.localeCompare(z.name));
                     setBranchOptions(options);
-                    DataCache.set(cacheKey, options);
 
                     if (!selectedBranch || !options.some((b) => b.id === selectedBranch)) {
                         const main = options.find(b => b.id.toUpperCase() === "MAIN") || options.find(b => b.id.toUpperCase().includes("MAIN"));
@@ -320,8 +244,8 @@ export default function DashboardPage() {
     }, []);
 
     /* ── Fetch Data ───────────────────────────────────────── */
-    const fetchInventoryTable = useCallback(async (isBackground = false) => {
-        if (!isBackground) setLoading(true);
+    const fetchInventoryTable = useCallback(async () => {
+        setLoading(true);
         try {
             const dataParams = new URLSearchParams({
                 page: String(page),
@@ -333,7 +257,6 @@ export default function DashboardPage() {
                 enrich: "false",
                 source: "mysql",
             });
-            const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
 
             const res = await fetchWithAuth(`/api/inventory?${dataParams.toString()}`);
             if (res.ok) {
@@ -342,8 +265,6 @@ export default function DashboardPage() {
                 setDataSource(result.source || "mysql");
                 setTotalCount(result.totalCount || 0);
                 setHasMore(!!result.hasMore);
-                DataCache.set(cacheKey, result, { persist: false });
-                markCacheFresh(cacheKey);
             }
         } catch (e) {
             if (e.message !== "Unauthorized") console.error("Fetch error", e);
@@ -351,8 +272,8 @@ export default function DashboardPage() {
         setLoading(false);
     }, [page, debouncedSearch, selectedBranch]);
 
-    const fetchInventoryStats = useCallback(async (isBackground = false) => {
-        if (!isBackground) setStatsLoading(true);
+    const fetchInventoryStats = useCallback(async () => {
+        setStatsLoading(true);
         try {
             const statsParams = new URLSearchParams({
                 search: debouncedSearch,
@@ -360,14 +281,11 @@ export default function DashboardPage() {
                 statsOnly: "true",
                 source: "mysql",
             });
-            const cacheKey = `${inventoryCachePrefix()}${statsParams.toString()}`;
 
             const res = await fetchWithAuth(`/api/inventory?${statsParams.toString()}`);
             if (res.ok) {
                 const result = await res.json();
                 if (result.globalStats) setGlobalStats(result.globalStats);
-                DataCache.set(cacheKey, result, { persist: false });
-                markCacheFresh(cacheKey);
             }
         } catch (e) {
             if (e.message !== "Unauthorized") console.error("Stats fetch error", e);
@@ -385,54 +303,11 @@ export default function DashboardPage() {
     }, [search]);
 
     useEffect(() => {
-        const dataParams = new URLSearchParams({
-            page: String(page),
-            pageSize: String(ROWS_PER_PAGE),
-            search: debouncedSearch,
-            branch: selectedBranch,
-            count: "true",
-            stats: "false",
-            enrich: "false",
-            source: "mysql",
-        });
-        const cacheKey = `${inventoryCachePrefix()}${dataParams.toString()}`;
-
-        const cached = DataCache.get(cacheKey);
-        // Always refetch when searching so results are not stuck on a stale empty cache
-        const skipCache = Boolean(debouncedSearch);
-        if (!skipCache && cached && !String(cached.source || "").startsWith("acumatica")) {
-            setAllInventory(cached.data || []);
-            setTotalCount(cached.totalCount || 0);
-            setHasMore(!!cached.hasMore);
-            if (cached.source) setDataSource(cached.source);
-            setLoading(false);
-            if (!isCacheFresh(cacheKey)) {
-                Promise.resolve().then(() => fetchInventoryTable(true));
-            }
-        } else {
-            Promise.resolve().then(() => fetchInventoryTable(false));
-        }
+        fetchInventoryTable();
     }, [page, debouncedSearch, selectedBranch, fetchInventoryTable]);
 
     useEffect(() => {
-        const statsParams = new URLSearchParams({
-            search: debouncedSearch,
-            branch: selectedBranch,
-            statsOnly: "true",
-            source: "mysql",
-        });
-        const cacheKey = `${inventoryCachePrefix()}${statsParams.toString()}`;
-
-        const cached = DataCache.get(cacheKey);
-        if (cached?.globalStats && shouldUseCachedStats(cached.globalStats)) {
-            setGlobalStats(cached.globalStats);
-            setStatsLoading(false);
-            if (!isCacheFresh(cacheKey)) {
-                Promise.resolve().then(() => fetchInventoryStats(true));
-            }
-        } else {
-            Promise.resolve().then(() => fetchInventoryStats(false));
-        }
+        fetchInventoryStats();
     }, [debouncedSearch, selectedBranch, fetchInventoryStats]);
 
     const isStale = globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000;
@@ -521,7 +396,7 @@ export default function DashboardPage() {
                         </div>
                     </div>
                     <div className="db-toolbar-right">
-                        <button className="db-refresh-btn" onClick={() => { clearInventoryCache(); fetchInventoryTable(); fetchInventoryStats(); }}><IconRefresh /> <span>Refresh</span></button>
+                        <button className="db-refresh-btn" onClick={() => { fetchInventoryTable(); fetchInventoryStats(); }}><IconRefresh /> <span>Refresh</span></button>
                     </div>
                 </div>
 
@@ -640,7 +515,7 @@ function FilteredStockModal({ filter, branch, onClose }) {
                     ) : items.length === 0 ? (
                         <div style={{ padding: "3rem", textAlign: "center", color: "var(--text-muted)" }}>No items found for this filter.</div>
                     ) : (
-                        <table className="db-table" style={{ fontSize: "0.85rem" }}>
+                        <table className="db-table db-table--fit" style={{ fontSize: "0.85rem" }}>
                             <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
                                 <tr>
                                     <th style={{ padding: "1rem" }}>ID</th>

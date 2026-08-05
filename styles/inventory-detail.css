@@ -244,32 +244,44 @@
 .idm-table-container {
     border: 1px solid var(--border-light);
     border-radius: var(--radius-lg);
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    min-width: 0;
     background: var(--bg-surface);
+    scrollbar-width: thin;
 }
 
 .idm-table {
     width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
 }
 
 .idm-table th {
     background: var(--bg-main);
     text-align: left;
-    padding: 1.1rem 1.25rem;
+    padding: 0.75rem 0.85rem;
     color: var(--text-secondary);
     font-weight: 800;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     border-bottom: 2px solid var(--border-light);
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.2;
 }
 
 .idm-table td {
-    padding: 1.1rem 1.25rem;
+    padding: 0.75rem 0.85rem;
     border-bottom: 1px solid var(--border-light);
     color: var(--text-primary);
+    overflow: hidden;
+    word-break: break-word;
 }
 
 .idm-table tr:hover td {

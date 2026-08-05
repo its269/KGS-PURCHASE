@@ -1,8 +1,6 @@
 "use client";
 
 import { Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { DataCache } from "@/lib/data-cache";
-import { loadListWithCache, LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
@@ -12,11 +10,6 @@ import "@/styles/po.css";
 import "@/styles/inventory-detail.css";
 
 const PAGE_SIZE = 10;
-
-function isPoCacheUsable(cached) {
-    if (!cached?.orders?.length) return false;
-    return cached.orders.some(o => o.lines?.length);
-}
 
 /* ── SVG Icons ─────────────────────────────────────────── */
 const IconSearch = () => (
@@ -84,7 +77,7 @@ function fmtDate(d) {
     if (!d) return "—";
     const date = new Date(d);
     if (isNaN(date.getTime())) return d;
-    return date.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
+    return date.toLocaleDateString("en-PH", { year: "2-digit", month: "short", day: "numeric" });
 }
 
 function toDateKey(d) {
@@ -135,12 +128,14 @@ const EMPTY_COLUMN_FILTERS = {
     vendorName: "",
     origin: "",
     status: "",
+    containerNumber: "",
     date: "",
     etd: "",
-    userStatus: "",
+    shipOutDate: "",
     eta: "",
-    containerNumber: "",
+    receivedDate: "",
     remarks: "",
+    userStatus: "",
     totalAmount: "",
 };
 
@@ -150,13 +145,15 @@ const COLUMN_FILTER_META = [
     { key: "vendorName", label: "Vendor Name" },
     { key: "origin", label: "Origin" },
     { key: "status", label: "Status" },
-    { key: "date", label: "Order Date" },
+    { key: "containerNumber", label: "Container" },
+    { key: "date", label: "PO Date" },
     { key: "etd", label: "ETD" },
-    { key: "userStatus", label: "User Status" },
+    { key: "shipOutDate", label: "Ship Out" },
     { key: "eta", label: "ETA" },
-    { key: "containerNumber", label: "Container #" },
+    { key: "receivedDate", label: "Received" },
     { key: "remarks", label: "Remarks" },
-    { key: "totalAmount", label: "Total Amount" },
+    { key: "userStatus", label: "User Status" },
+    { key: "totalAmount", label: "Amount" },
 ];
 
 const PO_STATUS_FILTER_OPTIONS = [
@@ -316,12 +313,12 @@ const USER_STATUS_GUIDE = {
     Pending: {
         title: "Pending",
         description: "The order is confirmed but has not shipped yet. Verify ETA with the supplier and update the ETA field when a delivery date is available.",
-        tips: ["Confirm production or packing status with the vendor.", "Set ETA once the supplier provides a ship date."],
+        tips: ["Confirm production or packing status with the vendor.", "Enter Ship Out Date when goods leave the supplier.", "Set ETA once delivery schedule is confirmed."],
     },
     "In Transit": {
         title: "In Transit",
         description: "The shipment has left the supplier and is on the way. Keep container number and ETA up to date for warehouse receiving.",
-        tips: ["Record the container or tracking reference.", "Update ETA if the vessel or freight schedule changes.", "Notify receiving team of the expected arrival window."],
+        tips: ["Record the container or tracking reference.", "Keep Ship Out Date and ETA current if the schedule changes.", "Notify receiving team of the expected arrival window."],
     },
     Arrived: {
         title: "Arrived",
@@ -501,7 +498,7 @@ export default function PurchaseOrdersPage() {
             if (savedStatus) setStatus(savedStatus);
             if (savedBranch) setSelectedBranch(savedBranch);
 
-            // 2. Fetch PERSISTENT annotations from DB
+            // Annotations only — list data always comes live from MySQL via /api/po
             try {
                 const res = await fetchWithAuth("/api/annotations?module=po");
                 if (res.ok) {
@@ -518,22 +515,6 @@ export default function PurchaseOrdersPage() {
                 if (savedInputs) setUserInputs(JSON.parse(savedInputs));
             }
 
-            // 3. Pre-fetch check from cache
-            const params = new URLSearchParams({
-                page: savedPage || "1",
-                pageSize: String(PAGE_SIZE),
-                startDate: savedStart || "",
-                endDate: savedEnd || "",
-                status: savedStatus || "Open"
-            });
-            if (savedSearch) params.set("search", savedSearch);
-            if (savedBranch) params.set("branch", savedBranch);
-            const cacheKey = `po_orders_${params.toString()}`;
-            const cached = DataCache.get(cacheKey);
-            if (cached && isPoCacheUsable(cached)) {
-                setOrders(cached.orders ?? []);
-                setHasMore(cached.hasMore ?? false);
-            }
             isInitialMount.current = false;
         });
     }, []);
@@ -619,8 +600,8 @@ export default function PurchaseOrdersPage() {
         setPage(1);
     }, [debSearch, startDate, endDate, status, selectedBranch]);
 
-    const fetchOrders = useCallback(async (isBackground = false) => {
-        if (!isBackground) setLoading(true);
+    const fetchOrders = useCallback(async () => {
+        setLoading(true);
         setError(null);
         try {
             const params = new URLSearchParams({
@@ -632,7 +613,6 @@ export default function PurchaseOrdersPage() {
             });
             if (debSearch) params.set("search", debSearch);
             if (selectedBranch) params.set("branch", selectedBranch);
-            const cacheKey = `po_orders_${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/po?${params}`); 
             if (!res.ok) {
@@ -642,42 +622,17 @@ export default function PurchaseOrdersPage() {
             const data = await res.json();
             setOrders(data.orders ?? []);
             setHasMore(data.hasMore ?? false);
-            DataCache.set(cacheKey, data, { persist: false });
         } catch (err) {
             if (err.message === "Unauthorized") return;
-            if (!isBackground) setError(err.message || "Failed to load purchase orders.");
+            setError(err.message || "Failed to load purchase orders.");
         } finally {
             setLoading(false);
         }
     }, [page, debSearch, startDate, endDate, status, selectedBranch]);
 
     useEffect(() => {
-        const params = new URLSearchParams({
-            page: String(page),
-            pageSize: String(PAGE_SIZE),
-            startDate: startDate,
-            endDate: endDate,
-            status: status
-        });
-        if (debSearch) params.set("search", debSearch);
-        if (selectedBranch) params.set("branch", selectedBranch);
-        const cacheKey = `po_orders_${params.toString()}`;
-
-        const cached = DataCache.get(cacheKey);
-        if (cached && isPoCacheUsable(cached)) {
-            setTimeout(() => {
-                setOrders(cached.orders ?? []);
-                setHasMore(cached.hasMore ?? false);
-                setLoading(false);
-                if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
-                    fetchOrders(true);
-                }
-            }, 0);
-        } else {
-            if (cached) DataCache.delete(cacheKey);
-            setTimeout(() => fetchOrders(false), 0);
-        }
-    }, [fetchOrders, page, debSearch, startDate, endDate, status, selectedBranch]);
+        fetchOrders();
+    }, [fetchOrders]);
 
     const toggleExpand = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -697,14 +652,18 @@ export default function PurchaseOrdersPage() {
             if (!textIncludes(o.orderNbr, f.orderNbr)) return false;
             if (!textIncludes(o.vendorId, f.vendorId)) return false;
             if (!textIncludes(o.vendorName, f.vendorName)) return false;
+            // ETD from Acumatica PromisedOn; fall back to legacy annotation if sync is empty
+            const etdValue = o.promisedDate || ui.etd;
             if (f.origin && (ui.origin || "") !== f.origin) return false;
             if (f.status && String(o.status || "").toLowerCase() !== f.status.toLowerCase()) return false;
-            if (f.date && toDateKey(o.date) !== f.date) return false;
-            if (f.etd && toDateKey(ui.etd) !== f.etd) return false;
-            if (f.userStatus && (ui.userStatus || "") !== f.userStatus) return false;
-            if (f.eta && toDateKey(ui.eta) !== f.eta) return false;
             if (!textIncludes(ui.containerNumber, f.containerNumber)) return false;
+            if (f.date && toDateKey(o.date) !== f.date) return false;
+            if (f.etd && toDateKey(etdValue) !== f.etd) return false;
+            if (f.shipOutDate && toDateKey(ui.shipOutDate) !== f.shipOutDate) return false;
+            if (f.eta && toDateKey(ui.eta) !== f.eta) return false;
+            if (f.receivedDate && toDateKey(o.receiptDate) !== f.receivedDate) return false;
             if (!textIncludes(ui.remarks, f.remarks)) return false;
+            if (f.userStatus && (ui.userStatus || "") !== f.userStatus) return false;
             if (f.totalAmount && !textIncludes(String(o.totalAmount ?? ""), f.totalAmount)
                 && !textIncludes(fmt(o.totalAmount), f.totalAmount)) return false;
             return true;
@@ -726,6 +685,48 @@ export default function PurchaseOrdersPage() {
                         tableFilter={userStatusTableFilter}
                     />
                 </div>
+
+                <aside className="po-summary-strip" aria-label="Purchase order summary">
+                    <div className="po-summary-card">
+                        <h3 className="po-summary-title">
+                            <IconActivity /> Analytics Summary
+                        </h3>
+
+                        <div className="po-summary-grid">
+                            <div className="po-summary-item">
+                                <span className="po-summary-label">Total Purchase Orders</span>
+                                <span className="po-summary-value">{orders.length} Orders</span>
+                            </div>
+
+                            <div className="po-summary-item" style={{ color: summaryStats.pendingEtaCount > 0 ? 'var(--status-danger)' : 'inherit' }}>
+                                <span className="po-summary-label">Pending ETA Updates</span>
+                                <span className="po-summary-value">{summaryStats.pendingEtaCount}</span>
+                            </div>
+
+                            <div className="po-summary-item">
+                                <span className="po-summary-label">Open Status</span>
+                                <span className="po-summary-value">{summaryStats.openCount}</span>
+                            </div>
+
+                            <div className="po-summary-item po-summary-total">
+                                <span className="po-summary-label">Total Value</span>
+                                <span className="po-summary-value">₱{fmt(summaryStats.totalValue)}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="po-info-box">
+                        <h4 className="po-info-title">
+                            <IconInfo /> Module Guide
+                        </h4>
+                        <p className="po-info-text">
+                            PO Date, ETD (Promised On), and Received Date come from Acumatica / Purchase Receipts. Update Ship Out Date and ETA here for logistics tracking.
+                        </p>
+                        <p className="po-info-text" style={{ marginTop: '0.75rem' }}>
+                            Changes to Ship Out Date, ETA, Container #, Remarks, Origin, and User Status are saved to your account and backed up locally. Use the User Status Guide to review each status and filter the table.
+                        </p>
+                    </div>
+                </aside>
 
                 {activeColumnFilterChips.length > 0 && (
                     <div className="po-column-filter-bar" role="status">
@@ -884,7 +885,14 @@ export default function PurchaseOrdersPage() {
                                     onChange={(v) => setColumnFilter("status", v)}
                                 />
                                 <ColumnFilterHeader
-                                    label="Order Date"
+                                    label="Container"
+                                    filterKey="containerNumber"
+                                    className="po-col-container"
+                                    value={columnFilters.containerNumber}
+                                    onChange={(v) => setColumnFilter("containerNumber", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="PO Date"
                                     filterKey="date"
                                     type="date"
                                     className="po-col-date"
@@ -900,16 +908,15 @@ export default function PurchaseOrdersPage() {
                                     onChange={(v) => setColumnFilter("etd", v)}
                                 />
                                 <ColumnFilterHeader
-                                    label="User Status"
-                                    filterKey="userStatus"
-                                    type="select"
-                                    options={USER_STATUS_OPTIONS}
-                                    className="po-col-user-status"
-                                    value={columnFilters.userStatus}
-                                    onChange={(v) => setColumnFilter("userStatus", v)}
+                                    label="Ship Out"
+                                    filterKey="shipOutDate"
+                                    type="date"
+                                    className="po-col-ship-out"
+                                    value={columnFilters.shipOutDate}
+                                    onChange={(v) => setColumnFilter("shipOutDate", v)}
                                 />
                                 <ColumnFilterHeader
-                                    label="ETA (Input)"
+                                    label="ETA"
                                     filterKey="eta"
                                     type="date"
                                     className="po-col-eta"
@@ -917,11 +924,12 @@ export default function PurchaseOrdersPage() {
                                     onChange={(v) => setColumnFilter("eta", v)}
                                 />
                                 <ColumnFilterHeader
-                                    label="Container #"
-                                    filterKey="containerNumber"
-                                    className="po-col-container"
-                                    value={columnFilters.containerNumber}
-                                    onChange={(v) => setColumnFilter("containerNumber", v)}
+                                    label="Received"
+                                    filterKey="receivedDate"
+                                    type="date"
+                                    className="po-col-received"
+                                    value={columnFilters.receivedDate}
+                                    onChange={(v) => setColumnFilter("receivedDate", v)}
                                 />
                                 <ColumnFilterHeader
                                     label="Remarks"
@@ -931,7 +939,16 @@ export default function PurchaseOrdersPage() {
                                     onChange={(v) => setColumnFilter("remarks", v)}
                                 />
                                 <ColumnFilterHeader
-                                    label="Total Amount"
+                                    label="User Status"
+                                    filterKey="userStatus"
+                                    type="select"
+                                    options={USER_STATUS_OPTIONS}
+                                    className="po-col-user-status"
+                                    value={columnFilters.userStatus}
+                                    onChange={(v) => setColumnFilter("userStatus", v)}
+                                />
+                                <ColumnFilterHeader
+                                    label="Amount"
                                     filterKey="totalAmount"
                                     className="po-col-amount"
                                     value={columnFilters.totalAmount}
@@ -941,14 +958,14 @@ export default function PurchaseOrdersPage() {
                         </thead>
                         <tbody>
                             {loading && orders.length === 0 ? (
-                                <tr><td colSpan={13} className="si-loading-cell">
+                                <tr><td colSpan={15} className="si-loading-cell">
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem 0' }}>
                                         <div className="db-spinner db-spinner-lg"></div>
                                         <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Fetching orders...</span>
                                     </div>
                                 </td></tr>
                             ) : displayedOrders.length === 0 ? (
-                                <tr><td colSpan={13} className="si-empty-cell" style={{ padding: '4rem 0' }}>
+                                <tr><td colSpan={15} className="si-empty-cell" style={{ padding: '4rem 0' }}>
                                     {activeColumnFilterChips.length > 0
                                         ? "No purchase orders match the current column filters on this page."
                                         : "No purchase orders found."}
@@ -957,6 +974,7 @@ export default function PurchaseOrdersPage() {
                                 const key = `${po.orderType}-${po.orderNbr}`;
                                 const isOpen = !!expanded[key];
                                 const ui = userInputs[key] || {};
+                                const etdValue = po.promisedDate || ui.etd;
                                 return (
                                     <Fragment key={key}>
                                         <tr className={`db-clickable-row ${isOpen ? "po-row-expanded" : ""}`} onClick={() => toggleExpand(key)}>
@@ -984,17 +1002,28 @@ export default function PurchaseOrdersPage() {
                                             <td>
                                                 <span className={`db-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
                                             </td>
-                                            <td><span style={{ fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
                                             <td onClick={(e) => e.stopPropagation()}>
-                                                <PoDateInput
-                                                    value={ui.etd || ""}
-                                                    onChange={(val) => handleUserInput(key, "etd", val)}
+                                                <input
+                                                    type="text"
+                                                    className="po-input-text"
+                                                    style={{ width: '100%' }}
+                                                    placeholder="Container"
+                                                    value={ui.containerNumber || ""}
+                                                    onChange={(e) => handleUserInput(key, 'containerNumber', e.target.value)}
                                                 />
                                             </td>
+                                            <td>
+                                                <span className="po-readonly-date">{fmtDate(po.date)}</span>
+                                            </td>
+                                            <td>
+                                                <span className="po-readonly-date" title={po.promisedDate ? "From Acumatica Promised On" : (ui.etd ? "Legacy annotation" : "")}>
+                                                    {fmtDate(etdValue)}
+                                                </span>
+                                            </td>
                                             <td onClick={(e) => e.stopPropagation()}>
-                                                <UserStatusCell
-                                                    value={ui.userStatus || ""}
-                                                    onChange={(val) => handleUserInput(key, "userStatus", val)}
+                                                <PoDateInput
+                                                    value={ui.shipOutDate || ""}
+                                                    onChange={(val) => handleUserInput(key, "shipOutDate", val)}
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
@@ -1003,15 +1032,10 @@ export default function PurchaseOrdersPage() {
                                                     onChange={(val) => handleUserInput(key, "eta", val)}
                                                 />
                                             </td>
-                                            <td onClick={(e) => e.stopPropagation()}>
-                                                <input
-                                                    type="text"
-                                                    className="po-input-text"
-                                                    style={{ width: '100%' }}
-                                                    placeholder="Container #"
-                                                    value={ui.containerNumber || ""}
-                                                    onChange={(e) => handleUserInput(key, 'containerNumber', e.target.value)}
-                                                />
+                                            <td>
+                                                <span className="po-readonly-date" title={po.receiptDate ? "From Purchase Receipt" : ""}>
+                                                    {fmtDate(po.receiptDate)}
+                                                </span>
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
                                                 <input
@@ -1023,11 +1047,19 @@ export default function PurchaseOrdersPage() {
                                                     onChange={(e) => handleUserInput(key, 'remarks', e.target.value)}
                                                 />
                                             </td>
-                                            <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)', fontSize: '1rem' }}>₱{fmt(po.totalAmount)}</strong></td>
+                                            <td onClick={(e) => e.stopPropagation()}>
+                                                <UserStatusCell
+                                                    value={ui.userStatus || ""}
+                                                    onChange={(val) => handleUserInput(key, "userStatus", val)}
+                                                />
+                                            </td>
+                                            <td style={{ textAlign: "right" }}>
+                                                <strong className="po-amount-cell">₱{fmt(po.totalAmount)}</strong>
+                                            </td>
                                         </tr>
                                         {isOpen && (
                                             <tr className="po-lines-row">
-                                                <td colSpan={13}>
+                                                <td colSpan={15}>
                                                     <div className="po-lines-wrap">
                                                         <table className="po-lines-table">
                                                             <thead>
@@ -1086,50 +1118,6 @@ export default function PurchaseOrdersPage() {
                     </div>
                 )}
             </main>
-
-            <aside className="po-right-panel">
-                <div className="po-summary-card">
-                    <h3 className="po-summary-title">
-                        <IconActivity /> Analytics Summary
-                    </h3>
-                    
-                    <div className="po-summary-item">
-                        <span className="po-summary-label">Total Purchase Orders</span>
-                        <span className="po-summary-value">{orders.length} Orders</span>
-                    </div>
-
-                    <div className="po-summary-item" style={{ color: summaryStats.pendingEtaCount > 0 ? 'var(--status-danger)' : 'inherit' }}>
-                        <span className="po-summary-label">Pending ETA Updates</span>
-                        <span className="po-summary-value">{summaryStats.pendingEtaCount}</span>
-                    </div>
-
-                    <div className="po-summary-item">
-                        <span className="po-summary-label">Open Status</span>
-                        <span className="po-summary-value">{summaryStats.openCount}</span>
-                    </div>
-
-                    <div className="po-summary-item po-summary-total">
-                        <span className="po-summary-label">Total Value</span>
-                        <span className="po-summary-value">₱{fmt(summaryStats.totalValue)}</span>
-                    </div>
-                </div>
-
-                <div className="po-info-box">
-                    <h4 className="po-info-title">
-                        <IconInfo /> Module Guide
-                    </h4>
-                    <p className="po-info-text">
-                        This module displays all Purchase Orders from Acumatica. You can track their status and manage ETA for upcoming deliveries.
-                    </p>
-                    <p className="po-info-text" style={{ marginTop: '0.75rem' }}>
-                        Changes to ETA, remarks, and User Status are saved to your account and backed up locally in your browser. Use the User Status Guide at the top of this page to review each status and filter the table.
-                    </p>
-                </div>
-
-                <div className="po-footer-note">
-                    <span className="po-footer-text">KGS Purchasing System v1.2</span>
-                </div>
-            </aside>
 
             {selectedId && (
                 <InventoryDetailModal inventoryId={selectedId} onClose={() => setSelectedId(null)} />

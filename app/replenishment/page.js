@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { DataCache } from "@/lib/data-cache";
-import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { buildReplenishmentInsight, TARGET_DAYS_OF_COVER } from "@/lib/replenishment-insights";
 import "@/styles/dashboard.css";
@@ -445,15 +443,29 @@ export default function ReplenishmentPage() {
                 ?? first.recommendations?.length
                 ?? 0;
 
-            // 2) Background: load the rest so filters/pagination feel instant
+            // 2) Progressive background: medium chunk first (filters usable sooner),
+            //    then full set only if needed — avoids one giant pageSize=0 blast.
             if (totalItems > PAGE_SIZE) {
                 setBackgroundLoading(true);
-                const full = await load(`&page=1&pageSize=0${refreshParam}`);
-                if (gen !== fetchGenRef.current) return;
-                applyPayload(full);
-                DataCache.set(`replenishment_recs_v8_${branchToFetch}`, full, { persist: false });
+                const CHUNK = 250;
+                if (totalItems <= CHUNK) {
+                    const full = await load(`&page=1&pageSize=0${refreshParam}`);
+                    if (gen !== fetchGenRef.current) return;
+                    applyPayload(full);
+                } else {
+                    const mid = await load(`&page=1&pageSize=${CHUNK}${refreshParam}`);
+                    if (gen !== fetchGenRef.current) return;
+                    if ((mid.recommendations?.length || 0) > (first.recommendations?.length || 0)) {
+                        applyPayload(mid);
+                    }
+                    if (totalItems > CHUNK) {
+                        const full = await load(`&page=1&pageSize=0${refreshParam}`);
+                        if (gen !== fetchGenRef.current) return;
+                        applyPayload(full);
+                    }
+                }
             } else {
-                DataCache.set(`replenishment_recs_v8_${branchToFetch}`, first, { persist: false });
+                applyPayload(first);
             }
         } catch (err) {
             if (err.message === "Unauthorized") return;
@@ -492,9 +504,6 @@ export default function ReplenishmentPage() {
 
     useEffect(() => {
         let active = true;
-        const cacheKey = "replenishment_branches_v2";
-        const cached = DataCache.get(cacheKey);
-        if (cached?.length) setBranches(cached);
 
         (async () => {
             try {
@@ -502,7 +511,6 @@ export default function ReplenishmentPage() {
                 if (res.ok && active) {
                     const list = await res.json();
                     setBranches(list);
-                    DataCache.set(cacheKey, list, { persist: false });
                 }
             } catch (err) {
                 console.error("Failed to load branches", err);
@@ -517,30 +525,12 @@ export default function ReplenishmentPage() {
     }, [viewMode, selectedBranch, retailBranches]);
 
     useEffect(() => {
-        let active = true;
         if (!activeBranch) return undefined;
-
-        const cacheKey = `replenishment_recs_v8_${activeBranch}`;
-        const cached = DataCache.get(cacheKey);
-
-        (async () => {
-            if (cached && active) {
-                applyPayload(cached);
-                setLoading(false);
-                if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
-                    await fetchRecommendations(true, activeBranch);
-                }
-            } else if (active) {
-                await fetchRecommendations(false, activeBranch);
-            }
-        })();
-
-        return () => { active = false; };
-    }, [fetchRecommendations, activeBranch, applyPayload]);
+        fetchRecommendations(false, activeBranch);
+    }, [fetchRecommendations, activeBranch]);
 
     useEffect(() => {
         const onCompanyChange = () => {
-            DataCache.clear();
             if (activeBranch) fetchRecommendations(false, activeBranch);
         };
         window.addEventListener("company-changed", onCompanyChange);
@@ -835,7 +825,6 @@ export default function ReplenishmentPage() {
                             className="db-refresh-btn"
                             onClick={() => {
                                 if (!activeBranch) return;
-                                DataCache.delete(`replenishment_recs_v8_${activeBranch}`);
                                 fetchRecommendations(false, activeBranch, true);
                             }}
                             disabled={loading || !activeBranch}

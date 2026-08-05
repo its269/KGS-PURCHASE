@@ -6,6 +6,8 @@ import { MySqlService } from "@/services/mysql";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const NO_STORE = { headers: { "Cache-Control": "no-store" } };
+
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
@@ -43,7 +45,7 @@ export async function GET(request) {
                         source: "mysql", 
                         page, 
                         pageSize 
-                    });
+                    }, NO_STORE);
                 }
             } catch (mError) {
                 console.error("[MySQL Vendors Error]", mError);
@@ -62,7 +64,7 @@ export async function GET(request) {
                 source: "mysql-bypass-empty",
                 page, 
                 pageSize 
-            });
+            }, NO_STORE);
         }
 
         const result = await AcumaticaService.getVendors({
@@ -77,7 +79,7 @@ export async function GET(request) {
             source: "acumatica",
             page, 
             pageSize 
-        });
+        }, NO_STORE);
     } catch (err) {
         console.error("[Vendors API Error]", err);
         return NextResponse.json({ message: err.message }, { status: 500 });

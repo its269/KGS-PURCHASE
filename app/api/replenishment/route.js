@@ -9,7 +9,7 @@ import {
     TARGET_DAYS_OF_COVER,
 } from "@/lib/replenishment-engine";
 import { buildBranchBrief } from "@/lib/replenishment-insights";
-import { invalidateCache } from "@/lib/server-cache";
+import { getCached, invalidateCache } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,16 +61,46 @@ function briefFromStats(stats, branch) {
 function scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId) {
     const key = `${effectiveCompanyId}:${branch}`;
     if (rebuildInFlight.has(key)) return;
+    const branchKey = String(branch).trim().toUpperCase();
     const job = computeReplenishmentForBranch(branch, companyId)
         .then(async (computed) => {
             await MySqlService.upsertReplenishmentCache(effectiveCompanyId, branch, computed.recommendations);
-            invalidateCache(`replenishment:api:${effectiveCompanyId}:${branch}`);
+            invalidateCache(`replenishment:api:${effectiveCompanyId}:${branchKey}`);
             invalidateCache(`replenishment:full:${effectiveCompanyId}:${branch}`);
             invalidateCache(`replenishment:page:${effectiveCompanyId}:${branch}`);
         })
         .catch((err) => console.error("[Replenishment stale rebuild]", err))
         .finally(() => rebuildInFlight.delete(key));
     rebuildInFlight.set(key, job);
+}
+
+/**
+ * Load cache rows + overlay live Coming PO.
+ * Full-branch results are memory-cached briefly so first-page + follow-up full
+ * loads (and filter/export) share one open-PO query.
+ */
+async function loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize }) {
+    const memKey = `replenishment:api:${effectiveCompanyId}:${String(branch).trim().toUpperCase()}`;
+
+    if (pageSize === 0) {
+        return getCached(memKey, 45_000, async () => {
+            const cached = await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch);
+            if (!cached?.recommendations) return null;
+            const recommendations = await applyLiveComingPo(cached.recommendations, branch);
+            return { recommendations, meta: cached.meta };
+        });
+    }
+
+    // First paint: slim paginated SQL (LIMIT) + live Coming PO for this page only
+    const cachedPage = await MySqlService.getReplenishmentFromCachePage(effectiveCompanyId, branch, {
+        page,
+        pageSize,
+        slim: true,
+    });
+    if (!cachedPage?.recommendations) return null;
+
+    const recommendations = await applyLiveComingPo(cachedPage.recommendations, branch);
+    return { recommendations, meta: cachedPage.meta };
 }
 
 /** Replenishment API — cache-first, paginated, memory-cached for ultra-fast loads. */
@@ -99,27 +129,13 @@ export async function GET(request) {
     }
 
     try {
-        // Fast path: serve from MySQL cache (paginated) without blocking on compute.
-        // Branches with multi-warehouse stock groups (e.g. MANILA + MNL-MRILAO) must
-        // recompute so on-hand is not limited to a single warehouse id.
-        const multiStockWarehouses = getStockWarehouseIdsForBranch(branch).length > 1;
-        if (!forceRefresh && !multiStockWarehouses) {
-            const cachedPage = pageSize === 0
-                ? await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch)
-                : await MySqlService.getReplenishmentFromCachePage(effectiveCompanyId, branch, {
-                    page,
-                    pageSize,
-                    slim: false,
-                });
+        // Fast path: serve from MySQL replenishment_cache (includes multi-warehouse
+        // branches — stock was aggregated at cache write time via getStockWarehouseIdsForBranch).
+        if (!forceRefresh) {
+            const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize });
 
             if (cachedPage?.recommendations) {
-                // Always refresh Coming PO from destination-warehouse open POs (MAIN ≠ branches)
-                const recommendations = await applyLiveComingPo(
-                    cachedPage.recommendations,
-                    branch
-                );
-
-                // Watermark check in parallel / non-blocking for stale rebuild
+                // Watermark check non-blocking for stale rebuild
                 MySqlService.getReplenishmentDataWatermark()
                     .then((wm) => {
                         if (!isCacheFresh(cachedPage.meta?.generatedAt, wm)) {
@@ -128,12 +144,23 @@ export async function GET(request) {
                     })
                     .catch(() => {});
 
+                const recommendations = cachedPage.recommendations;
                 const stats = {
-                    urgent: recommendations.filter((r) => r.priorityLevel === "High").length,
-                    soon: recommendations.filter((r) => r.priorityLevel === "Medium").length,
-                    totalSuggested: recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0),
+                    urgent: cachedPage.meta?.stats?.urgent
+                        ?? recommendations.filter((r) => r.priorityLevel === "High").length,
+                    soon: cachedPage.meta?.stats?.soon
+                        ?? recommendations.filter((r) => r.priorityLevel === "Medium").length,
+                    totalSuggested: cachedPage.meta?.stats?.totalSuggested
+                        ?? recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0),
                     itemCount: cachedPage.meta?.itemCount ?? recommendations.length,
                 };
+
+                // For full loads, recompute suggested totals after live Coming PO overlay
+                if (pageSize === 0) {
+                    stats.urgent = recommendations.filter((r) => r.priorityLevel === "High").length;
+                    stats.soon = recommendations.filter((r) => r.priorityLevel === "Medium").length;
+                    stats.totalSuggested = recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0);
+                }
 
                 return NextResponse.json({
                     recommendations,
@@ -158,6 +185,7 @@ export async function GET(request) {
         // Cold path / forced refresh: compute once, cache, return requested page
         const computed = await computeReplenishmentForBranch(branch, companyId);
         await MySqlService.upsertReplenishmentCache(effectiveCompanyId, branch, computed.recommendations);
+        invalidateCache(`replenishment:api:${effectiveCompanyId}:${String(branch).trim().toUpperCase()}`);
 
         const all = computed.recommendations;
         const totalItems = all.length;
@@ -184,7 +212,7 @@ export async function GET(request) {
                 ...computed.meta,
                 targetDaysOfCover: TARGET_DAYS_OF_COVER,
                 pagination,
-                servedFrom: forceRefresh ? "live-refresh" : (multiStockWarehouses ? "live-stock-group" : "live"),
+                servedFrom: forceRefresh ? "live-refresh" : "live",
                 isMainWarehouseView: String(branch).trim().toUpperCase() === "MAIN",
                 stockWarehouses: getStockWarehouseIdsForBranch(branch),
                 stats: {

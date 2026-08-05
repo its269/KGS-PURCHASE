@@ -4,6 +4,11 @@
     display: flex;
     flex-direction: column;
     gap: 1.25rem;
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+    overflow-x: clip;
 }
 
 .repl-summary {
@@ -157,7 +162,9 @@
 .repl-branch-field .db-select,
 .repl-priority-field .db-select,
 .repl-item-class-field .db-select {
-    min-width: 140px;
+    min-width: 0;
+    width: 100%;
+    max-width: 200px;
     height: 38px;
 }
 
@@ -165,7 +172,9 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    min-width: 180px;
+    min-width: 0;
+    flex: 1 1 160px;
+    max-width: 220px;
 }
 
 .repl-item-class-field label {
@@ -177,12 +186,13 @@
 }
 
 .repl-item-class-field .db-select {
-    min-width: 180px;
-    max-width: 240px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .repl-search {
-    min-width: 200px;
+    min-width: 0;
+    flex: 1 1 160px;
     max-width: 280px;
 }
 
@@ -190,6 +200,19 @@
     margin: -0.5rem 0 0;
     font-size: 0.8rem;
     color: var(--text-muted);
+}
+
+.repl-table {
+    table-layout: fixed !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100%;
+}
+
+.repl-table thead th,
+.repl-table tbody td {
+    overflow: hidden;
+    word-break: break-word;
 }
 
 .repl-table tbody tr.repl-row.repl-status-urgent {
@@ -281,7 +304,8 @@
 
 .repl-ai-cell {
     vertical-align: top;
-    min-width: 180px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .repl-ai-preview {

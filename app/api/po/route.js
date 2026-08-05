@@ -7,6 +7,8 @@ import { MySqlService } from "@/services/mysql";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const NO_STORE = { headers: { "Cache-Control": "no-store" } };
+
 function mergeLinesFromMap(orders, lineMap) {
     return orders.map(o => {
         if (o.lines?.length) return o;
@@ -148,7 +150,7 @@ export async function GET(request) {
                                     source: "acumatica",
                                     page,
                                     pageSize,
-                                });
+                                }, NO_STORE);
                             }
                         } catch (liveErr) {
                             console.error("[PO Live Fallback]", liveErr.message);
@@ -164,7 +166,7 @@ export async function GET(request) {
                         source: wasEnriched ? "mysql+enriched" : "mysql",
                         page,
                         pageSize,
-                    });
+                    }, NO_STORE);
                 }
             } catch (mError) {
                 console.error("[MySQL PO Error]", mError.message);
@@ -182,7 +184,7 @@ export async function GET(request) {
                 source: "acumatica-system",
                 page,
                 pageSize,
-            });
+            }, NO_STORE);
         }
 
         if (userCred === "__bypass__") {
@@ -197,7 +199,7 @@ export async function GET(request) {
                             source: "acumatica-system",
                             page,
                             pageSize,
-                        });
+                        }, NO_STORE);
                     }
                 } catch (err) {
                     console.error("[PO Bypass Fallback]", err.message);
@@ -209,7 +211,7 @@ export async function GET(request) {
                 source: "mysql-bypass-empty",
                 page,
                 pageSize,
-            });
+            }, NO_STORE);
         }
 
         const result = await fetchLivePurchaseOrders(fetchParams, poCred || userCred);
@@ -220,7 +222,7 @@ export async function GET(request) {
             source: "acumatica",
             page,
             pageSize,
-        });
+        }, NO_STORE);
     } catch (err) {
         console.error("[PO API Error]", err);
         return NextResponse.json({ message: err.message }, { status: 500 });

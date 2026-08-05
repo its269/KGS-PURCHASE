@@ -4,6 +4,10 @@ import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
 import { filterBranchList, filterReplenishmentBranchList } from "@/lib/companies";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE = { headers: { "Cache-Control": "no-store" } };
+
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
@@ -20,7 +24,7 @@ export async function GET(request) {
                     const filtered = forModule === "replenishment"
                         ? filterReplenishmentBranchList(branches)
                         : filterBranchList(branches);
-                    return NextResponse.json(filtered);
+                    return NextResponse.json(filtered, NO_STORE);
                 }
                 console.log("[Branches API] MySQL returned 0 branches, falling back to Acumatica...");
             } catch (mError) {
@@ -35,14 +39,14 @@ export async function GET(request) {
         if (cookie === "__bypass__") {
             return NextResponse.json([
                 { SiteID: "MAIN", Description: { value: "MAIN (Bypass Mode)" } }
-            ]);
+            ], NO_STORE);
         }
 
         const branches = await AcumaticaService.getBranches(cookie);
         const filtered = forModule === "replenishment"
             ? filterReplenishmentBranchList(branches)
             : filterBranchList(branches);
-        return NextResponse.json(filtered);
+        return NextResponse.json(filtered, NO_STORE);
     } catch (err) {
         console.error("[BFF Branches Error]", err);
         if (err.message === "Unauthorized") return NextResponse.json({ message: "Unauthorized" }, { status: 401 });

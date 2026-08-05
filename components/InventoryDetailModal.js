@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { DIMENSION_FIELDS } from "@/lib/item-dimensions";
 import "@/styles/inventory-detail.css";
@@ -64,23 +63,11 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
     useEffect(() => {
         if (!inventoryId) return;
 
-        const cacheKey = `stock_detail_${inventoryId}`;
         let cancelled = false;
-
-        const cached = DataCache.get(cacheKey);
-        if (cached) {
-            setDetail(cached);
-            setNotes(cached.annotations?.internal_notes || "");
-            setDimensions(dimObjectFromApi(cached.dimensions));
-            setLoading(false);
-            setError(null);
-        } else {
-            setLoading(true);
-            setDetail(null);
-            setError(null);
-        }
-
         const controller = new AbortController();
+        setLoading(true);
+        setDetail(null);
+        setError(null);
 
         (async () => {
             try {
@@ -96,7 +83,6 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                 setNotes(d.annotations?.internal_notes || "");
                 setDimensions(dimObjectFromApi(d.dimensions));
                 setError(null);
-                DataCache.set(cacheKey, d);
             } catch (err) {
                 if (cancelled) return;
                 const aborted =
@@ -128,15 +114,10 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                     fieldValue: notes
                 })
             });
-            // Update cache
-            const cacheKey = `stock_detail_${inventoryId}`;
-            const cached = DataCache.get(cacheKey);
-            if (cached) {
-                DataCache.set(cacheKey, {
-                    ...cached,
-                    annotations: { ...(cached.annotations || {}), internal_notes: notes }
-                });
-            }
+            setDetail((prev) => prev ? {
+                ...prev,
+                annotations: { ...(prev.annotations || {}), internal_notes: notes }
+            } : prev);
         } catch (err) {
             console.error("Failed to save notes", err);
         } finally {
@@ -163,11 +144,7 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
             const saved = dimObjectFromApi(data.dimensions);
             setDimensions(saved);
             setDimSaved(true);
-            const cacheKey = `stock_detail_${inventoryId}`;
-            const cached = DataCache.get(cacheKey);
-            if (cached) {
-                DataCache.set(cacheKey, { ...cached, dimensions: data.dimensions });
-            }
+            setDetail((prev) => prev ? { ...prev, dimensions: data.dimensions } : prev);
         } catch (err) {
             console.error("Failed to save dimensions", err);
         } finally {

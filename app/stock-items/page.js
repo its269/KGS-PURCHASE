@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { DataCache } from "@/lib/data-cache";
-import { loadListWithCache } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
 import { DIMENSION_FIELDS } from "@/lib/item-dimensions";
@@ -61,8 +59,6 @@ export default function StockItemsPage() {
     const fileInputRef = useRef(null);
     const importInfoRef = useRef(null);
 
-    const cachePrefix = () => `stock_items_${localStorage.getItem("activeCompanyId") || "main"}_`;
-
     const handleExport = async () => {
         setExporting(true);
         try {
@@ -113,7 +109,6 @@ export default function StockItemsPage() {
             setImportProgress(100);
             setImportStatus("Import complete");
             setImportMsg(data.message);
-            DataCache.clear();
             fetchItems();
         } catch (err) {
             if (err.message !== "Unauthorized") {
@@ -157,24 +152,10 @@ export default function StockItemsPage() {
         const onCompanyChange = () => {
             setPage(1);
             setItems([]);
-            DataCache.clear();
             loadCompany();
         };
         window.addEventListener("company-changed", onCompanyChange);
         return () => window.removeEventListener("company-changed", onCompanyChange);
-    }, []);
-
-    // Initial restoration & Hydration fix
-    useEffect(() => {
-        Promise.resolve().then(() => {
-            const params = new URLSearchParams({ page: "1", pageSize: String(PAGE_SIZE) });
-            const cached = DataCache.get(`${cachePrefix()}${params.toString()}`);
-            if (cached) {
-                setItems(cached.items ?? []);
-                setTotalCount(cached.totalCount ?? 0);
-                setTotalStock(cached.totalStock ?? 0);
-            }
-        });
     }, []);
 
     useEffect(() => {
@@ -186,13 +167,12 @@ export default function StockItemsPage() {
         Promise.resolve().then(() => setPage(1));
     }, [debouncedSearch]);
 
-    const fetchItems = useCallback(async (isBackground = false) => {
-        if (!isBackground) setLoading(true);
+    const fetchItems = useCallback(async () => {
+        setLoading(true);
         setError(null);
         try {
             const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
             if (debouncedSearch) params.set("search", debouncedSearch);
-            const cacheKey = `${cachePrefix()}${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/stock-items?${params}`);
             if (!res.ok) {
@@ -204,34 +184,17 @@ export default function StockItemsPage() {
             setDataSource(data.source || "mysql");
             setTotalCount(data.totalCount ?? 0);
             setTotalStock(data.totalStock ?? 0);
-            DataCache.set(cacheKey, data, { persist: false });
         } catch (err) {
             if (err.message === "Unauthorized") return;
-            if (!isBackground) setError(err.message || "Failed to load stock items. Please try again.");
+            setError(err.message || "Failed to load stock items. Please try again.");
         } finally {
             setLoading(false);
         }
     }, [page, debouncedSearch]);
 
     useEffect(() => {
-        const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
-        if (debouncedSearch) params.set("search", debouncedSearch);
-        const cacheKey = `${cachePrefix()}${params.toString()}`;
-
-        const cached = DataCache.get(cacheKey);
-        loadListWithCache({
-            cacheKey,
-            cached,
-            apply: (data) => {
-                setItems(data.items ?? []);
-                setDataSource(data.source || "mysql");
-                setTotalCount(data.totalCount ?? 0);
-                setTotalStock(data.totalStock ?? 0);
-            },
-            setLoading,
-            refetch: fetchItems,
-        });
-    }, [fetchItems, page, debouncedSearch]);
+        fetchItems();
+    }, [fetchItems]);
 
     const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 

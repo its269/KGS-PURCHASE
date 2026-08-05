@@ -1,9 +1,20 @@
 /* 90-Day Sales Analysis */
 
+.sales-page,
+.sales-root {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
+}
+
 .sales-toolbar {
     height: auto;
     padding: 1.25rem;
     align-items: flex-end;
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .sales-filter-group {
@@ -11,6 +22,8 @@
     flex-direction: column;
     gap: 0.35rem;
     min-width: 0;
+    flex: 1 1 140px;
+    max-width: 100%;
 }
 
 .sales-filter-group label {
@@ -32,11 +45,13 @@
 .sales-date-wrap,
 .sales-select-wrap {
     position: relative;
-    min-width: 200px;
+    min-width: 0;
+    width: 100%;
+    max-width: 220px;
 }
 
 .sales-select-wrap {
-    min-width: 220px;
+    max-width: 240px;
 }
 
 .sales-date-input,
@@ -90,7 +105,8 @@
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    min-width: 160px;
+    flex: 0 0 auto;
+    min-width: 120px;
     height: 42px;
     padding: 0 1.25rem;
     border: none;
@@ -102,6 +118,7 @@
     cursor: pointer;
     box-shadow: 0 4px 14px rgba(59, 130, 246, 0.28);
     transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+    white-space: nowrap;
 }
 
 .sales-run-btn:hover:not(:disabled) {

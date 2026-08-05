@@ -252,6 +252,10 @@ const mapPurchaseOrder = (po) => {
         orderType: getF(po, "OrderType"),
         status: getF(po, "Status"),
         date: getF(po, "Date"),
+        // ETD in Acumatica PO (Promised On) — used as read-only ETD in the UI
+        promisedDate: getAny(po, "PromisedOn", "ExpectedDate", "RequestedOn") || null,
+        // May be empty on live fetch; MySQL sync fills from Purchase Receipts
+        receiptDate: getAny(po, "LastReceiptDate", "ReceiptDate") || null,
         vendorId: getF(po, "VendorID"),
         vendorName: getAny(po, "VendorName", "VendorID_description", "VendorDescription"),
         totalAmount: parseFloat(getF(po, "OrderTotal") || 0),

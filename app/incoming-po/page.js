@@ -1,8 +1,6 @@
 "use client";
 
 import { Fragment, useState, useEffect, useCallback, useRef } from "react";  
-import { DataCache } from "@/lib/data-cache";
-import { LIST_CACHE_FRESH_MS } from "@/lib/list-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import "@/styles/dashboard.css";
@@ -10,11 +8,6 @@ import "@/styles/stock-items.css";
 import "@/styles/po.css";
 
 const PAGE_SIZE = 10;
-
-function isPoCacheUsable(cached) {
-    if (!cached?.orders?.length) return false;
-    return cached.orders.some(o => o.lines?.length);
-}
 
 const IconSearch = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -84,18 +77,6 @@ export default function IncomingPOPage() {
             setSearch(savedSearch);
             setStartDate(savedStart);
             setStatus(savedStatus);
-
-            const params = new URLSearchParams({
-                page: String(initialPage),
-                pageSize: String(PAGE_SIZE),
-                startDate: savedStart,
-                status: savedStatus
-            });
-            const cached = DataCache.get(`inc_po_orders_${params.toString()}`);
-            if (cached) {
-                setOrders(cached.orders ?? []);
-                setHasMore(cached.hasMore ?? false);
-            }
             isInitialMount.current = false;
         });
     }, []);
@@ -120,8 +101,8 @@ export default function IncomingPOPage() {
         setPage(1);
     }, [debSearch, startDate, status]);
 
-    const fetchOrders = useCallback(async (isBackground = false) => {
-        if (!isBackground) setLoading(true);
+    const fetchOrders = useCallback(async () => {
+        setLoading(true);
         setError(null);
         try {
             const params = new URLSearchParams({
@@ -131,7 +112,6 @@ export default function IncomingPOPage() {
                 status: status
             });
             if (debSearch) params.set("search", debSearch);
-            const cacheKey = `inc_po_orders_${params.toString()}`;
 
             const res = await fetchWithAuth(`/api/po?${params}`);
             if (!res.ok) {
@@ -141,37 +121,17 @@ export default function IncomingPOPage() {
             const data = await res.json();
             setOrders(data.orders ?? []);
             setHasMore(data.hasMore ?? false);
-            DataCache.set(cacheKey, data, { persist: false });
         } catch (err) {
             if (err.message === "Unauthorized") return;
-            if (!isBackground) setError(err.message || "Failed to load incoming purchase orders.");
+            setError(err.message || "Failed to load incoming purchase orders.");
         } finally {
             setLoading(false);
         }
     }, [page, debSearch, startDate, status]);
-    useEffect(() => {
-        const params = new URLSearchParams({
-            page: String(page),
-            pageSize: String(PAGE_SIZE),
-            startDate: startDate,
-            status: status
-        });
-        if (debSearch) params.set("search", debSearch);
-        const cacheKey = `inc_po_orders_${params.toString()}`;
 
-        const cached = DataCache.get(cacheKey);
-        if (cached && isPoCacheUsable(cached)) {
-            setOrders(cached.orders ?? []);
-            setHasMore(cached.hasMore ?? false);
-            setLoading(false);
-            if (!DataCache.isFresh(cacheKey, LIST_CACHE_FRESH_MS)) {
-                Promise.resolve().then(() => fetchOrders(true));
-            }
-        } else {
-            if (cached) DataCache.delete(cacheKey);
-            Promise.resolve().then(() => fetchOrders(false));
-        }
-    }, [fetchOrders, page, debSearch, startDate, status]);
+    useEffect(() => {
+        fetchOrders();
+    }, [fetchOrders]);
 
     const toggleExpand = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -254,16 +214,16 @@ export default function IncomingPOPage() {
                 {error && <div className="si-error">{error}</div>}
 
                 <div className="db-table-wrap">
-                    <table className="db-table db-table--fit po-table">
+                    <table className="db-table db-table--fit">
                         <thead>
                             <tr>
-                                <th style={{ width: 48 }}></th>
-                                <th style={{ width: 140 }}>Order #</th>
-                                <th style={{ width: 100 }}>Type</th>
+                                <th style={{ width: "48px" }}></th>
+                                <th style={{ width: "14%" }}>Order #</th>
+                                <th style={{ width: "10%" }}>Type</th>
                                 <th>Vendor</th>
-                                <th style={{ width: 140 }}>Status</th>
-                                <th>Order Date</th>
-                                <th style={{ textAlign: "right", width: 160 }}>Total Amount</th>
+                                <th style={{ width: "12%" }}>Status</th>
+                                <th style={{ width: "14%" }}>Order Date</th>
+                                <th style={{ textAlign: "right", width: "14%" }}>Amount</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -299,7 +259,7 @@ export default function IncomingPOPage() {
                                                 <span className={`db-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
                                             </td>
                                             <td><span style={{ fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-secondary)' }}>{fmtDate(po.date)}</span></td>
-                                            <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)', fontSize: '1rem' }}>₱{fmt(po.totalAmount)}</strong></td>
+                                            <td style={{ textAlign: "right" }}><strong style={{ color: 'var(--text-primary)', fontSize: '0.85rem' }}>₱{fmt(po.totalAmount)}</strong></td>
                                         </tr>
                                         {isOpen && (
                                             <tr className="po-lines-row">

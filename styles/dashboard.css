@@ -7,12 +7,15 @@
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
     background-color: var(--bg-main);
 }
 
 /* ── Main ──────────────────────────────────────────────── */
 .db-main {
-    max-width: none;
+    max-width: 100%;
     width: 100%;
     margin: 0;
     padding: 2rem;
@@ -20,6 +23,8 @@
     flex-direction: column;
     gap: 2rem;
     color: var(--text-primary);
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 /* ── Page Title ────────────────────────────────────────── */
@@ -170,14 +175,18 @@
 /* ── Toolbar ───────────────────────────────────────────── */
 .db-toolbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 1.25rem;
+    gap: 1rem 1.25rem;
     background: var(--bg-surface);
     padding: 1.25rem;
     border-radius: var(--radius-xl);
     border: 1px solid var(--border-light);
     box-shadow: var(--shadow-md);
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .db-toolbar-left {
@@ -340,40 +349,60 @@
     border: 1px solid var(--border-light);
     border-radius: var(--radius-xl);
     box-shadow: var(--shadow-md);
-    overflow-x: hidden;
+    overflow-x: auto;
+    overflow-y: visible;
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    display: block;
+    box-sizing: border-box;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+}
+
+.db-table-wrap::-webkit-scrollbar {
+    height: 10px;
+}
+
+.db-table-wrap::-webkit-scrollbar-thumb {
+    background: var(--border-medium);
+    border-radius: 999px;
 }
 
 .db-table {
     width: 100%;
+    max-width: 100%;
     border-collapse: collapse;
     font-size: 0.8125rem;
     min-width: 0;
     table-layout: fixed;
 }
 
-/* Fit all columns on screen — no horizontal scroll */
+/* Fit all columns on screen — no horizontal page overflow */
 .db-table--fit {
-    table-layout: fixed;
-    width: 100%;
-    min-width: 0;
+    table-layout: fixed !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100%;
 }
 
 .db-table--fit thead th {
-    padding: 0.55rem 0.4rem;
+    padding: 0.5rem 0.35rem;
     white-space: normal;
     line-height: 1.2;
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     word-break: break-word;
     overflow: hidden;
+    vertical-align: bottom;
 }
 
 .db-table--fit tbody td {
-    padding: 0.45rem 0.4rem;
+    padding: 0.4rem 0.35rem;
     overflow: hidden;
     text-overflow: ellipsis;
-    vertical-align: top;
+    vertical-align: middle;
     line-height: 1.25;
+    word-break: break-word;
 }
 
 .db-table--fit .db-desc,

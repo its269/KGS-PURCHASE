@@ -23,7 +23,7 @@ const pool = mysql.createPool({
     password: process.env.MYSQL_PASSWORD,
     database: process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory",
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 15,
     queueLimit: 0,
     connectTimeout: 30000,
     enableKeepAlive: true,
@@ -37,12 +37,36 @@ const purchasePool = mysql.createPool({
     password: process.env.MYSQL_PASSWORD,
     database: process.env.MYSQL_PURCHASE_DATABASE || "db_purchase",
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 15,
     queueLimit: 0,
     connectTimeout: 30000,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
 });
+
+/** Flag queries slower than 100ms for performance logging. */
+function instrumentPool(p, label) {
+    const origQuery = p.query.bind(p);
+    const origExecute = p.execute.bind(p);
+    const wrap = (fn) => async (...args) => {
+        const start = Date.now();
+        try {
+            return await fn(...args);
+        } finally {
+            const ms = Date.now() - start;
+            if (ms >= 100) {
+                const sql = typeof args[0] === "string" ? args[0] : "";
+                console.warn(`[Slow SQL ${label}] ${ms}ms — ${sql.replace(/\s+/g, " ").slice(0, 160)}`);
+            }
+        }
+    };
+    p.query = wrap(origQuery);
+    p.execute = wrap(origExecute);
+    return p;
+}
+
+instrumentPool(pool, "inventory");
+instrumentPool(purchasePool, "purchase");
 
 function isTransientMysqlError(err) {
     const code = String(err?.code || "");
@@ -277,13 +301,11 @@ export const MySqlService = {
     },
 
     /**
-     * Fetch purchase orders from MySQL (for Purchase Orders module)
+     * Fetch purchase orders from MySQL (for Purchase Orders module).
+     * No TTL cache — lists must stay live after sync / receipt updates.
      */
     async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main" } = {}) {
-        const cacheKey = `po:${JSON.stringify({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId })}`;
-        return getCached(cacheKey, 30_000, () =>
-            this._getPurchaseOrdersImpl({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId })
-        );
+        return this._getPurchaseOrdersImpl({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId });
     },
 
     async _getPurchaseOrdersImpl({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main" } = {}) {
@@ -322,17 +344,14 @@ export const MySqlService = {
             }
 
             if (branch) {
-                // Filter by PO destination warehouse/branch (from Acumatica line Site/Warehouse),
-                // not by whether the SKU currently has stock at that branch.
+                // Indexed destination table (normalized uppercase at sync / backfill).
+                const branchNorm = String(branch).trim().toUpperCase();
                 whereClauses.push(`EXISTS (
-                    SELECT 1 FROM purchase_order_details d
-                    WHERE d.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr
-                      AND (
-                        UPPER(TRIM(COALESCE(d.warehouse_id, ''))) = UPPER(TRIM(?))
-                        OR UPPER(TRIM(COALESCE(d.branch_id, ''))) = UPPER(TRIM(?))
-                      )
+                    SELECT 1 FROM purchase_order_dest pd
+                    WHERE pd.order_nbr = h.order_nbr
+                      AND pd.branch_id = ?
                 )`);
-                params.push(branch, branch);
+                params.push(branchNorm);
             }
 
             const wherePart = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
@@ -438,6 +457,9 @@ export const MySqlService = {
             ]);
             await connection.query(sql, [values]);
             await connection.commit();
+            invalidateCache("itemVendorMap");
+            invalidateCache("po:");
+            invalidateCache("openPo:");
         } catch (err) {
             await connection.rollback();
             throw err;
@@ -485,10 +507,66 @@ export const MySqlService = {
                     );
                 }
             }
+            await this.ensurePoDestTable();
             return true;
         } catch (err) {
             console.error("[MySQL ensurePoWarehouseColumns Error]", err);
             return false;
+        }
+    },
+
+    /** Indexed destination branches per PO — avoids EXISTS + UPPER(TRIM()) on every list filter. */
+    async ensurePoDestTable() {
+        if (MySqlService._poDestReady) return true;
+        try {
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS purchase_order_dest (
+                  order_nbr VARCHAR(64) NOT NULL,
+                  branch_id VARCHAR(100) NOT NULL,
+                  PRIMARY KEY (order_nbr, branch_id),
+                  KEY idx_podest_branch (branch_id, order_nbr)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            MySqlService._poDestReady = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensurePoDestTable Error]", err);
+            return false;
+        }
+    },
+
+    /** Rebuild destination index rows for the given order numbers from line warehouses. */
+    async upsertPurchaseOrderDestFromLines(rows = []) {
+        if (!rows.length) return;
+        await this.ensurePoDestTable();
+        const byOrder = new Map();
+        for (const r of rows) {
+            const orderNbr = String(r.order_nbr || "").trim();
+            const branch = String(r.warehouse_id || r.branch_id || "").trim().toUpperCase();
+            if (!orderNbr || !branch) continue;
+            if (!byOrder.has(orderNbr)) byOrder.set(orderNbr, new Set());
+            byOrder.get(orderNbr).add(branch);
+        }
+        if (!byOrder.size) return;
+
+        const connection = await purchasePool.getConnection();
+        try {
+            const orderNbrs = [...byOrder.keys()];
+            const ph = orderNbrs.map(() => "?").join(",");
+            await connection.query(`DELETE FROM purchase_order_dest WHERE order_nbr IN (${ph})`, orderNbrs);
+
+            const values = [];
+            for (const [orderNbr, branches] of byOrder) {
+                for (const branchId of branches) values.push([orderNbr, branchId]);
+            }
+            if (values.length) {
+                await connection.query(
+                    `INSERT INTO purchase_order_dest (order_nbr, branch_id) VALUES ?`,
+                    [values]
+                );
+            }
+        } finally {
+            connection.release();
         }
     },
 
@@ -527,9 +605,12 @@ export const MySqlService = {
                 r.last_sync,
             ]);
             await connection.query(sql, [values]);
+            invalidateCache("itemVendorMap");
+            invalidateCache("openPo:");
         } finally {
             connection.release();
         }
+        await this.upsertPurchaseOrderDestFromLines(rows);
     },
 
     async upsertVendors(rows) {
@@ -681,9 +762,14 @@ export const MySqlService = {
     },
 
     /**
-     * Get a map of inventory IDs to their latest vendor IDs
+     * Get a map of inventory IDs to their latest vendor IDs.
+     * Cached briefly — invalidated when PO history/details upsert.
      */
     async getItemVendorMap() {
+        return getCached("itemVendorMap", 180_000, () => this._getItemVendorMapImpl());
+    },
+
+    async _getItemVendorMapImpl() {
         try {
             const [rows] = await purchasePool.query(`
                 SELECT d.inventory_id, h.vendor_id
@@ -786,11 +872,25 @@ export const MySqlService = {
      * Excludes On Hold / Hold — those orders are not treated as incoming supply yet.
      */
     async getOpenPoQtyByItem({ warehouseId = "MAIN" } = {}) {
+        const destKey = String(warehouseId || "MAIN").trim().toUpperCase() || "MAIN";
+        return getCached(`openPo:${destKey}`, 60_000, () => this._getOpenPoQtyByItemUncached(destKey));
+    },
+
+    async _getOpenPoQtyByItemUncached(warehouseId = "MAIN") {
         try {
             await this.ensureReceivedQtyColumn();
             await this.ensurePoWarehouseColumns();
             const destinations = getStockWarehouseIdsForBranch(warehouseId);
             if (!destinations.length) return new Map();
+
+            // Exact status values (avoids UPPER(TRIM(status)) so idx_ph_status_date can be used)
+            const openStatuses = [
+                "Open", "OPEN", "open",
+                "Balanced", "BALANCED", "balanced",
+                "Pending Approval", "PENDING APPROVAL",
+                "Pending Printing", "PENDING PRINTING",
+                "Pending Email", "PENDING EMAIL",
+            ];
 
             const [rows] = await purchasePool.query(
                 `
@@ -800,19 +900,13 @@ export const MySqlService = {
                 FROM purchase_order_details d
                 INNER JOIN purchase_history h
                     ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
-                WHERE UPPER(TRIM(h.status)) IN (
-                        'OPEN',
-                        'BALANCED',
-                        'PENDING APPROVAL',
-                        'PENDING PRINTING',
-                        'PENDING EMAIL'
-                    )
+                WHERE h.status IN (${openStatuses.map(() => "?").join(", ")})
                   AND UPPER(TRIM(d.warehouse_id)) IN (${destinations.map(() => "?").join(", ")})
                   AND d.inventory_id IS NOT NULL
-                  AND TRIM(d.inventory_id) != ''
+                  AND d.inventory_id != ''
                 GROUP BY UPPER(TRIM(d.inventory_id))
                 `,
-                destinations
+                [...openStatuses, ...destinations]
             );
             const map = new Map();
             for (const row of rows) {
@@ -1474,14 +1568,15 @@ export const MySqlService = {
      * Fetch stock items from MySQL database (one row per unique inventory_id)
      * Enriched with total sales and quantity sold.
      */
-    async getStockItems({ page = 1, pageSize = 50, search = "", branch = "", companyId = "main" } = {}) {
+    async getStockItems({ page = 1, pageSize = 50, search = "", branch = "", companyId = "main", cursor = "" } = {}) {
         const offset = (page - 1) * pageSize;
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
         const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
+        const cursorId = String(cursor || "").trim();
 
         if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
-            return { items: [], totalCount: 0, totalStock: 0 };
+            return { items: [], totalCount: 0, totalStock: 0, nextCursor: null };
         }
 
         try {
@@ -1495,6 +1590,11 @@ export const MySqlService = {
             if (search) {
                 whereParts.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
                 params.push(`%${search}%`, `%${search}%`);
+            }
+            if (cursorId) {
+                // Keyset pagination — preferred for deep catalogs (no large OFFSET).
+                whereParts.push("TRIM(i.inventory_id) > ?");
+                params.push(cursorId);
             }
             if (branch && branch !== "All Branches") {
                 whereParts.push("i.default_warehouse != '__catalog__'");
@@ -1517,7 +1617,52 @@ export const MySqlService = {
 
             const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
 
-            const query = `
+            // Keyset (cursor) skips OFFSET entirely. Deep page numbers use deferred ID pick.
+            const useKeyset = Boolean(cursorId);
+            const useDeferredPage = !useKeyset && offsetInt >= 100;
+            let query;
+            if (useKeyset) {
+                query = `
+                SELECT 
+                    TRIM(i.inventory_id) as inventoryId, 
+                    MAX(i.inventory_name) as description, 
+                    MAX(i.item_class) as itemClass, 
+                    MAX(i.item_status) as itemStatus,
+                    MAX(i.base_unit) as baseUnit,
+                    MAX(i.default_price) as price,
+                    MAX(i.moq) as moq,
+                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand,
+                    GROUP_CONCAT(DISTINCT CASE WHEN i.default_warehouse != '__catalog__' AND i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
+                 FROM inventory_items i
+                 ${whereClause} 
+                 GROUP BY TRIM(i.inventory_id)
+                 ORDER BY TRIM(i.inventory_id) ASC 
+                 LIMIT ${limitInt}`;
+            } else if (useDeferredPage) {
+                query = `
+                SELECT 
+                    TRIM(i.inventory_id) as inventoryId, 
+                    MAX(i.inventory_name) as description, 
+                    MAX(i.item_class) as itemClass, 
+                    MAX(i.item_status) as itemStatus,
+                    MAX(i.base_unit) as baseUnit,
+                    MAX(i.default_price) as price,
+                    MAX(i.moq) as moq,
+                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand,
+                    GROUP_CONCAT(DISTINCT CASE WHEN i.default_warehouse != '__catalog__' AND i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
+                 FROM inventory_items i
+                 INNER JOIN (
+                    SELECT TRIM(i2.inventory_id) AS pick_id
+                    FROM inventory_items i2
+                    ${whereClause.replace(/\bi\./g, "i2.")}
+                    GROUP BY TRIM(i2.inventory_id)
+                    ORDER BY TRIM(i2.inventory_id) ASC
+                    LIMIT ${limitInt} OFFSET ${offsetInt}
+                 ) pg ON TRIM(i.inventory_id) = pg.pick_id
+                 GROUP BY TRIM(i.inventory_id)
+                 ORDER BY TRIM(i.inventory_id) ASC`;
+            } else {
+                query = `
                 SELECT 
                     TRIM(i.inventory_id) as inventoryId, 
                     MAX(i.inventory_name) as description, 
@@ -1533,6 +1678,7 @@ export const MySqlService = {
                  GROUP BY TRIM(i.inventory_id)
                  ORDER BY i.inventory_id ASC 
                  LIMIT ${limitInt} OFFSET ${offsetInt}`;
+            }
 
             const [[rows], [[{ total, overallStock }]]] = await Promise.all([
                 pool.query(query, params),
@@ -1584,7 +1730,8 @@ export const MySqlService = {
             return {
                 items: withDims,
                 totalCount: total,
-                totalStock: Number(overallStock) || 0
+                totalStock: Number(overallStock) || 0,
+                nextCursor: withDims.length ? withDims[withDims.length - 1].inventoryId : null,
             };
         } catch (err) {
             console.error("[MySQL getStockItems Error]", err);
@@ -1664,6 +1811,12 @@ export const MySqlService = {
      * synced stock rows still appear when they exist in Acumatica.
      */
     async getReplenishmentBranches(companyId = "main") {
+        return getCached(`branches:repl:${companyId}`, 600_000, () =>
+            this._getReplenishmentBranchesUncached(companyId)
+        );
+    },
+
+    async _getReplenishmentBranchesUncached(companyId = "main") {
         try {
             const [invBranches, masterBranches, salesBranches] = await Promise.all([
                 this.getBranches(companyId),
@@ -1734,6 +1887,10 @@ export const MySqlService = {
 
     /** Distinct sales branch names used for replenishment picker completeness. */
     async getSalesBranchNames() {
+        return getCached("salesBranchNames", 600_000, () => this._getSalesBranchNamesUncached());
+    },
+
+    async _getSalesBranchNamesUncached() {
         try {
             const salesEx = sqlExcludeSalesBranches("branch_name");
             const [rows] = await purchasePool.query(
@@ -1991,8 +2148,15 @@ export const MySqlService = {
      * Prefer the Acumatica-synced master `branches` table so the dropdown stays
      * complete even when warehouse inventory rows are missing or mid-sync.
      * Also merges any branch_id still present on inventory_items.
+     * Cached 10 min — invalidated on upsertBranches / inventory sync layout changes.
      */
     async getBranches(companyId = "main") {
+        return getCached(`branches:list:${companyId}`, 600_000, () =>
+            this._getBranchesUncached(companyId)
+        );
+    },
+
+    async _getBranchesUncached(companyId = "main") {
         try {
             const [masterBranches, invBranches] = await Promise.all([
                 this.getMasterBranches(),
@@ -2161,6 +2325,7 @@ export const MySqlService = {
                 );
             }
             await connection.commit();
+            invalidateCache("branches:");
         } catch (err) {
             await connection.rollback();
             console.error("[MySQL upsertBranches Error]", err);
@@ -2337,6 +2502,10 @@ export const MySqlService = {
                 );
             }
             await connection.commit();
+            invalidateCache("branches:");
+            invalidateCache("global-stats-v3:");
+            invalidateCache("wh-count:");
+            invalidateCache("cat-count:");
         } catch (err) {
             await connection.rollback();
             console.error('[MySQL upsertInventoryLevels Error]', err);
@@ -2409,21 +2578,21 @@ export const MySqlService = {
     },
 
     /**
-     * Bulk upsert rows from Supabase product_periodic_sales into db_purchase
+     * Bulk upsert rows from Supabase product_periodic_sales into db_purchase.
+     * Multi-row VALUES batches (not per-row execute) to cut sync time and pool load.
      */
     async upsertPeriodicSales(rows) {
         if (!rows.length) return;
         return withMysqlRetry("upsertPeriodicSales", async () => {
             const connection = await purchasePool.getConnection();
+            const CHUNK = 200;
             try {
                 await connection.beginTransaction();
-                for (const r of rows) {
-                    await connection.execute(
-                        `INSERT INTO product_periodic_sales
+                const sql = `INSERT INTO product_periodic_sales
                             (id, branch_name, order_type, financial_period, document_date,
                              description, qty, total_amount, item_class, inventory_id,
                              posting_class, last_sync)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         VALUES ?
                          ON DUPLICATE KEY UPDATE
                             branch_name      = VALUES(branch_name),
                             order_type       = VALUES(order_type),
@@ -2435,24 +2604,33 @@ export const MySqlService = {
                             item_class       = VALUES(item_class),
                             inventory_id     = VALUES(inventory_id),
                             posting_class    = VALUES(posting_class),
-                            last_sync        = VALUES(last_sync)`,
-                        [
-                            r.id,
-                            r.branch_name ?? null,
-                            r.order_type ?? null,
-                            r.financial_period ?? null,
-                            r.document_date ?? null,
-                            r.description ?? null,
-                            r.qty ?? null,
-                            r.total_amount ?? null,
-                            r.item_class ?? null,
-                            r.inventory_id ?? null,
-                            r.posting_class ?? null,
-                            r.last_sync ? new Date(r.last_sync) : new Date(),
-                        ]
-                    );
+                            last_sync        = VALUES(last_sync)`;
+
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const values = chunk.map((r) => [
+                        r.id,
+                        r.branch_name ?? null,
+                        r.order_type ?? null,
+                        r.financial_period ?? null,
+                        r.document_date ?? null,
+                        r.description ?? null,
+                        r.qty ?? null,
+                        r.total_amount ?? null,
+                        r.item_class ?? null,
+                        r.inventory_id ?? null,
+                        r.posting_class ?? null,
+                        r.last_sync ? new Date(r.last_sync) : new Date(),
+                    ]);
+                    await connection.query(sql, [values]);
                 }
                 await connection.commit();
+                invalidateCache("salesIds:");
+                invalidateCache("salesAnalysis:");
+                invalidateCache("replSalesMap:");
+                invalidateCache("salesBranchNames");
+                invalidateCache("resolveSalesBranch:");
+                invalidateCache("salesSummary:");
             } catch (err) {
                 await connection.rollback();
                 console.error("[MySQL upsertPeriodicSales Error]", err);
@@ -2540,9 +2718,16 @@ export const MySqlService = {
     },
 
     /**
-     * Get all persistent user annotations for a specific module
+     * Get all persistent user annotations for a specific module.
+     * Short TTL — invalidated on upsertAnnotation.
      */
     async getAnnotations(moduleName) {
+        return getCached(`annotations:${moduleName}`, 60_000, () =>
+            this._getAnnotationsUncached(moduleName)
+        );
+    },
+
+    async _getAnnotationsUncached(moduleName) {
         try {
             const [rows] = await purchasePool.query(
                 "SELECT ref_id, field_key, field_value FROM user_annotations WHERE module = ?",
@@ -2571,6 +2756,7 @@ export const MySqlService = {
                  ON DUPLICATE KEY UPDATE field_value = VALUES(field_value)`,
                 [moduleName, refId, fieldKey, fieldValue]
             );
+            invalidateCache(`annotations:${moduleName}`);
             return true;
         } catch (err) {
             console.error("[MySQL upsertAnnotation Error]", err);
@@ -2737,20 +2923,24 @@ export const MySqlService = {
     },
 
     /**
-     * Get 90-day comparative sales analysis from MySQL (3 x 30-day periods)
+     * Get 90-day comparative sales analysis from MySQL (3 x 30-day periods).
+     * Supports SQL-level pagination — metrics are computed over the full set;
+     * page rows use LIMIT/OFFSET on the sorted aggregate.
      */
-    async getSalesAnalysis({ branch = "", periods = [] }) {
-        const cacheKey = `salesAnalysis:${branch}:${periods.map((p) => `${p.key}:${p.start}:${p.end}`).join("|")}`;
-        return getCached(cacheKey, 300_000, () => this._computeSalesAnalysis({ branch, periods }));
+    async getSalesAnalysis({ branch = "", periods = [], page = 1, pageSize = 0 } = {}) {
+        const cacheKey = `salesAnalysis:${branch}:${periods.map((p) => `${p.key}:${p.start}:${p.end}`).join("|")}:p${page}:s${pageSize || "all"}`;
+        return getCached(cacheKey, 300_000, () =>
+            this._computeSalesAnalysis({ branch, periods, page, pageSize })
+        );
     },
 
-    async _computeSalesAnalysis({ branch = "", periods = [] }) {
+    async _computeSalesAnalysis({ branch = "", periods = [], page = 1, pageSize = 0 } = {}) {
         try {
-            console.log(`[MySQL getSalesAnalysis] Params: branch="${branch}", periodsCount=${periods.length}`);
-            if (periods.length === 0) return { data: [], metrics: {} };
+            console.log(`[MySQL getSalesAnalysis] Params: branch="${branch}", periodsCount=${periods.length}, page=${page}, pageSize=${pageSize}`);
+            if (periods.length === 0) return { data: [], metrics: {}, totalItems: 0 };
 
             if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
-                return { data: [], metrics: { totalRevenue: 0, totalQtySold: 0, uniqueProducts: 0 } };
+                return { data: [], metrics: { totalRevenue: 0, totalQtySold: 0, uniqueProducts: 0 }, totalItems: 0 };
             }
 
             // periods = [{ start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', key: 'P1' }, ...]
@@ -2772,29 +2962,81 @@ export const MySqlService = {
 
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
 
-            const periodCases = periods.map(p => 
+            const periodCases = periods.map(p =>
                 `SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN (${SQL_NET_QTY}) ELSE 0 END) as qty_${p.key},
                  SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN (${SQL_NET_AMOUNT}) ELSE 0 END) as sales_${p.key}`
             ).join(",\n                    ");
+
+            const totalSalesExpr = periods
+                .map((p) => `SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN (${SQL_NET_AMOUNT}) ELSE 0 END)`)
+                .join(" + ");
+
+            // Metrics over full filtered set (cheap aggregate, no per-SKU catalog join)
+            const [[metricsRow]] = await purchasePool.query(
+                `SELECT
+                    COUNT(*) AS uniqueProducts,
+                    COALESCE(SUM(row_sales), 0) AS totalRevenue,
+                    COALESCE(SUM(row_qty), 0) AS totalQtySold
+                 FROM (
+                    SELECT
+                        (${totalSalesExpr}) AS row_sales,
+                        (${periods.map((p) => `SUM(CASE WHEN s.document_date >= '${p.start}' AND s.document_date <= '${p.end}' THEN (${SQL_NET_QTY}) ELSE 0 END)`).join(" + ")}) AS row_qty
+                    FROM product_periodic_sales s
+                    ${wherePart}
+                    GROUP BY s.inventory_id, s.branch_name
+                 ) t`,
+                params
+            );
+
+            const totalItems = Number(metricsRow?.uniqueProducts) || 0;
+            const metrics = {
+                totalRevenue: Math.max(0, Number(metricsRow?.totalRevenue) || 0),
+                totalQtySold: netQtySold(metricsRow?.totalQtySold),
+                uniqueProducts: totalItems,
+            };
+
+            if (totalItems === 0) {
+                return { data: [], metrics, totalItems: 0 };
+            }
+
+            const limitInt = pageSize > 0 ? Math.max(1, parseInt(pageSize, 10) || 10) : 0;
+            const offsetInt = limitInt > 0 ? Math.max(0, (Math.max(1, parseInt(page, 10) || 1) - 1) * limitInt) : 0;
+            const limitSql = limitInt > 0 ? `LIMIT ${limitInt} OFFSET ${offsetInt}` : "";
 
             const query = `SELECT 
                     s.inventory_id,
                     s.branch_name,
                     MAX(s.description) as last_description,
-                    ${periodCases}
+                    ${periodCases},
+                    (${totalSalesExpr}) AS sort_sales
                  FROM product_periodic_sales s
                  ${wherePart}
-                 GROUP BY s.inventory_id, s.branch_name`;
+                 GROUP BY s.inventory_id, s.branch_name
+                 ORDER BY sort_sales DESC, s.inventory_id ASC
+                 ${limitSql}`;
 
             const [rows] = await purchasePool.query(query, params);
-            console.log(`[MySQL getSalesAnalysis] Success: ${rows.length} rows found.`);
+            console.log(`[MySQL getSalesAnalysis] Success: page ${rows.length} of ${totalItems} rows.`);
 
-            // Fetch catalog for missing descriptions (optional but better)
-            const catalog = await this.getProductCatalog();
-            const catalogMap = new Map(catalog.map(i => [i.inventory_id.toUpperCase().trim(), i.description]));
-
-            let totalRevenue = 0;
-            let totalQtySold = 0;
+            // Descriptions only for this page — avoid full catalog scan
+            const pageIds = [...new Set(rows.map((r) => String(r.inventory_id || "").trim()).filter(Boolean))];
+            let catalogMap = new Map();
+            if (pageIds.length) {
+                try {
+                    const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+                    const ph = pageIds.map(() => "?").join(",");
+                    const [catRows] = await pool.query(
+                        `SELECT UPPER(TRIM(inventory_id)) AS inventory_id, MAX(inventory_name) AS description
+                         FROM \`${inventoryDb}\`.inventory_items
+                         WHERE UPPER(TRIM(inventory_id)) IN (${ph})
+                         GROUP BY UPPER(TRIM(inventory_id))`,
+                        pageIds.map((id) => id.toUpperCase())
+                    );
+                    catalogMap = new Map(catRows.map((i) => [i.inventory_id, i.description]));
+                } catch (catErr) {
+                    console.warn("[MySQL getSalesAnalysis] catalog lookup skipped:", catErr.message);
+                }
+            }
 
             const finalData = rows.map(r => {
                 const invId = (r.inventory_id || "").toUpperCase().trim();
@@ -2817,18 +3059,13 @@ export const MySqlService = {
                     item.totalSales += s;
                 });
 
-                totalRevenue += item.totalSales;
-                totalQtySold += item.totalQty;
                 return item;
-            }).sort((a, b) => b.totalSales - a.totalSales);
+            });
 
             return {
                 data: finalData,
-                metrics: {
-                    totalRevenue,
-                    totalQtySold,
-                    uniqueProducts: finalData.length
-                }
+                metrics,
+                totalItems,
             };
         } catch (err) {
             console.error("[MySQL getSalesAnalysis Error]", err);
@@ -2866,8 +3103,8 @@ export const MySqlService = {
 
             if (branch && branch !== "All Branches") {
                 const branchNames = await this.resolveSalesBranchNames(branch);
-                const placeholders = branchNames.map(() => "TRIM(UPPER(?))").join(", ");
-                whereClauses.push(`TRIM(UPPER(branch_name)) IN (${placeholders})`);
+                // Exact names from resolve (index-friendly; no TRIM/UPPER on column)
+                whereClauses.push(`branch_name IN (${branchNames.map(() => "?").join(", ")})`);
                 params.push(...branchNames);
             }
 
@@ -2910,11 +3147,20 @@ export const MySqlService = {
      * Required by Dashboard Inventory API.
      */
     async getPeriodicSalesSummary({ branch = "", search = "", lookbackDays = SALES_LOOKBACK_DAYS } = {}) {
-        try {
-            if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
-                return new Map();
-            }
+        if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
+            return new Map();
+        }
+        if (!search) {
+            const key = `salesSummary:${lookbackDays}:${String(branch || "ALL").toUpperCase()}`;
+            return getCached(key, 60_000, () =>
+                this._getPeriodicSalesSummaryUncached({ branch, search: "", lookbackDays })
+            );
+        }
+        return this._getPeriodicSalesSummaryUncached({ branch, search, lookbackDays });
+    },
 
+    async _getPeriodicSalesSummaryUncached({ branch = "", search = "", lookbackDays = SALES_LOOKBACK_DAYS } = {}) {
+        try {
             const whereClauses = [salesLookbackSql(lookbackDays)];
             const params = [];
 
@@ -2924,8 +3170,7 @@ export const MySqlService = {
 
             if (branch && branch !== "All Branches") {
                 const branchNames = await this.resolveSalesBranchNames(branch);
-                const placeholders = branchNames.map(() => "TRIM(UPPER(?))").join(", ");
-                whereClauses.push(`TRIM(UPPER(branch_name)) IN (${placeholders})`);
+                whereClauses.push(`branch_name IN (${branchNames.map(() => "?").join(", ")})`);
                 params.push(...branchNames);
             }
             if (search) {
@@ -3066,28 +3311,34 @@ export const MySqlService = {
         const key = String(branchId || "").trim();
         if (!key) return [];
 
-        const candidates = new Set([key]);
+        const cacheKey = `resolveSalesBranch:${key.toUpperCase()}`;
+        return getCached(cacheKey, 600_000, () => this._resolveSalesBranchNamesUncached(key));
+    },
+
+    async _resolveSalesBranchNamesUncached(key) {
+        const candidates = new Set([key.toUpperCase()]);
         if (isEcomBranchAlias(key)) {
-            for (const alias of ECOM_BRANCH_ALIASES) candidates.add(alias);
+            for (const alias of ECOM_BRANCH_ALIASES) candidates.add(String(alias).toUpperCase());
         }
 
         try {
+            // Match in JS against cached DISTINCT names — avoids repeated full-table
+            // TRIM(UPPER(branch_name)) LIKE scans (often 300–900ms each).
+            const allNames = await this.getSalesBranchNames();
             const names = new Set();
-            for (const candidate of candidates) {
-                const [rows] = await purchasePool.query(
-                    `SELECT DISTINCT branch_name
-                     FROM product_periodic_sales
-                     WHERE branch_name IS NOT NULL AND TRIM(branch_name) != ''
-                       AND (
-                         TRIM(UPPER(branch_name)) = TRIM(UPPER(?))
-                         OR TRIM(UPPER(branch_name)) LIKE CONCAT(TRIM(UPPER(?)), ' %')
-                         OR TRIM(UPPER(branch_name)) LIKE CONCAT(TRIM(UPPER(?)), '-%')
-                       )`,
-                    [candidate, candidate, candidate]
-                );
-                for (const r of rows) {
-                    const n = String(r.branch_name || "").trim();
-                    if (n) names.add(n);
+            for (const raw of allNames) {
+                const n = String(raw || "").trim();
+                if (!n) continue;
+                const upper = n.toUpperCase();
+                for (const candidate of candidates) {
+                    if (
+                        upper === candidate ||
+                        upper.startsWith(`${candidate} `) ||
+                        upper.startsWith(`${candidate}-`)
+                    ) {
+                        names.add(n);
+                        break;
+                    }
                 }
             }
             const resolved = [...names];
@@ -3129,8 +3380,7 @@ export const MySqlService = {
 
             if (branch && branch !== "All Branches") {
                 const branchNames = await this.resolveSalesBranchNames(branch);
-                const placeholders = branchNames.map(() => "TRIM(UPPER(?))").join(", ");
-                whereClauses.push(`TRIM(UPPER(branch_name)) IN (${placeholders})`);
+                whereClauses.push(`branch_name IN (${branchNames.map(() => "?").join(", ")})`);
                 params.push(...branchNames);
             }
 
@@ -3163,6 +3413,22 @@ export const MySqlService = {
 
     /** Extended lookback gross sales when 90-day window has no invoice rows for a branch. */
     async getAccurateReplenishmentSalesMap({ branch = "", companyId = "main" } = {}) {
+        const branchKey = String(branch || "MAIN").trim().toUpperCase() || "MAIN";
+        const companyKey = String(companyId || "main");
+        // Watermark-aware TTL: invalidate when sales/inventory sync advances last_sync
+        let watermark = "0";
+        try {
+            const wm = await this.getReplenishmentDataWatermark();
+            watermark = wm ? new Date(wm).toISOString() : "0";
+        } catch { /* ignore */ }
+
+        const cacheKey = `replSalesMap:${companyKey}:${branchKey}:${watermark}`;
+        return getCached(cacheKey, 300_000, () =>
+            this._getAccurateReplenishmentSalesMapUncached({ branch, companyId })
+        );
+    },
+
+    async _getAccurateReplenishmentSalesMapUncached({ branch = "", companyId = "main" } = {}) {
         const isMain = !branch || String(branch).trim().toUpperCase() === "MAIN";
         const effectiveCompanyId = isMain ? companyId : resolveCompanyIdForBranch(companyId, branch);
         let lookbackDays = SALES_LOOKBACK_DAYS;
@@ -3202,6 +3468,7 @@ export const MySqlService = {
             let map = result.map;
             let count = countPositive(map);
 
+            // Only widen lookback when 90-day coverage is sparse
             if (count < 20) {
                 for (const days of [180, 365]) {
                     const extended = await this.getRetailNetworkSalesSummary({ companyId, lookbackDays: days });
@@ -3211,6 +3478,7 @@ export const MySqlService = {
                         lookbackDays = days;
                         count = extCount;
                     }
+                    if (count >= 20) break;
                 }
             }
 
@@ -3244,6 +3512,7 @@ export const MySqlService = {
                     salesMode = countPositive(extCatalog.map) >= countPositive(extStrict.map)
                         ? "gross" : extStrict.mode;
                 }
+                if (count >= 20) break;
             }
         }
 

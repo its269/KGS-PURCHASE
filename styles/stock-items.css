@@ -4,12 +4,19 @@
 
 .si-page {
     color: var(--text-primary);
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
 }
 
 .si-main {
     display: flex;
     flex-direction: column;
     gap: 1.25rem;
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .si-sr-only {
@@ -467,45 +474,56 @@
     background: var(--bg-surface);
     box-shadow: var(--shadow-md);
     overflow: hidden;
+    max-width: 100%;
+    min-width: 0;
     animation: si-fade-up 0.55s ease 0.1s both;
 }
 
 .si-table-scroll {
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     overflow-x: auto;
+    scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--text-muted) 45%, transparent) transparent;
 }
 
 .si-table {
     width: 100%;
-    min-width: 980px;
+    min-width: 0;
+    max-width: 100%;
     border-collapse: separate;
     border-spacing: 0;
     table-layout: fixed;
-    font-size: 0.8125rem;
+    font-size: 0.78rem;
 }
 
 .si-table thead th {
     position: sticky;
     top: 0;
     z-index: 1;
-    padding: 0.7rem 0.65rem;
+    padding: 0.55rem 0.4rem;
     text-align: left;
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     font-weight: 800;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--text-muted);
     background: color-mix(in srgb, var(--bg-surface) 88%, var(--bg-main) 12%);
     border-bottom: 1px solid var(--border-light);
-    white-space: nowrap;
+    white-space: normal;
+    line-height: 1.2;
+    word-break: break-word;
+    vertical-align: bottom;
 }
 
 .si-table tbody td {
-    padding: 0.7rem 0.65rem;
+    padding: 0.55rem 0.4rem;
     border-bottom: 1px solid color-mix(in srgb, var(--border-light) 80%, transparent);
     vertical-align: middle;
     color: var(--text-primary);
+    overflow: hidden;
+    word-break: break-word;
     content-visibility: auto;
     contain-intrinsic-size: auto 3.25rem;
 }

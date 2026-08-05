@@ -3,36 +3,41 @@ import { AcumaticaService } from "@/services/acumatica";
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE = { headers: { "Cache-Control": "no-store" } };
+
 export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "10", 10)));
     const search = searchParams.get("search") || "";
+    const cursor = searchParams.get("cursor") || "";
     const companyId = getActiveCompanyFromRequest(request) || "main";
 
     try {
         const cookie = getSessionFromRequest(request);
         if (!cookie) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-        console.log(`[Stock Items API] MySQL — company: ${companyId}, page: ${page}`);
-        const result = await MySqlService.getStockItems({ page, pageSize, search, companyId });
+        console.log(`[Stock Items API] MySQL — company: ${companyId}, page: ${page}${cursor ? `, cursor: ${cursor}` : ""}`);
+        const result = await MySqlService.getStockItems({ page, pageSize, search, companyId, cursor });
         
         if (result.items.length === 0) {
             if (cookie === "__bypass__") {
-                return NextResponse.json({ items: [], totalCount: 0, source: "mysql-bypass-empty" });
+                return NextResponse.json({ items: [], totalCount: 0, source: "mysql-bypass-empty" }, NO_STORE);
             }
             console.log("[Stock Items API] MySQL returned 0 items for this query, falling back to Acumatica...");
             throw new Error("EMPTY_MYSQL");
         }
 
         const source = result.dataMode === "catalog" ? "mysql-catalog" : "mysql";
-        return NextResponse.json({ ...result, source, companyId });
+        return NextResponse.json({ ...result, source, companyId }, NO_STORE);
     } catch (err) {
         console.error("[Stock Items API MySQL Error]", err.message);
 
         const cookie = getSessionFromRequest(request);
         if (cookie === "__bypass__") {
-            return NextResponse.json({ items: [], totalCount: 0, source: "mysql-bypass-error", message: err.message });
+            return NextResponse.json({ items: [], totalCount: 0, source: "mysql-bypass-error", message: err.message }, NO_STORE);
         }
 
         console.log("[Stock Items API] Falling back to Acumatica...");
@@ -75,7 +80,7 @@ export async function GET(request) {
                 items: Array.from(itemMap.values()),
                 totalCount: acuResult.totalCount,
                 source: "acumatica-fallback"
-            });
+            }, NO_STORE);
         } catch (acuErr) {
             console.error("[Stock Items API Fallback Error]", acuErr);
             return NextResponse.json({ error: acuErr.message || "Failed to fetch stock items" }, { status: 500 });

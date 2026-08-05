@@ -5,20 +5,25 @@
 
 .po-root {
     display: flex;
-    gap: 2rem;
-    align-items: flex-start;
-    padding: 2rem;
-    max-width: none;
+    flex-direction: column;
+    gap: 1.25rem;
+    align-items: stretch;
+    padding: 1.25rem 1.5rem;
+    max-width: 100%;
     width: 100%;
     margin: 0;
+    box-sizing: border-box;
+    min-width: 0;
 }
 
 .po-main {
     flex: 1;
     min-width: 0;
+    max-width: 100%;
+    width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 2rem;
+    gap: 1.25rem;
 }
 
 .po-page-title-row {
@@ -316,7 +321,7 @@
 
 .po-th-filter {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 0.35rem;
     position: relative;
@@ -324,9 +329,13 @@
 }
 
 .po-th-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    text-overflow: unset;
+    white-space: normal;
+    line-height: 1.25;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
 }
 
 .po-th-filter-btn {
@@ -334,8 +343,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: 18px;
+    height: 18px;
     padding: 0;
     border: none;
     border-radius: 4px;
@@ -343,6 +352,11 @@
     color: var(--text-muted);
     cursor: pointer;
     transition: color 0.15s, background 0.15s;
+}
+
+.po-th-filter-btn svg {
+    width: 10px;
+    height: 10px;
 }
 
 .po-th-filter-btn:hover {
@@ -418,18 +432,21 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 1.25rem;
+    gap: 0.75rem 1rem;
     background: var(--bg-surface);
-    padding: 1.25rem;
+    padding: 1rem 1.25rem;
     border-radius: var(--radius-xl);
     border: 1px solid var(--border-light);
     box-shadow: var(--shadow-md);
+    min-width: 0;
 }
 
 .po-filter-group {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.5rem;
+    flex: 0 1 auto;
+    min-width: 0;
 }
 
 .po-filter-label {
@@ -483,8 +500,9 @@ select.po-select-box:focus {
 }
 
 .po-search-container {
-    flex: 1;
-    min-width: 300px;
+    flex: 1 1 220px;
+    min-width: 160px;
+    max-width: 100%;
 }
 
 .po-reset-btn {
@@ -498,6 +516,7 @@ select.po-select-box:focus {
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: all 0.2s;
+    flex-shrink: 0;
 }
 
 .po-reset-btn:hover {
@@ -508,6 +527,7 @@ select.po-select-box:focus {
 .po-refresh-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 0.5rem;
     height: 40px;
     padding: 0 1.25rem;
@@ -518,6 +538,9 @@ select.po-select-box:focus {
     font-size: 0.85rem;
     font-weight: 700;
     transition: all 0.2s;
+    flex: 0 0 auto;
+    margin-inline-start: auto;
+    white-space: nowrap;
 }
 
 .po-refresh-btn:hover {
@@ -527,58 +550,151 @@ select.po-select-box:focus {
 }
 
 /* ── Table & Rows ───────────────────────────────────────── */
+/* Fit every PO column in the viewport — no clipped/hidden columns */
+.db-table-wrap.po-table-wrap,
 .po-table-wrap {
-    overflow-x: auto;
+    overflow-x: auto !important;
     overflow-y: visible;
+    max-width: 100%;
+    width: 100%;
+    min-width: 0;
+    display: block;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+}
+
+.db-table-wrap.po-table-wrap::-webkit-scrollbar {
+    height: 10px;
+}
+
+.db-table-wrap.po-table-wrap::-webkit-scrollbar-thumb {
+    background: var(--border-medium);
+    border-radius: 999px;
+}
+
+.db-table.po-table,
+.po-table {
+    table-layout: fixed !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100%;
+    border-collapse: collapse;
 }
 
 .po-table th,
 .po-table td {
-    font-size: 0.78rem;
-    padding: 0.55rem 0.5rem;
-    vertical-align: top;
-    overflow: visible;
+    font-size: 0.72rem;
+    padding: 0.4rem 0.3rem;
+    vertical-align: middle;
+    overflow: hidden;
     word-break: break-word;
 }
 
-.po-table {
-    table-layout: fixed;
-    width: 100%;
-    min-width: 1420px;
+.po-table thead th {
+    white-space: normal;
+    vertical-align: bottom;
+    line-height: 1.2;
+    font-size: 0.62rem;
+    padding: 0.45rem 0.28rem;
 }
 
-.po-col-expand { width: 44px; }
-.po-col-order { width: 110px; }
-.po-col-vendor-id { width: 90px; }
-.po-col-vendor-name { width: 140px; }
-.po-col-origin { width: 130px; min-width: 120px; }
-.po-col-status { width: 100px; }
-.po-col-date { width: 105px; }
-.po-col-eta { width: 130px; }
-.po-col-etd { width: 130px; }
-.po-col-container { width: 120px; }
-.po-col-remarks { width: 150px; }
-.po-col-user-status { width: 140px; min-width: 140px; }
-.po-col-amount { width: 120px; text-align: right; }
+/* Column share of available width (sums ~100%) */
+.po-col-expand { width: 2.5%; }
+.po-col-order { width: 6.5%; }
+.po-col-vendor-id { width: 5.5%; }
+.po-col-vendor-name { width: 8%; }
+.po-col-origin { width: 7.5%; }
+.po-col-status { width: 5.5%; }
+.po-col-container { width: 7%; }
+.po-col-date { width: 5.5%; }
+.po-col-etd { width: 5.5%; }
+.po-col-ship-out { width: 7.5%; }
+.po-col-eta { width: 7.5%; }
+.po-col-received { width: 6%; }
+.po-col-remarks { width: 8%; }
+.po-col-user-status { width: 8%; }
+.po-col-amount { width: 7%; text-align: right; }
 
-.po-table .po-vendor-name {
+.po-readonly-date {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    white-space: normal;
+    line-height: 1.25;
+    word-break: break-word;
+}
+
+.po-table .po-vendor-name,
+.po-table .po-vendor-id {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    max-width: 100%;
 }
 
 .po-table .po-input-date,
-.po-table .po-input-text {
+.po-table .po-input-text,
+.po-table .po-input-date-mdy {
     width: 100%;
     min-width: 0;
+    max-width: 100%;
     box-sizing: border-box;
+    font-size: 0.68rem !important;
+    padding: 0.35rem 0.4rem !important;
+    height: auto;
+    min-height: 30px;
+}
+
+.po-table .po-date-mdy .po-input-date-mdy {
+    padding-right: 1.5rem !important;
+}
+
+.po-table .po-date-picker-btn {
+    width: 1.25rem;
+    height: 1.25rem;
+    right: 0.1rem;
+}
+
+.po-table .po-date-picker-btn svg {
+    width: 12px;
+    height: 12px;
 }
 
 .po-user-status-select,
 .po-origin-select {
     width: 100%;
     min-width: 0;
+    max-width: 100%;
+    font-size: 0.68rem !important;
+    padding: 0.35rem 1.4rem 0.35rem 0.35rem !important;
+    height: auto;
+    min-height: 30px;
+}
+
+.po-table .db-badge {
+    display: inline-block;
+    max-width: 100%;
+    font-size: 0.62rem;
+    padding: 0.15rem 0.4rem;
+    white-space: normal;
+    line-height: 1.2;
+    word-break: break-word;
+}
+
+.po-table .db-inv-id {
+    font-size: 0.7rem;
+    word-break: break-all;
+    white-space: normal;
+}
+
+.po-amount-cell {
+    color: var(--text-primary);
+    font-size: 0.72rem;
+    font-weight: 800;
+    word-break: break-all;
 }
 
 /* Month-first date inputs (mm/dd/yyyy) */
@@ -646,13 +762,18 @@ select.po-select-box:focus {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     border-radius: var(--radius-md);
     color: var(--text-muted);
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     background: var(--bg-main);
     border: 1px solid var(--border-light);
+}
+
+.po-expand-icon svg {
+    width: 12px;
+    height: 12px;
 }
 
 .po-expand-icon.po-expand-open {
@@ -860,25 +981,24 @@ input.po-select-box[type="date"] {
     background-color: var(--bg-main);
 }
 
-/* ── Right Sidebar / Summary Panel ─────────────────────── */
-.po-right-panel {
-    width: 340px;
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-    position: sticky;
-    top: 2rem;
-    flex-shrink: 0;
+/* ── Summary strip (above table, full width) ───────────── */
+.po-summary-strip {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 1rem;
+    width: 100%;
+    min-width: 0;
 }
 
 .po-summary-card {
     background: var(--bg-surface);
     border: 1px solid var(--border-light);
     border-radius: var(--radius-xl);
-    padding: 1.75rem;
-    box-shadow: var(--shadow-lg);
+    padding: 1.1rem 1.25rem 1.25rem;
+    box-shadow: var(--shadow-md);
     position: relative;
-    overflow: hidden;
+    overflow: visible;
+    min-width: 0;
 }
 
 .po-summary-card::before {
@@ -888,137 +1008,144 @@ input.po-select-box[type="date"] {
     left: 0;
     width: 100%;
     height: 4px;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
 }
 
 .po-summary-title {
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-weight: 800;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    margin-bottom: 1.5rem;
+    margin: 0 0 0.85rem;
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.6rem;
 }
 
 .po-summary-title svg {
     color: var(--accent-primary);
 }
 
-.po-summary-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1.15rem 0;
-    border-bottom: 1px solid var(--border-light);
+.po-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.65rem;
 }
 
-.po-summary-item:last-child {
-    border-bottom: none;
+.po-summary-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    background: var(--bg-main);
+    min-width: 0;
 }
 
 .po-summary-label {
-    font-size: 0.85rem;
+    font-size: 0.7rem;
     color: var(--text-secondary);
     font-weight: 600;
+    line-height: 1.3;
 }
 
 .po-summary-value {
-    font-size: 1rem;
+    font-size: 0.95rem;
     font-weight: 800;
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
+    word-break: break-word;
 }
 
 .po-summary-total {
-    margin-top: 0.5rem;
-    padding-top: 1.5rem;
-    border-top: 2px dashed var(--border-light);
+    border-color: rgba(59, 130, 246, 0.28);
+    background: rgba(59, 130, 246, 0.08);
 }
 
 .po-summary-total .po-summary-label {
-    font-size: 0.9rem;
+    font-size: 0.7rem;
     color: var(--text-primary);
     font-weight: 800;
 }
 
 .po-summary-total .po-summary-value {
-    font-size: 1.4rem;
+    font-size: 1.05rem;
     color: var(--accent-primary);
     letter-spacing: -0.02em;
 }
 
 .po-info-box {
-    padding: 1.5rem;
+    padding: 1.1rem 1.25rem;
     background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(99, 102, 241, 0.05) 100%);
     border-radius: var(--radius-xl);
     border: 1px solid rgba(59, 130, 246, 0.12);
+    min-width: 0;
 }
 
 .po-info-title {
     font-size: 0.85rem;
     font-weight: 800;
     color: var(--accent-primary);
-    margin-bottom: 1rem;
+    margin: 0 0 0.65rem;
     display: flex;
     align-items: center;
     gap: 0.6rem;
 }
 
 .po-info-text {
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     color: var(--text-secondary);
-    line-height: 1.6;
+    line-height: 1.55;
     font-weight: 500;
-}
-
-.po-footer-note {
-    padding: 1.25rem;
-    border: 1px dashed var(--border-medium);
-    border-radius: var(--radius-lg);
-    text-align: center;
-    background: var(--bg-main);
-}
-
-.po-footer-text {
-    font-size: 0.65rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    font-weight: 800;
-    letter-spacing: 0.1em;
+    margin: 0;
 }
 
 /* ── Responsive ────────────────────────────────────────── */
-@media (max-width: 1400px) {
-    .po-right-panel {
-        width: 280px;
+@media (max-width: 1200px) {
+    .po-summary-strip {
+        grid-template-columns: 1fr;
     }
-}
 
-@media (max-width: 1280px) {
-    .po-right-panel {
-        display: none;
-    }
-    .po-root {
-        padding: 1.5rem;
+    .po-summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
 @media (max-width: 768px) {
+    .po-root {
+        padding: 1rem;
+    }
+
     .po-toolbar {
         flex-direction: column;
         align-items: stretch;
     }
+
     .po-filter-group {
-        flex-direction: column;
-        align-items: flex-start;
+        flex-wrap: wrap;
+        width: 100%;
     }
+
     .po-select-box {
-        width: 100% !important;
+        width: auto;
+        max-width: 100%;
     }
+
     .po-search-container {
         min-width: 0;
+        width: 100%;
+    }
+
+    .po-refresh-btn {
+        margin-inline-start: 0;
+        width: 100%;
+    }
+
+    .po-summary-grid {
+        grid-template-columns: 1fr;
     }
 }

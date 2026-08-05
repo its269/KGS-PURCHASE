@@ -1,5 +1,11 @@
 /* Suppliers — order detail expand inside supplier lightbox */
 
+.db-root:has(.sup-order-nbr-btn),
+.db-main:has(.sup-order-nbr-btn) {
+    min-width: 0;
+    max-width: 100%;
+}
+
 .sup-order-nbr-btn {
     display: inline-flex;
     align-items: center;

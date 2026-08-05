@@ -46,7 +46,7 @@ export async function GET(request) {
             fileName = `PurchaseOrders_Export_${new Date().toISOString().split('T')[0]}.csv`;
             
             // Header
-            csvContent = "Order Nbr,Vendor ID,Vendor Name,Status,Date,Total Amount\n";
+            csvContent = "Order Nbr,Vendor ID,Vendor Name,Status,PO Date,ETD,Received Date,Total Amount\n";
             
             // Rows
             result.orders.forEach(po => {
@@ -55,7 +55,9 @@ export async function GET(request) {
                     `"${(po.vendorId || "").replace(/"/g, '""')}"`,
                     `"${(po.vendorName || "").replace(/"/g, '""')}"`,
                     `"${po.status}"`,
-                    po.date ? po.date.split('T')[0] : "",
+                    po.date ? String(po.date).split('T')[0] : "",
+                    po.promisedDate ? String(po.promisedDate).split('T')[0] : "",
+                    po.receiptDate ? String(po.receiptDate).split('T')[0] : "",
                     po.totalAmount
                 ];
                 csvContent += row.join(",") + "\n";

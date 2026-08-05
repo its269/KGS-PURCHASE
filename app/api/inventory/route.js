@@ -3,10 +3,17 @@ import { MySqlService } from "@/services/mysql";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-async function enrichInventoryRows(rows, { branch, search }) {
+const NO_STORE = { headers: { "Cache-Control": "no-store" } };
+
+async function enrichInventoryRows(rows, { branch }) {
+    const ids = rows
+        .map((item) => item.InventoryID?.value || item.inventoryId || "")
+        .filter(Boolean);
+
     const [salesMap, vendorMap, leadTimeMap] = await Promise.all([
-        MySqlService.getPeriodicSalesSummary({ branch, search }),
+        MySqlService.getPeriodicSalesSummaryForIds({ ids, branch }),
         MySqlService.getItemVendorMap(),
         MySqlService.getEffectiveVendorLeadTimes(),
     ]);
@@ -54,7 +61,7 @@ export async function GET(request) {
 
         if (source === "mysql" && statsOnly) {
             const globalStats = await MySqlService.getGlobalStats(branch, search, companyId);
-            return Response.json({ globalStats, companyId });
+            return Response.json({ globalStats, companyId }, NO_STORE);
         }
 
         let result;
@@ -99,7 +106,7 @@ export async function GET(request) {
                         globalStats: { totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 },
                         source: "mysql-bypass-empty",
                         message: "MySQL is empty and Acumatica is unreachable (Bypass Mode)."
-                    });
+                    }, NO_STORE);
                 }
 
                 return Response.json({
@@ -122,7 +129,7 @@ export async function GET(request) {
                     pageSize,
                     message: "Unable to read inventory from MySQL. Check Sync Center or try Refresh.",
                     details: mError.message,
-                });
+                }, NO_STORE);
             }
         } else {
             const cookie = getSessionFromRequest(request);
@@ -141,7 +148,7 @@ export async function GET(request) {
         }
 
         if (result?.data && enrich) {
-            result.data = await enrichInventoryRows(result.data, { branch, search });
+            result.data = await enrichInventoryRows(result.data, { branch });
         }
 
         if (stats && !result.globalStats) {
@@ -152,7 +159,7 @@ export async function GET(request) {
             ...result,
             page,
             pageSize,
-        });
+        }, NO_STORE);
     } catch (err) {
         console.error("[BFF Inventory Error]", err);
         if (err.message === "Unauthorized") {
