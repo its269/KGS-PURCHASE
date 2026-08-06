@@ -94,38 +94,18 @@ function SignInContent() {
                 return;
             }
 
-            const { sessionId, authType, user } = data;
+            const { sessionId, user } = data;
             if (sessionId) {
                 localStorage.setItem("acu_session", sessionId);
             }
 
-            // Local app user — use profile from login response
-            let displayName = username;
-            if (authType === "local" && user) {
-                displayName = user.fullName || user.username || username;
-                localStorage.setItem("userRole", user.role || "user");
-                localStorage.setItem("userName", displayName);
-                localStorage.setItem("authType", "local");
-            } else {
-                localStorage.removeItem("userRole");
-                localStorage.setItem("authType", "acumatica");
-                // Fetch the user's full name (FirstName + LastName) from Acumatica
-                try {
-                    const meRes = await fetch(withBasePath(`/api/auth/me?username=${encodeURIComponent(username)}`), {
-                        headers: { "Authorization": `Bearer ${sessionId}` }
-                    });
-                    if (meRes.ok) {
-                        const meData = await meRes.json();
-                        if (meData?.fullName) displayName = meData.fullName;
-                        if (meData?.first) localStorage.setItem("userFirstName", meData.first);
-                        if (meData?.last) localStorage.setItem("userLastName", meData.last);
-                    }
-                } catch {
-                    // Non-fatal — fall back to raw username
-                }
-                localStorage.setItem("userName", displayName);
-            }
-            
+            const displayName = user?.fullName || user?.username || username;
+            localStorage.setItem("userName", displayName);
+            localStorage.setItem("userRole", user?.role || "user");
+            localStorage.setItem("authType", "local");
+            localStorage.removeItem("userFirstName");
+            localStorage.removeItem("userLastName");
+
             // Direct reload to ensure all components pick up the new session
             window.location.href = withBasePath("/dashboard");
         } catch (err) {

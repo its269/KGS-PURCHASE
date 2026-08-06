@@ -2153,25 +2153,30 @@ export const MySqlService = {
     },
 
     /**
-     * Fetch unique branches for Inventory / PO filters.
-     * Uses the Acumatica Branch master table only (not Warehouse / inventory sites).
+     * Fetch unique branches for Inventory / PO filters from MySQL only.
+     * Merges the branches master table with distinct inventory site IDs so
+     * every operational branch appears (Acumatica Branch entity is not used).
      * Cached 10 min — invalidated on replaceMasterBranches / upsertBranches.
      */
     async getBranches(companyId = "main") {
-        return getCached(`branches:list:${companyId}`, 600_000, () =>
+        return getCached(`branches:list:v2:${companyId}`, 600_000, () =>
             this._getBranchesUncached(companyId)
         );
     },
 
     async _getBranchesUncached(companyId = "main") {
         try {
-            const masterBranches = await this.getMasterBranches();
+            const [masterBranches, inventoryIds] = await Promise.all([
+                this.getMasterBranches(),
+                this.getInventoryBranchIds(companyId),
+            ]);
+
             const byId = new Map();
             const add = (id, name = "") => {
                 const key = String(id || "").trim();
                 if (!key || key === "__catalog__") return;
                 if (isExcludedBranchAlias(key)) return;
-                if (isWarehouseLikeAlias(key) || isWarehouseLikeAlias(name)) return;
+                if (isExcludedBranchAlias(name)) return;
                 if (companyId === "ecommerce" && !isEcomBranchAlias(key)) return;
 
                 const upper = key.toUpperCase();
@@ -2193,17 +2198,32 @@ export const MySqlService = {
                 }
             };
 
+            // Prefer master names, then fill any site IDs present in inventory
             for (const b of masterBranches) {
                 add(b.branch_id || b.SiteID, b.branch_name || b.Description);
             }
-
-            if (byId.size === 0) {
-                return [];
+            for (const id of inventoryIds) {
+                add(id, "");
             }
 
-            return [...byId.values()].sort((a, b) =>
-                String(a.SiteID).localeCompare(String(b.SiteID))
-            );
+            // Always expose MAIN when browsing the main company
+            if (companyId !== "ecommerce") {
+                add("MAIN", "MAIN");
+            }
+
+            if (byId.size === 0) {
+                return companyId === "ecommerce"
+                    ? [{ SiteID: "ECOMMERCE", Description: { value: "ECOMMERCE" } }]
+                    : [{ SiteID: "MAIN", Description: { value: "MAIN" } }];
+            }
+
+            return [...byId.values()].sort((a, b) => {
+                const aId = String(a.SiteID).toUpperCase();
+                const bId = String(b.SiteID).toUpperCase();
+                if (aId === "MAIN") return -1;
+                if (bId === "MAIN") return 1;
+                return String(a.SiteID).localeCompare(String(b.SiteID));
+            });
         } catch (err) {
             console.error("[MySQL getBranches Error]", err);
             return [];
