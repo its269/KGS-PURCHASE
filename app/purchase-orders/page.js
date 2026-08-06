@@ -73,12 +73,6 @@ function poStatusClass(status) {
 }
 
 function fmt(n) { return Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
-function fmtDate(d) {
-    if (!d) return "—";
-    const date = new Date(d);
-    if (isNaN(date.getTime())) return d;
-    return date.toLocaleDateString("en-PH", { year: "2-digit", month: "short", day: "numeric" });
-}
 
 function toDateKey(d) {
     if (!d) return "";
@@ -92,29 +86,65 @@ function toDateKey(d) {
     return `${y}-${m}-${day}`;
 }
 
-/** Display ISO / date value as mm/dd/yyyy */
-function isoToMdy(d) {
+/** Today's date as ISO yyyy-mm-dd (local) */
+function todayIso() {
+    return toDateKey(new Date());
+}
+
+/** Display ISO / date value as yyyy/mm/dd */
+function isoToYmd(d) {
     const key = toDateKey(d);
     if (!key) return "";
     const [y, m, day] = key.split("-");
-    return `${m}/${day}/${y}`;
+    return `${y}/${m}/${day}`;
 }
 
-/** Parse mm/dd/yyyy (or yyyy-mm-dd) into ISO yyyy-mm-dd; null if invalid */
-function mdyToIso(text) {
+function fmtDate(d) {
+    if (!d) return "—";
+    return isoToYmd(d) || String(d);
+}
+
+function isValidYmdParts(year, month, day) {
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+    const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const check = new Date(`${iso}T12:00:00`);
+    return !isNaN(check.getTime()) && check.getFullYear() === year && check.getMonth() + 1 === month && check.getDate() === day;
+}
+
+/** Parse yyyy/mm/dd (also yyyy-mm-dd / legacy mm/dd/yyyy) into ISO yyyy-mm-dd; null if invalid */
+function ymdToIso(text) {
     const t = String(text || "").trim();
     if (!t) return "";
     if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-    const match = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
+    let match = t.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+    if (match) {
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        if (!isValidYmdParts(year, month, day)) return null;
+        return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+
+    // Legacy mm/dd/yyyy
+    match = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if (!match) return null;
     const month = Number(match[1]);
     const day = Number(match[2]);
     const year = Number(match[3]);
-    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-    const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const check = new Date(`${iso}T12:00:00`);
-    if (isNaN(check.getTime()) || check.getMonth() + 1 !== month || check.getDate() !== day) return null;
-    return iso;
+    if (!isValidYmdParts(year, month, day)) return null;
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Inclusive day count between two dates; null if incomplete/invalid */
+function inclusiveDayCount(start, end) {
+    const a = toDateKey(start);
+    const b = toDateKey(end);
+    if (!a || !b) return null;
+    const startMs = new Date(`${a}T12:00:00`).getTime();
+    const endMs = new Date(`${b}T12:00:00`).getTime();
+    if (isNaN(startMs) || isNaN(endMs) || endMs < startMs) return null;
+    return Math.floor((endMs - startMs) / 86400000) + 1;
 }
 
 function textIncludes(haystack, needle) {
@@ -163,11 +193,11 @@ const PO_STATUS_FILTER_OPTIONS = [
 const ORIGIN_OPTIONS = ["Philippines", "China"];
 
 function PoDateInput({ value = "", onChange, className = "", style }) {
-    const [text, setText] = useState(() => isoToMdy(value));
+    const [text, setText] = useState(() => isoToYmd(value));
     const pickerRef = useRef(null);
 
     useEffect(() => {
-        setText(isoToMdy(value));
+        setText(isoToYmd(value));
     }, [value]);
 
     const commitText = (raw) => {
@@ -177,12 +207,12 @@ function PoDateInput({ value = "", onChange, className = "", style }) {
             setText("");
             return;
         }
-        const iso = mdyToIso(trimmed);
+        const iso = ymdToIso(trimmed);
         if (iso) {
             onChange?.(iso);
-            setText(isoToMdy(iso));
+            setText(isoToYmd(iso));
         } else {
-            setText(isoToMdy(value));
+            setText(isoToYmd(value));
         }
     };
 
@@ -191,7 +221,7 @@ function PoDateInput({ value = "", onChange, className = "", style }) {
             <input
                 type="text"
                 className="po-input-date po-input-date-mdy"
-                placeholder="mm/dd/yyyy"
+                placeholder="yyyy/mm/dd"
                 inputMode="numeric"
                 autoComplete="off"
                 value={text}
@@ -202,7 +232,7 @@ function PoDateInput({ value = "", onChange, className = "", style }) {
                         onChange?.("");
                         return;
                     }
-                    const iso = mdyToIso(next);
+                    const iso = ymdToIso(next);
                     if (iso) onChange?.(iso);
                 }}
                 onBlur={() => commitText(text)}
@@ -421,8 +451,8 @@ export default function PurchaseOrdersPage() {
     const [hasMore, setHasMore] = useState(false);
     const [search, setSearch] = useState("");
     const [debSearch, setDebSearch] = useState("");
-    const [startDate, setStartDate] = useState("");
-    const [endDate, setEndDate] = useState("");
+    const [startDate, setStartDate] = useState(() => todayIso());
+    const [endDate, setEndDate] = useState(() => todayIso());
     const [status, setStatus] = useState("Open");
     const [selectedBranch, setSelectedBranch] = useState("");
     const [branchOptions, setBranchOptions] = useState([]);
@@ -484,17 +514,16 @@ export default function PurchaseOrdersPage() {
     useEffect(() => {
         const savedPage = localStorage.getItem("po_filter_page");
         const savedSearch = localStorage.getItem("po_filter_search");
-        const savedStart = localStorage.getItem("po_filter_startDate");
-        const savedEnd = localStorage.getItem("po_filter_endDate");
         const savedStatus = localStorage.getItem("po_filter_status");
         const savedBranch = localStorage.getItem("po_filter_branch") || "";
+        const today = todayIso();
 
         Promise.resolve().then(async () => {
-            // 1. Load filters
+            // 1. Load filters — From/To always default to current date
             if (savedPage) setPage(parseInt(savedPage));
             if (savedSearch) setSearch(savedSearch);
-            if (savedStart) setStartDate(savedStart);
-            if (savedEnd) setEndDate(savedEnd);
+            setStartDate(today);
+            setEndDate(today);
             if (savedStatus) setStatus(savedStatus);
             if (savedBranch) setSelectedBranch(savedBranch);
 
@@ -643,6 +672,11 @@ export default function PurchaseOrdersPage() {
         return { totalValue, pendingEtaCount, openCount };
     }, [orders, userInputs]);
 
+    const rangeDayCount = useMemo(
+        () => inclusiveDayCount(startDate, endDate),
+        [startDate, endDate]
+    );
+
     const displayedOrders = useMemo(() => {
         const f = columnFilters;
         return orders.filter((o) => {
@@ -769,6 +803,13 @@ export default function PurchaseOrdersPage() {
                             style={{ width: "150px" }}
                         />
                     </div>
+
+                    {rangeDayCount != null && (
+                        <div className="po-filter-group po-filter-day-count" title="Inclusive days in selected range">
+                            <span className="po-filter-label">Days:</span>
+                            <span className="po-day-count-value">{rangeDayCount}</span>
+                        </div>
+                    )}
 
                     <div className="po-filter-group">
                         <span className="po-filter-label">Status:</span>

@@ -130,17 +130,25 @@ function SignInContent() {
 
     return (
         <div className="signin-wrapper">
+            <div className="signin-orb signin-orb--a" aria-hidden="true" />
+            <div className="signin-orb signin-orb--b" aria-hidden="true" />
+
+            <div className="signin-stage">
             <div className="signin-card">
                 <div className="signin-header">
                     <div className="signin-logo-container">
                         <img
                             src="https://kelin-website.vercel.app/KELIN-LOGO-01.png"
-                            alt="Kelin Logo"
+                            alt="Kelin Graphics System"
                             className="signin-logo-img"
+                            width={180}
+                            height={92}
+                            decoding="async"
+                            fetchPriority="high"
                         />
                     </div>
                     <h1 className="signin-title">KGS PURCHASING</h1>
-                    <p className="signin-subtitle">Please enter your account details</p>
+                    <p className="signin-subtitle">Sign in with your account details</p>
                 </div>
 
                 {!mounted ? (
@@ -175,34 +183,41 @@ function SignInContent() {
                                 Username
                             </label>
                             <div className="signin-input-wrapper">
-                                <span className="signin-input-icon"><IconUser /></span>
+                                <span className="signin-input-icon" aria-hidden="true"><IconUser /></span>
                                 <input
                                     id="username"
+                                    name="username"
                                     className="signin-input"
                                     type="text"
-                                    placeholder="Username"
+                                    placeholder="Enter your username"
                                     value={username}
                                     onChange={(e) => setUsername(e.target.value)}
                                     autoComplete="username"
+                                    autoCapitalize="none"
+                                    autoCorrect="off"
+                                    spellCheck={false}
+                                    enterKeyHint="next"
                                     required
                                 />
                             </div>
                         </div>
 
                         <div className="signin-field">
-                            <label className="signin-label" htmlFor="password">
+                            <label className="signin-label" htmlFor="current-password">
                                 Password
                             </label>
                             <div className="signin-input-wrapper">
-                                <span className="signin-input-icon"><IconLock /></span>
+                                <span className="signin-input-icon" aria-hidden="true"><IconLock /></span>
                                 <input
-                                    id="password"
+                                    id="current-password"
+                                    name="password"
                                     className="signin-input"
                                     type={showPassword ? "text" : "password"}
-                                    placeholder="Password"
+                                    placeholder="Enter your password"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     autoComplete="current-password"
+                                    enterKeyHint="done"
                                     required
                                 />
                                 <button
@@ -210,6 +225,7 @@ function SignInContent() {
                                     className="signin-toggle-password"
                                     onClick={() => setShowPassword(!showPassword)}
                                     aria-label={showPassword ? "Hide password" : "Show password"}
+                                    aria-pressed={showPassword}
                                 >
                                     {showPassword ? <IconEyeOff /> : <IconEye />}
                                 </button>
@@ -220,6 +236,7 @@ function SignInContent() {
                             <div className="signin-remember">
                                 <input
                                     id="remember"
+                                    name="remember"
                                     className="signin-checkbox"
                                     type="checkbox"
                                 />
@@ -237,7 +254,7 @@ function SignInContent() {
                         </div>
 
                         <button type="submit" className="signin-btn" disabled={loading}>
-                            {loading ? <span className="signin-spinner" /> : "Sign In"}
+                            {loading ? <span className="signin-spinner" aria-label="Signing in" /> : "Sign In"}
                         </button>
                     </form>
                 )}
@@ -245,6 +262,7 @@ function SignInContent() {
                 <div className="signin-footer">
                     <p suppressHydrationWarning>&copy; {new Date().getFullYear()} Kelin Graphics System Corp.</p>
                 </div>
+            </div>
             </div>
         </div>
     );

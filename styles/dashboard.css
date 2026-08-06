@@ -77,11 +77,11 @@
     font-weight: 800;
     padding: 0.25rem 0.65rem;
     border-radius: 999px;
-    background: rgba(139, 92, 246, 0.12);
-    color: #7c3aed;
+    background: var(--accent-soft);
+    color: var(--accent-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    border: 1px solid rgba(139, 92, 246, 0.25);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
 }
 
 /* ── Stats ─────────────────────────────────────────────── */
@@ -324,7 +324,7 @@
 .db-search-wrapper:focus-within {
     border-color: var(--accent-primary);
     background: var(--bg-surface);
-    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+    box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
 .db-select-wrapper svg,
@@ -564,24 +564,26 @@
 
 .db-action-sync {
     background: var(--accent-primary);
-    color: #ffffff;
+    color: var(--accent-on-primary);
     border-color: var(--accent-primary);
+    box-shadow: none;
 }
 
 .db-action-sync:hover {
-    filter: brightness(1.1);
+    filter: brightness(1.08);
     border-color: var(--accent-primary);
-    color: #ffffff;
+    color: var(--accent-on-primary);
 }
 
 .db-action-sales3m {
     background: var(--accent-secondary);
     color: #ffffff;
     border-color: var(--accent-secondary);
+    box-shadow: none;
 }
 
 .db-action-sales3m:hover {
-    filter: brightness(1.1);
+    filter: brightness(1.08);
     border-color: var(--accent-secondary);
     color: #ffffff;
 }
@@ -686,12 +688,14 @@
 .db-page-btn:hover:not(:disabled) {
     background: var(--bg-main);
     border-color: var(--border-dark);
+    color: var(--text-primary);
 }
 
 .db-page-btn-active {
     background: var(--accent-primary) !important;
     border-color: var(--accent-primary) !important;
-    color: #ffffff !important;
+    color: var(--accent-on-primary) !important;
+    box-shadow: none !important;
 }
 
 .db-page-info {

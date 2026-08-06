@@ -853,11 +853,11 @@
     font-weight: 800;
     padding: 0.25rem 0.65rem;
     border-radius: 999px;
-    background: rgba(139, 92, 246, 0.12);
-    color: #7c3aed;
+    background: var(--accent-soft);
+    color: var(--accent-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    border: 1px solid rgba(139, 92, 246, 0.25);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
 }
 
 .si-view-btn {
@@ -872,6 +872,18 @@
     transition: all 0.2s;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+}
+
+.si-view-btn:hover {
+    background: var(--bg-main);
+    color: var(--accent-secondary);
+}
+
+.si-view-btn.active {
+    background: var(--accent-soft);
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    box-shadow: none;
 }
 
 .sup-lead-time-input {

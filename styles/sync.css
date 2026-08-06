@@ -10,10 +10,7 @@
     display: flex;
     flex-direction: column;
     color: var(--text-primary);
-    background:
-        radial-gradient(1200px 480px at 10% -10%, color-mix(in srgb, var(--accent-primary) 14%, transparent), transparent 60%),
-        radial-gradient(900px 420px at 100% 0%, color-mix(in srgb, #22d3ee 8%, transparent), transparent 55%),
-        var(--bg-main);
+    background: var(--bg-main);
     font-family: var(--font-inter, inherit);
 }
 
@@ -25,9 +22,8 @@
     gap: 1rem;
     flex-wrap: wrap;
     padding: 1rem 1.5rem;
-    background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+    background: var(--bg-surface);
     border-bottom: 1px solid var(--border-light);
-    backdrop-filter: blur(10px);
     position: sticky;
     top: 0;
     z-index: 20;
@@ -83,8 +79,9 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--text-secondary);
-    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+    background: var(--bg-main);
     border: 1px solid var(--border-light);
+    box-shadow: none;
 }
 
 .sync-link-back {
@@ -539,12 +536,14 @@
 
 .sync-btn-primary {
     background: var(--accent-primary);
-    color: #fff;
+    color: var(--accent-on-primary);
+    box-shadow: none;
 }
 
 .sync-btn-primary:hover {
     filter: brightness(1.08);
     transform: translateY(-1px);
+    color: var(--accent-on-primary);
 }
 
 .sync-btn-ghost {

@@ -103,7 +103,8 @@
 
 .repl-view-btn.active {
     background: var(--accent-primary);
-    color: #fff;
+    color: var(--accent-on-primary);
+    box-shadow: none;
 }
 
 .repl-view-btn + .repl-view-btn {
@@ -139,7 +140,8 @@
 .repl-filter-tab.active {
     background: var(--accent-primary);
     border-color: var(--accent-primary);
-    color: #fff;
+    color: var(--accent-on-primary);
+    box-shadow: none;
 }
 
 .repl-filter-tab-count {
@@ -156,7 +158,7 @@
 }
 
 .repl-filter-tab.active .repl-filter-tab-count {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.22);
 }
 
 .repl-branch-field .db-select,

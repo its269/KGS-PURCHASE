@@ -1,111 +1,267 @@
 /* ============================================================
-   Sign-In Page — Modern Redesign
+   Sign-In — acrylic glass card (login only)
+   Matches polished glass rim + soft ambient glow references
    ============================================================ */
 
-/* ---------- Wrapper ---------- */
 .signin-wrapper {
+    --si-accent: #38bdf8;
+    --si-accent-deep: #0ea5e9;
+    --si-accent-soft: rgba(56, 189, 248, 0.18);
+    --si-glow: rgba(14, 165, 233, 0.4);
+
+    position: relative;
+    isolation: isolate;
     min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bg-main);
-    padding: 1.5rem;
+    padding: clamp(1.5rem, 5vw, 3rem);
+    overflow: hidden;
+    background: #000000;
 }
 
-/* ---------- Card ---------- */
-.signin-card {
-    background: var(--bg-surface);
-    border-radius: var(--radius-xl);
-    padding: 3rem 2.5rem;
+/* Soft corner washes so glass edges can catch light */
+.signin-orb {
+    position: absolute;
+    z-index: 0;
+    border-radius: 50%;
+    pointer-events: none;
+    filter: blur(56px);
+    animation: siOrbFloat 18s ease-in-out infinite;
+}
+
+.signin-orb--a {
+    width: min(48vw, 420px);
+    height: min(48vw, 420px);
+    top: -12%;
+    left: -10%;
+    background: radial-gradient(circle, rgba(251, 191, 36, 0.32), transparent 68%);
+    opacity: 0.9;
+}
+
+.signin-orb--b {
+    width: min(44vw, 400px);
+    height: min(44vw, 400px);
+    right: -8%;
+    bottom: -8%;
+    background: radial-gradient(circle, rgba(186, 230, 253, 0.28), transparent 68%);
+    opacity: 0.85;
+    animation-delay: -7s;
+}
+
+@keyframes siOrbFloat {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    50% { transform: translate3d(12px, -16px, 0) scale(1.05); }
+}
+
+.signin-stage {
+    position: relative;
+    z-index: 1;
     width: 100%;
-    max-width: 440px;
-    box-shadow: var(--shadow-lg);
-    border: 1px solid var(--border-light);
-    animation: siFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    max-width: 420px;
 }
 
-@keyframes siFadeIn {
+/* Soft floor reflection under the glass card */
+.signin-stage::after {
+    content: "";
+    position: absolute;
+    left: 12%;
+    right: 12%;
+    bottom: -2.1rem;
+    height: 2.4rem;
+    border-radius: 50%;
+    background:
+        radial-gradient(ellipse at center, rgba(255, 255, 255, 0.28) 0%, transparent 70%),
+        radial-gradient(ellipse at 30% 50%, rgba(251, 191, 36, 0.22) 0%, transparent 65%);
+    filter: blur(14px);
+    opacity: 0.7;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ---------- Acrylic glass card ---------- */
+.signin-card {
+    position: relative;
+    z-index: 1;
+    isolation: isolate;
+    overflow: hidden;
+    width: 100%;
+    padding: clamp(2.1rem, 4.5vw, 2.85rem) clamp(1.5rem, 4vw, 2.35rem);
+    border-radius: 1.5rem;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.045);
+    backdrop-filter: blur(14px) saturate(1.25);
+    -webkit-backdrop-filter: blur(14px) saturate(1.25);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.22),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+        0 28px 60px -24px rgba(0, 0, 0, 0.85),
+        0 0 40px -18px rgba(255, 255, 255, 0.12),
+        0 18px 36px -22px rgba(251, 191, 36, 0.28);
+    animation: siCardIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Dual-tone glowing rim: amber (top-left) → cool white */
+.signin-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1.35px;
+    background: linear-gradient(
+        135deg,
+        rgba(251, 191, 36, 0.95) 0%,
+        rgba(255, 255, 255, 0.95) 18%,
+        rgba(255, 255, 255, 0.45) 42%,
+        rgba(226, 232, 240, 0.28) 62%,
+        rgba(255, 255, 255, 0.75) 82%,
+        rgba(251, 191, 36, 0.4) 100%
+    );
+    -webkit-mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 2;
+    opacity: 0.95;
+}
+
+/* Window-pane reflection + soft sheen on glass face */
+.signin-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 1;
+    background:
+        linear-gradient(
+            115deg,
+            rgba(255, 255, 255, 0.16) 0%,
+            rgba(255, 255, 255, 0.05) 18%,
+            transparent 36%
+        ),
+        linear-gradient(
+            90deg,
+            transparent 12%,
+            rgba(255, 255, 255, 0.05) 12.5%,
+            transparent 13.5%,
+            transparent 28%,
+            rgba(255, 255, 255, 0.04) 28.5%,
+            transparent 29.5%
+        ),
+        linear-gradient(
+            0deg,
+            transparent 18%,
+            rgba(255, 255, 255, 0.045) 18.5%,
+            transparent 19.5%,
+            transparent 34%,
+            rgba(255, 255, 255, 0.035) 34.5%,
+            transparent 35.5%
+        );
+    opacity: 0.85;
+    mix-blend-mode: soft-light;
+}
+
+.signin-card > * {
+    position: relative;
+    z-index: 3;
+}
+
+@keyframes siCardIn {
     from {
         opacity: 0;
-        transform: translateY(20px);
+        transform: translateY(16px) scale(0.98);
     }
     to {
         opacity: 1;
-        transform: translateY(0);
+        transform: translateY(0) scale(1);
     }
 }
 
 /* ---------- Header ---------- */
 .signin-header {
     text-align: center;
-    margin-bottom: 2.5rem;
+    margin-bottom: 1.85rem;
 }
 
 .signin-logo-container {
-    margin-bottom: 2rem;
     display: flex;
     justify-content: center;
+    margin-bottom: 1.2rem;
 }
 
 .signin-logo-img {
-    height: 72px;
+    height: clamp(70px, 13vw, 86px);
     width: auto;
     object-fit: contain;
-    filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1));
+    filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.45));
 }
 
 .signin-title {
-    font-size: 2rem;
+    margin: 0 0 0.45rem;
+    font-size: clamp(1.45rem, 4vw, 1.75rem);
     font-weight: 800;
-    color: var(--text-primary);
-    margin-bottom: 0.75rem;
-    letter-spacing: -0.04em;
+    letter-spacing: 0.06em;
+    line-height: 1.15;
+    color: #ffffff;
+    text-transform: uppercase;
 }
 
 .signin-subtitle {
-    font-size: 1rem;
-    color: var(--text-secondary);
+    margin: 0;
+    font-size: 0.92rem;
     font-weight: 500;
+    color: rgba(226, 232, 240, 0.62);
 }
 
 /* ---------- Error ---------- */
 .signin-error {
     display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 1rem;
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid var(--status-danger);
-    border-radius: var(--radius-lg);
-    color: var(--status-danger);
-    font-size: 0.9rem;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.15rem;
+    border-radius: 0.85rem;
+    border: 1px solid rgba(248, 113, 113, 0.4);
+    background: rgba(90, 20, 30, 0.45);
+    color: #fecaca;
+    font-size: 0.875rem;
     font-weight: 600;
-    margin-bottom: 2rem;
+    line-height: 1.4;
+}
+
+.signin-error svg {
+    flex-shrink: 0;
+    margin-top: 0.1rem;
 }
 
 /* ---------- Form ---------- */
 .signin-form {
     display: flex;
     flex-direction: column;
-    gap: 1.75rem;
+    gap: 1.25rem;
 }
 
-/* ---------- Field ---------- */
 .signin-field {
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
+    gap: 0.4rem;
 }
 
 .signin-label {
-    font-size: 0.85rem;
+    font-size: 0.7rem;
     font-weight: 700;
-    color: var(--text-secondary);
+    color: rgba(203, 213, 225, 0.75);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.08em;
 }
 
-/* ---------- Input ---------- */
 .signin-input-wrapper {
     position: relative;
     display: flex;
@@ -114,191 +270,261 @@
 
 .signin-input-icon {
     position: absolute;
-    left: 1.1rem;
-    color: var(--text-muted);
+    left: 1.05rem;
+    z-index: 1;
     display: flex;
     align-items: center;
+    color: #64748b;
     pointer-events: none;
 }
 
-.signin-input {
-    width: 100%;
-    padding: 0.85rem 1rem 0.85rem 3rem;
-    border: 1px solid var(--border-medium);
-    border-radius: var(--radius-lg);
-    font-size: 1rem;
-    color: var(--text-primary);
-    background: var(--bg-input);
-    outline: none;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+.signin-input-wrapper:focus-within .signin-input-icon {
+    color: var(--si-accent-deep);
 }
 
-.signin-input:focus {
-    border-color: var(--accent-primary);
-    background: var(--bg-surface);
-    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+/* Pill inputs — light against dark glass */
+.signin-input {
+    width: 100%;
+    min-height: 48px;
+    padding: 0.8rem 1.15rem 0.8rem 2.9rem;
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    border-radius: 999px;
+    font-size: 1rem;
+    line-height: 1.4;
+    color: #0f172a;
+    background: rgba(241, 245, 249, 0.92);
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
 .signin-input::placeholder {
-    color: var(--text-muted);
+    color: #94a3b8;
 }
 
-/* ---------- Password toggle ---------- */
+.signin-input:hover {
+    background: #f8fafc;
+}
+
+.signin-input:focus-visible {
+    border-color: var(--si-accent);
+    background: #ffffff;
+    box-shadow: 0 0 0 3px var(--si-accent-soft);
+}
+
+.signin-input:autofill,
+.signin-input:-webkit-autofill {
+    -webkit-text-fill-color: #0f172a;
+    caret-color: #0f172a;
+    box-shadow: 0 0 0 100vmax #e2e8f0 inset;
+    border: 1px solid rgba(56, 189, 248, 0.5);
+    transition: background-color 9999s ease-in-out 0s;
+}
+
+.signin-input:autofill:focus-visible,
+.signin-input:-webkit-autofill:focus-visible {
+    outline: 2px solid var(--si-accent);
+    outline-offset: 2px;
+}
+
+.signin-input-wrapper:has(.signin-toggle-password) .signin-input {
+    padding-right: 2.9rem;
+}
+
 .signin-toggle-password {
     position: absolute;
-    right: 1rem;
-    background: none;
-    border: none;
-    padding: 0.25rem;
-    cursor: pointer;
-    color: var(--text-muted);
+    right: 0.55rem;
     display: flex;
     align-items: center;
-    transition: color 0.15s;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: #64748b;
+    cursor: pointer;
 }
 
 .signin-toggle-password:hover {
-    color: var(--text-secondary);
+    color: #334155;
+    background: rgba(148, 163, 184, 0.2);
 }
 
-/* ---------- Options ---------- */
+.signin-toggle-password:focus-visible {
+    outline: 2px solid var(--si-accent);
+    outline-offset: 1px;
+}
+
 .signin-options {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-top: -0.25rem;
+    gap: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .signin-remember {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.55rem;
 }
 
 .signin-checkbox {
-    width: 18px;
-    height: 18px;
-    border-radius: 6px;
-    border: 2px solid var(--border-medium);
-    accent-color: var(--accent-primary);
+    width: 1.05rem;
+    height: 1.05rem;
+    margin: 0;
+    border-radius: 0.3rem;
+    accent-color: var(--si-accent-deep);
     cursor: pointer;
 }
 
 .signin-remember-label {
-    font-size: 0.9rem;
-    color: var(--text-secondary);
+    font-size: 0.875rem;
     font-weight: 500;
+    color: rgba(203, 213, 225, 0.78);
     cursor: pointer;
+    user-select: none;
 }
 
 .signin-forgot-btn {
-    font-size: 0.9rem;
-    color: var(--accent-primary);
-    background: none;
+    padding: 0.15rem 0;
     border: none;
-    padding: 0;
-    cursor: pointer;
+    background: none;
+    font-size: 0.875rem;
     font-weight: 700;
+    color: var(--si-accent);
+    cursor: pointer;
 }
 
-/* ---------- Submit Button ---------- */
+.signin-forgot-btn:hover {
+    color: #7dd3fc;
+}
+
+/* Pill Sign In button */
 .signin-btn {
     width: 100%;
-    padding: 0.85rem;
-    background: var(--accent-primary);
-    color: #ffffff;
-    font-size: 1.1rem;
-    font-weight: 700;
-    border: none;
-    border-radius: var(--radius-lg);
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    min-height: 52px;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 52px;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    margin-top: 0.2rem;
+    padding: 0.85rem 1.2rem;
+    border: none;
+    border-radius: 999px;
+    font-size: 1.05rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    color: #020617;
+    cursor: pointer;
+    background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 48%, #0ea5e9 100%);
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.35) inset,
+        0 12px 28px -10px var(--si-glow);
+    transition: transform 0.2s ease, filter 0.2s ease, box-shadow 0.2s ease;
 }
 
 .signin-btn:hover:not(:disabled) {
-    background: var(--accent-secondary);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+    transform: translateY(-1px);
+    filter: brightness(1.05);
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.4) inset,
+        0 14px 32px -8px var(--si-glow);
+}
+
+.signin-btn:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+.signin-btn:focus-visible {
+    outline: 2px solid #e0f2fe;
+    outline-offset: 3px;
 }
 
 .signin-btn:disabled {
-    opacity: 0.6;
+    opacity: 0.65;
     cursor: not-allowed;
     transform: none;
+    filter: none;
     box-shadow: none;
 }
 
-/* ---------- Pre-mount skeleton (no <input>/<button> — avoids extension hydration noise) ---------- */
 .signin-form-skeleton {
     pointer-events: none;
-    opacity: 0.85;
+    opacity: 0.8;
 }
 
 .signin-skeleton-bar {
     min-height: 48px;
-    align-items: center;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    background: rgba(241, 245, 249, 0.8);
 }
 
 .signin-skeleton-text {
-    color: var(--text-muted);
+    margin-left: 2.9rem;
+    color: #94a3b8;
     font-size: 1rem;
 }
 
 .signin-skeleton-btn {
-    opacity: 0.6;
+    opacity: 0.55;
     cursor: default;
     box-shadow: none;
 }
 
-/* ---------- Footer ---------- */
 .signin-footer {
-    margin-top: 2.5rem;
+    margin-top: 1.85rem;
+    padding-top: 1.2rem;
     text-align: center;
-    padding-top: 1.5rem;
-    border-top: 1px solid var(--border-light);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .signin-footer p {
-    font-size: 0.8rem;
-    color: var(--text-muted);
+    margin: 0;
+    font-size: 0.72rem;
     font-weight: 600;
+    letter-spacing: 0.02em;
+    color: rgba(100, 116, 139, 0.95);
 }
 
-/* ---------- Spinner ---------- */
 .signin-spinner {
     width: 22px;
     height: 22px;
-    border: 3px solid rgba(255, 255, 255, 0.3);
+    border: 3px solid rgba(2, 6, 23, 0.25);
     border-radius: 50%;
-    border-top-color: #fff;
-    animation: siSpin 0.8s linear infinite;
+    border-top-color: #020617;
+    animation: siSpin 0.75s linear infinite;
 }
 
 @keyframes siSpin {
     to { transform: rotate(360deg); }
 }
 
-/* ---------- Responsiveness ---------- */
+@media (prefers-reduced-motion: reduce) {
+    .signin-card,
+    .signin-orb {
+        animation: none !important;
+    }
+
+    .signin-btn:hover:not(:disabled) {
+        transform: none;
+    }
+}
+
 @media (max-width: 480px) {
     .signin-wrapper {
-        padding: 0;
-        background: var(--bg-surface);
+        padding: 1rem;
     }
-    
+
+    .signin-stage::after {
+        bottom: -1.4rem;
+        height: 1.6rem;
+        opacity: 0.45;
+    }
+
     .signin-card {
-        padding: 2.5rem 1.5rem;
-        box-shadow: none;
-        border-radius: 0;
-        border: none;
-        max-width: 100%;
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
+        padding: 2rem 1.35rem 1.6rem;
+        border-radius: 1.25rem;
     }
 }

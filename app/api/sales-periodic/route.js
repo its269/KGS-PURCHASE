@@ -58,7 +58,7 @@ export async function GET(request) {
             periods.push({
                 key: `P${i + 1}`,
                 label: labels[i],
-                range: `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+                range: `${startStr.replaceAll("-", "/")} - ${endStr.replaceAll("-", "/")}`,
                 start: startStr,
                 end: endStr
             });

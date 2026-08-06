@@ -1,42 +1,45 @@
-:root,
+﻿:root,
 :root[data-theme='light'] {
-  /* --- Light Theme Palette --- */
   --bg-main: #f8fafc;
   --bg-surface: #ffffff;
   --bg-sidebar: #ffffff;
   --bg-input: #ffffff;
-  
+  --bg-elevated: #ffffff;
+
   --text-primary: #0f172a;
   --text-secondary: #475569;
   --text-muted: #94a3b8;
   --text-inverse: #ffffff;
   --text-sidebar: #475569;
-  --text-sidebar-active: #3b82f6;
-  
-  --accent-primary: #3b82f6;
-  --accent-secondary: #6366f1;
-  
+  --text-sidebar-active: #0284c7;
+
+  --accent-primary: #0ea5e9;
+  --accent-secondary: #0284c7;
+  --accent-soft: rgba(14, 165, 233, 0.12);
+  --accent-glow: rgba(14, 165, 233, 0.22);
+  --accent-on-primary: #ffffff;
+
   --status-success: #10b981;
   --status-warning: #f59e0b;
   --status-danger: #ef4444;
   --status-info: #0ea5e9;
-  
+
   --border-light: #e2e8f0;
   --border-medium: #cbd5e1;
   --border-dark: #94a3b8;
   --border-sidebar: #e2e8f0;
-  
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-  
+
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(15 23 42 / 0.08), 0 2px 4px -2px rgb(15 23 42 / 0.06);
+  --shadow-lg: 0 10px 15px -3px rgb(15 23 42 / 0.1), 0 4px 6px -4px rgb(15 23 42 / 0.08);
+
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
-  
+
   --font-inter: "Inter", system-ui, -apple-system, sans-serif;
-  
+
   --sidebar-width: 260px;
   --sidebar-collapsed-width: 80px;
 
@@ -44,35 +47,42 @@
 }
 
 [data-theme='dark'] {
-  /* --- Dark Theme Palette --- */
-  --bg-main: #020617;
+  /* Match sign-in canvas: near-black + amber / cool ambient washes */
+  --bg-main: #000000;
   --bg-surface: #0f172a;
-  --bg-sidebar: #020617;
+  --bg-sidebar: rgba(0, 0, 0, 0.72);
   --bg-input: #1e293b;
-  
+  --bg-elevated: #111827;
+  --bg-ambient:
+    radial-gradient(ellipse 75% 55% at 0% 0%, rgba(251, 191, 36, 0.30) 0%, transparent 58%),
+    radial-gradient(ellipse 70% 50% at 100% 100%, rgba(186, 230, 253, 0.24) 0%, transparent 58%);
+
   --text-primary: #f8fafc;
   --text-secondary: #94a3b8;
   --text-muted: #64748b;
   --text-inverse: #020617;
   --text-sidebar: #94a3b8;
-  --text-sidebar-active: #60a5fa;
-  
-  --accent-primary: #60a5fa;
-  --accent-secondary: #818cf8;
-  
-  --status-success: #059669;
-  --status-warning: #d97706;
-  --status-danger: #dc2626;
-  --status-info: #0284c7;
-  
+  --text-sidebar-active: #7dd3fc;
+
+  --accent-primary: #38bdf8;
+  --accent-secondary: #0ea5e9;
+  --accent-soft: rgba(56, 189, 248, 0.14);
+  --accent-glow: rgba(14, 165, 233, 0.28);
+  --accent-on-primary: #020617;
+
+  --status-success: #34d399;
+  --status-warning: #fbbf24;
+  --status-danger: #f87171;
+  --status-info: #38bdf8;
+
   --border-light: #1e293b;
   --border-medium: #334155;
   --border-dark: #475569;
   --border-sidebar: rgba(255, 255, 255, 0.08);
-  
+
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5);
 
   --date-calendar-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23e2e8f0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'/%3E%3Cline x1='16' y1='2' x2='16' y2='6'/%3E%3Cline x1='8' y1='2' x2='8' y2='6'/%3E%3Cline x1='3' y1='10' x2='21' y2='10'/%3E%3C/svg%3E");
 }
@@ -95,19 +105,48 @@ body {
   background-color: var(--bg-main);
   color: var(--text-primary);
   font-family: var(--font-inter);
+  color-scheme: light;
 }
 
-/* Shared page shells — keep module content inside the viewport */
+[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* Fixed ambient gradient behind the whole CMS (login-matching) */
+[data-theme='dark'] html,
+[data-theme='dark'] body {
+  background-color: #000000;
+  background-image: var(--bg-ambient);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  background-size: cover;
+}
+
 .db-root,
 .si-page,
 .po-root,
 .repl-main,
-.sync-root {
+.sync-root,
+.sales-page,
+.sales-root {
   max-width: 100%;
   min-width: 0;
 }
 
-/* Instant dark/light switch — no color fade anywhere */
+/* Let page shells show the ambient canvas; surfaces stay solid */
+[data-theme='dark'] .layout-with-sidebar,
+[data-theme='dark'] .main-content,
+[data-theme='dark'] .db-root,
+[data-theme='dark'] .si-page,
+[data-theme='dark'] .po-root,
+[data-theme='dark'] .repl-main,
+[data-theme='dark'] .sync-root,
+[data-theme='dark'] .sales-page,
+[data-theme='dark'] .sales-root {
+  background: transparent;
+  background-color: transparent;
+}
+
 html.no-theme-transition,
 html.no-theme-transition *,
 html.no-theme-transition *::before,
@@ -124,7 +163,6 @@ input, select, textarea {
   font-family: inherit;
 }
 
-/* Native select dropdown — readable options in dark theme (all modules) */
 select {
   cursor: pointer;
 }
@@ -136,11 +174,10 @@ select option {
 
 select option:checked,
 select option:hover {
-  background-color: #3b82f6;
+  background-color: #0ea5e9;
   color: #ffffff;
 }
 
-/* Scrollbar styling for modern feel */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -157,4 +194,9 @@ select option:hover {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-dark);
+}
+
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }

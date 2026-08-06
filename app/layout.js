@@ -23,7 +23,7 @@ export default function RootLayout({ children }) {
                   var supportDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches === true;
                   if (theme === 'dark' || (!theme && supportDarkMode)) {
                     document.documentElement.setAttribute('data-theme', 'dark');
-                    document.documentElement.style.backgroundColor = '#020617';
+                    document.documentElement.style.backgroundColor = '#000000';
                   } else {
                     document.documentElement.setAttribute('data-theme', 'light');
                     document.documentElement.style.backgroundColor = '#f8fafc';
