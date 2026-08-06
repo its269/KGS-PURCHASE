@@ -2310,6 +2310,160 @@ export const MySqlService = {
         }
     },
 
+    // ── Local app users (admin / user accounts) ─────────────────
+
+    async ensureAppUsersTable() {
+        if (MySqlService._appUsersReady) return true;
+        try {
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS app_users (
+                  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                  username VARCHAR(64) NOT NULL,
+                  password_hash VARCHAR(255) NOT NULL,
+                  full_name VARCHAR(160) NULL,
+                  email VARCHAR(160) NULL,
+                  role ENUM('admin', 'user') NOT NULL DEFAULT 'user',
+                  active TINYINT(1) NOT NULL DEFAULT 1,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uq_app_users_username (username),
+                  KEY idx_app_users_role (role),
+                  KEY idx_app_users_active (active)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            MySqlService._appUsersReady = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureAppUsersTable]", err.message);
+            return false;
+        }
+    },
+
+    async seedDefaultAdmin({ username, passwordHash, fullName = "System Administrator" } = {}) {
+        await this.ensureAppUsersTable();
+        // Only seed when the table is empty — never recreate a deleted "admin" user
+        // while other accounts still exist (that made deletes look broken).
+        const [[countRow]] = await purchasePool.execute(
+            `SELECT COUNT(*) AS c FROM app_users`
+        );
+        if (Number(countRow?.c) > 0) {
+            return { created: false, username: String(username || "admin").trim(), reason: "users_exist" };
+        }
+        const user = String(username || process.env.APP_ADMIN_USERNAME || "admin").trim();
+        const id = await this.createAppUser({
+            username: user,
+            passwordHash,
+            fullName,
+            email: "",
+            role: "admin",
+            active: true,
+        });
+        console.log(`[AppUsers] Seeded admin account "${user}" (id=${id})`);
+        return { created: true, username: user, id };
+    },
+
+    async getAppUserByUsername(username) {
+        await this.ensureAppUsersTable();
+        const [rows] = await purchasePool.execute(
+            `SELECT id, username, password_hash, full_name, email, role, active, created_at, updated_at
+             FROM app_users WHERE username = ? LIMIT 1`,
+            [String(username || "").trim()]
+        );
+        return rows[0] || null;
+    },
+
+    async getAppUserById(id) {
+        await this.ensureAppUsersTable();
+        const [rows] = await purchasePool.execute(
+            `SELECT id, username, password_hash, full_name, email, role, active, created_at, updated_at
+             FROM app_users WHERE id = ? LIMIT 1`,
+            [Number(id)]
+        );
+        return rows[0] || null;
+    },
+
+    async listAppUsers() {
+        await this.ensureAppUsersTable();
+        const [rows] = await purchasePool.execute(
+            `SELECT id, username, full_name, email, role, active, created_at, updated_at
+             FROM app_users
+             ORDER BY role ASC, username ASC`
+        );
+        return rows;
+    },
+
+    async createAppUser({ username, passwordHash, fullName = "", email = "", role = "user", active = true }) {
+        await this.ensureAppUsersTable();
+        const [result] = await purchasePool.execute(
+            `INSERT INTO app_users (username, password_hash, full_name, email, role, active)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+                String(username).trim(),
+                passwordHash,
+                String(fullName || "").trim() || null,
+                String(email || "").trim() || null,
+                role === "admin" ? "admin" : "user",
+                active ? 1 : 0,
+            ]
+        );
+        return result.insertId;
+    },
+
+    async updateAppUser(id, fields = {}) {
+        await this.ensureAppUsersTable();
+        const sets = [];
+        const params = [];
+        if (fields.username !== undefined) {
+            sets.push("username = ?");
+            params.push(String(fields.username).trim());
+        }
+        if (fields.passwordHash !== undefined) {
+            sets.push("password_hash = ?");
+            params.push(fields.passwordHash);
+        }
+        if (fields.fullName !== undefined) {
+            sets.push("full_name = ?");
+            params.push(String(fields.fullName || "").trim() || null);
+        }
+        if (fields.email !== undefined) {
+            sets.push("email = ?");
+            params.push(String(fields.email || "").trim() || null);
+        }
+        if (fields.role !== undefined) {
+            sets.push("role = ?");
+            params.push(fields.role === "admin" ? "admin" : "user");
+        }
+        if (fields.active !== undefined) {
+            sets.push("active = ?");
+            params.push(fields.active ? 1 : 0);
+        }
+        if (!sets.length) return false;
+        params.push(Number(id));
+        const [result] = await purchasePool.execute(
+            `UPDATE app_users SET ${sets.join(", ")} WHERE id = ?`,
+            params
+        );
+        return result.affectedRows > 0;
+    },
+
+    async deleteAppUser(id) {
+        await this.ensureAppUsersTable();
+        const [result] = await purchasePool.execute(
+            `DELETE FROM app_users WHERE id = ?`,
+            [Number(id)]
+        );
+        return result.affectedRows > 0;
+    },
+
+    async countAppAdmins() {
+        await this.ensureAppUsersTable();
+        const [[{ c }]] = await purchasePool.execute(
+            `SELECT COUNT(*) AS c FROM app_users WHERE role = 'admin' AND active = 1`
+        );
+        return Number(c) || 0;
+    },
+
     /**
      * Bulk upsert branches
      */

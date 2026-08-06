@@ -94,30 +94,37 @@ function SignInContent() {
                 return;
             }
 
-            const { sessionId } = data;
+            const { sessionId, authType, user } = data;
             if (sessionId) {
                 localStorage.setItem("acu_session", sessionId);
             }
 
-            // Fetch the user's full name (FirstName + LastName) from Acumatica
+            // Local app user — use profile from login response
             let displayName = username;
-            try {
-                const meRes = await fetch(withBasePath(`/api/auth/me?username=${encodeURIComponent(username)}`), {
-                    headers: { "Authorization": `Bearer ${sessionId}` }
-                });
-                if (meRes.ok) {
-                    const meData = await meRes.json();
-                    if (meData?.fullName) displayName = meData.fullName;
-                    // Also persist first/last individually for flexible display
-                    if (meData?.first) localStorage.setItem("userFirstName", meData.first);
-                    if (meData?.last) localStorage.setItem("userLastName", meData.last);
+            if (authType === "local" && user) {
+                displayName = user.fullName || user.username || username;
+                localStorage.setItem("userRole", user.role || "user");
+                localStorage.setItem("userName", displayName);
+                localStorage.setItem("authType", "local");
+            } else {
+                localStorage.removeItem("userRole");
+                localStorage.setItem("authType", "acumatica");
+                // Fetch the user's full name (FirstName + LastName) from Acumatica
+                try {
+                    const meRes = await fetch(withBasePath(`/api/auth/me?username=${encodeURIComponent(username)}`), {
+                        headers: { "Authorization": `Bearer ${sessionId}` }
+                    });
+                    if (meRes.ok) {
+                        const meData = await meRes.json();
+                        if (meData?.fullName) displayName = meData.fullName;
+                        if (meData?.first) localStorage.setItem("userFirstName", meData.first);
+                        if (meData?.last) localStorage.setItem("userLastName", meData.last);
+                    }
+                } catch {
+                    // Non-fatal — fall back to raw username
                 }
-            } catch {
-                // Non-fatal — fall back to raw username
+                localStorage.setItem("userName", displayName);
             }
-
-            // Store the full display name for the dashboard greeting
-            localStorage.setItem("userName", displayName);
             
             // Direct reload to ensure all components pick up the new session
             window.location.href = withBasePath("/dashboard");

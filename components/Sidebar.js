@@ -66,11 +66,19 @@ const IconMoon = () => (
   </svg>
 );
 
+const IconAdmin = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
+    <path d="m9 12 2 2 4-4" />
+  </svg>
+);
+
 export default function Sidebar() {
   const pathname = usePathname();
   const { isDarkMode, toggleTheme, mounted: themeMounted } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [userName, setUserName] = useState("Admin User");
+  const [userRole, setUserRole] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [companies, setCompanies] = useState([]);
@@ -83,11 +91,32 @@ export default function Sidebar() {
 
       const storedUser = localStorage.getItem("userName");
       if (storedUser) setUserName(storedUser);
+      const storedRole = localStorage.getItem("userRole");
+      if (storedRole) setUserRole(storedRole);
 
       const savedCollapse = localStorage.getItem("sidebar_collapsed") === "true";
       if (savedCollapse) setIsCollapsed(true);
     });
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    fetchWithAuth("/api/auth/session")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.user) return;
+        const name = data.user.fullName || data.user.username;
+        if (name) {
+          setUserName(name);
+          localStorage.setItem("userName", name);
+        }
+        if (data.user.role) {
+          setUserRole(data.user.role);
+          localStorage.setItem("userRole", data.user.role);
+        }
+      })
+      .catch(() => {});
+  }, [mounted]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -162,6 +191,9 @@ export default function Sidebar() {
     { name: "Replenishment", href: "/replenishment", icon: <IconSparkles /> },
     { name: "Last 3 Months Sales", href: "/sales", icon: <IconSales /> },
     { name: "Syncing Center", href: "/syncing", icon: <IconSync /> },
+    ...(userRole === "admin"
+      ? [{ name: "Admin", href: "/admin", icon: <IconAdmin /> }]
+      : []),
   ];
 
   return (
@@ -308,6 +340,8 @@ export default function Sidebar() {
               localStorage.removeItem("userName");
               localStorage.removeItem("userFirstName");
               localStorage.removeItem("userLastName");
+              localStorage.removeItem("userRole");
+              localStorage.removeItem("authType");
               localStorage.removeItem("activeCompanyId");
 
               Object.keys(localStorage)

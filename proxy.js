@@ -32,6 +32,8 @@ function clearSessionCookie(request, response) {
 function isKnownSession(sessionId) {
     if (!sessionId) return false;
     const meta = getSessionMeta(sessionId);
+    if (!meta) return false;
+    if (meta.localUser?.id) return true;
     if (!meta?.companies) return false;
     return Object.keys(meta.companies).length > 0;
 }

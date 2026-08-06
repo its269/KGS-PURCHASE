@@ -8,6 +8,8 @@ import {
 } from "@/lib/session-store";
 import { AuthService } from "@/services/auth";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/session-messages";
+import { MySqlService } from "@/services/mysql";
+import { sanitizeUser } from "@/lib/app-users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,8 +26,8 @@ const expired = (extra = {}) =>
     );
 
 /**
- * Session probe for the UI — validates against Acumatica credentials
- * (cookie session or OAuth token), not only the local app session id.
+ * Session probe for the UI — local app users stay valid while active in DB;
+ * Acumatica sessions are validated against ERP credentials.
  */
 export async function GET(request) {
     try {
@@ -43,7 +45,38 @@ export async function GET(request) {
         const activeCompanyId = getActiveCompanyId(sessionId) || "main";
         const companyEntry = meta.companies?.[activeCompanyId] || meta.companies?.main;
 
-        // OAuth token clock expiry (Acumatica access_token lifetime)
+        // Local app user session
+        if (meta.localUser?.id) {
+            try {
+                const row = await MySqlService.getAppUserById(meta.localUser.id);
+                if (!row || !(row.active === 1 || row.active === true)) {
+                    deleteSession(sessionId);
+                    return expired({ reason: "local_user_inactive" });
+                }
+            } catch (err) {
+                console.warn("[Auth Session] Local user check failed:", err.message);
+            }
+
+            // Bypass / degraded ERP is fine for local users
+            if (cred === "__bypass__" || companyEntry?.isBypass) {
+                return NextResponse.json({
+                    authenticated: true,
+                    sessionId,
+                    activeCompanyId,
+                    isBypass: true,
+                    source: "local",
+                    authType: "local",
+                    user: sanitizeUser({
+                        ...meta.localUser,
+                        full_name: meta.localUser.fullName,
+                        active: 1,
+                    }),
+                    degraded: true,
+                });
+            }
+        }
+
+        // OAuth token clock expiry
         if (
             companyEntry?.isTokenAuth &&
             companyEntry.acumaticaTokenExpiresAt &&
@@ -55,6 +88,26 @@ export async function GET(request) {
 
         const probe = await AuthService.validateSession(cred);
         if (!probe.ok) {
+            // Local users can keep working in bypass if ERP probe fails
+            if (meta.localUser?.id) {
+                return NextResponse.json({
+                    authenticated: true,
+                    sessionId,
+                    activeCompanyId,
+                    isBypass: cred === "__bypass__",
+                    source: "local",
+                    authType: "local",
+                    user: {
+                        id: meta.localUser.id,
+                        username: meta.localUser.username,
+                        fullName: meta.localUser.fullName || "",
+                        email: meta.localUser.email || "",
+                        role: meta.localUser.role,
+                        active: true,
+                    },
+                    degraded: true,
+                });
+            }
             deleteSession(sessionId);
             return expired({ reason: probe.reason || "acumatica_expired" });
         }
@@ -64,7 +117,18 @@ export async function GET(request) {
             sessionId,
             activeCompanyId,
             isBypass: !!probe.bypass || cred === "__bypass__",
-            source: probe.source || "acumatica",
+            source: meta.localUser ? "local" : probe.source || "acumatica",
+            authType: meta.localUser ? "local" : "acumatica",
+            user: meta.localUser
+                ? {
+                    id: meta.localUser.id,
+                    username: meta.localUser.username,
+                    fullName: meta.localUser.fullName || "",
+                    email: meta.localUser.email || "",
+                    role: meta.localUser.role,
+                    active: true,
+                }
+                : null,
             degraded: !!probe.degraded,
         });
     } catch (err) {
