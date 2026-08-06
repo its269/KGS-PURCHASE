@@ -507,7 +507,7 @@ export default function ReplenishmentPage() {
 
         (async () => {
             try {
-                const res = await fetchWithAuth("/api/branches?source=mysql&for=replenishment");
+                const res = await fetchWithAuth("/api/branches?for=replenishment");
                 if (res.ok && active) {
                     const list = await res.json();
                     setBranches(list);

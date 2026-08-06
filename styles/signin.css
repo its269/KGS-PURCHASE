@@ -1,6 +1,5 @@
 /* ============================================================
-   Sign-In — acrylic glass card (login only)
-   Matches polished glass rim + soft ambient glow references
+   Sign-In — dark chrome glassmorphism (login only)
    ============================================================ */
 
 .signin-wrapper {
@@ -18,41 +17,186 @@
     justify-content: center;
     padding: clamp(1.5rem, 5vw, 3rem);
     overflow: hidden;
-    background: #000000;
+    background:
+        radial-gradient(ellipse 80% 60% at 50% 0%, #141820 0%, #000000 55%),
+        #000000;
 }
 
-/* Soft corner washes so glass edges can catch light */
+/* ---------- Visible scenery behind the glass ---------- */
+.signin-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
 .signin-orb {
     position: absolute;
-    z-index: 0;
     border-radius: 50%;
-    pointer-events: none;
-    filter: blur(56px);
+    filter: blur(70px);
     animation: siOrbFloat 18s ease-in-out infinite;
 }
 
 .signin-orb--a {
-    width: min(48vw, 420px);
-    height: min(48vw, 420px);
-    top: -12%;
+    width: min(58vw, 540px);
+    height: min(58vw, 540px);
+    top: -18%;
     left: -10%;
-    background: radial-gradient(circle, rgba(251, 191, 36, 0.32), transparent 68%);
-    opacity: 0.9;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.34), transparent 68%);
+    opacity: 1;
 }
 
 .signin-orb--b {
-    width: min(44vw, 400px);
-    height: min(44vw, 400px);
-    right: -8%;
-    bottom: -8%;
-    background: radial-gradient(circle, rgba(186, 230, 253, 0.28), transparent 68%);
-    opacity: 0.85;
+    width: min(50vw, 460px);
+    height: min(50vw, 460px);
+    right: -12%;
+    bottom: -14%;
+    background: radial-gradient(circle, rgba(125, 211, 252, 0.28), transparent 68%);
+    opacity: 0.95;
     animation-delay: -7s;
+}
+
+.signin-orb--c {
+    width: min(40vw, 360px);
+    height: min(40vw, 360px);
+    top: 42%;
+    left: 38%;
+    background: radial-gradient(circle, rgba(148, 163, 184, 0.22), transparent 70%);
+    opacity: 0.85;
+    animation-delay: -11s;
 }
 
 @keyframes siOrbFloat {
     0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-    50% { transform: translate3d(12px, -16px, 0) scale(1.05); }
+    50% { transform: translate3d(14px, -18px, 0) scale(1.06); }
+}
+
+.signin-bg-grid {
+    position: absolute;
+    inset: -10%;
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, #000 20%, transparent 75%);
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, #000 20%, transparent 75%);
+    opacity: 0.9;
+}
+
+.signin-bg-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow:
+        inset 0 0 40px rgba(255, 255, 255, 0.04),
+        0 0 40px rgba(255, 255, 255, 0.05);
+}
+
+.signin-bg-ring--1 {
+    width: min(70vw, 640px);
+    height: min(70vw, 640px);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    opacity: 0.55;
+}
+
+.signin-bg-ring--2 {
+    width: min(48vw, 420px);
+    height: min(48vw, 420px);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border-color: rgba(125, 211, 252, 0.18);
+    opacity: 0.7;
+    animation: siRingPulse 10s ease-in-out infinite;
+}
+
+@keyframes siRingPulse {
+    0%, 100% { opacity: 0.45; transform: translate(-50%, -50%) scale(1); }
+    50% { opacity: 0.85; transform: translate(-50%, -50%) scale(1.04); }
+}
+
+.signin-bg-panel {
+    position: absolute;
+    border-radius: 1.4rem;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: linear-gradient(
+        145deg,
+        rgba(255, 255, 255, 0.1) 0%,
+        rgba(255, 255, 255, 0.03) 45%,
+        rgba(255, 255, 255, 0.06) 100%
+    );
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.28),
+        0 20px 40px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+}
+
+.signin-bg-panel--1 {
+    width: min(28vw, 220px);
+    height: min(28vw, 220px);
+    top: 12%;
+    left: 8%;
+    transform: rotate(-14deg);
+    animation: siPanelDrift 16s ease-in-out infinite;
+}
+
+.signin-bg-panel--2 {
+    width: min(22vw, 170px);
+    height: min(22vw, 170px);
+    right: 7%;
+    top: 18%;
+    border-radius: 50%;
+    transform: rotate(8deg);
+    animation: siPanelDrift 14s ease-in-out infinite reverse;
+    animation-delay: -4s;
+}
+
+.signin-bg-panel--3 {
+    width: min(34vw, 260px);
+    height: min(18vw, 140px);
+    right: 10%;
+    bottom: 12%;
+    transform: rotate(10deg);
+    animation: siPanelDrift 18s ease-in-out infinite;
+    animation-delay: -8s;
+}
+
+@keyframes siPanelDrift {
+    0%, 100% { translate: 0 0; }
+    50% { translate: 10px -14px; }
+}
+
+.signin-bg-beam {
+    position: absolute;
+    width: min(55vw, 520px);
+    height: 2px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.35),
+        rgba(125, 211, 252, 0.45),
+        rgba(255, 255, 255, 0.25),
+        transparent
+    );
+    filter: blur(1px);
+    opacity: 0.55;
+}
+
+.signin-bg-beam--1 {
+    top: 28%;
+    left: -5%;
+    transform: rotate(-18deg);
+}
+
+.signin-bg-beam--2 {
+    bottom: 26%;
+    right: -8%;
+    transform: rotate(14deg);
+    opacity: 0.4;
 }
 
 .signin-stage {
@@ -60,63 +204,184 @@
     z-index: 1;
     width: 100%;
     max-width: 420px;
+    /* No filter here — parent filters break backdrop-filter blur on the card */
+}
+
+/* Soft scenery under the form (subtle — glass blur reads without loud shapes) */
+.signin-underlay {
+    position: absolute;
+    inset: -18% -22%;
+    z-index: 0;
+    pointer-events: none;
+    overflow: visible;
+    opacity: 0.55;
+}
+
+.signin-underlay-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(28px);
+}
+
+.signin-underlay-blob--a {
+    width: 70%;
+    height: 55%;
+    top: -8%;
+    left: -12%;
+    background: radial-gradient(circle, rgba(56, 189, 248, 0.35) 0%, rgba(56, 189, 248, 0.08) 55%, transparent 70%);
+    animation: siUnderFloat 12s ease-in-out infinite;
+}
+
+.signin-underlay-blob--b {
+    width: 65%;
+    height: 50%;
+    right: -18%;
+    bottom: 5%;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.28) 0%, rgba(226, 232, 240, 0.08) 50%, transparent 70%);
+    animation: siUnderFloat 14s ease-in-out infinite reverse;
+    animation-delay: -3s;
+}
+
+.signin-underlay-blob--c {
+    width: 55%;
+    height: 45%;
+    left: 25%;
+    top: 40%;
+    background: radial-gradient(circle, rgba(148, 163, 184, 0.22) 0%, transparent 68%);
+    animation: siUnderFloat 16s ease-in-out infinite;
+    animation-delay: -6s;
+}
+
+@keyframes siUnderFloat {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(10px, -12px) scale(1.05); }
+}
+
+.signin-underlay-shape {
+    position: absolute;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.1) 0%,
+        rgba(125, 211, 252, 0.06) 50%,
+        rgba(255, 255, 255, 0.03) 100%
+    );
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.signin-underlay-shape--1 {
+    width: 48%;
+    height: 34%;
+    top: 8%;
+    left: 6%;
+    border-radius: 1.25rem;
+    transform: rotate(-12deg);
+}
+
+.signin-underlay-shape--2 {
+    width: 38%;
+    height: 38%;
+    right: 4%;
+    top: 28%;
+    border-radius: 50%;
+}
+
+.signin-underlay-shape--3 {
+    width: 58%;
+    height: 28%;
+    left: 18%;
+    bottom: 10%;
+    border-radius: 1.1rem;
+    transform: rotate(8deg);
+    background: linear-gradient(
+        120deg,
+        rgba(56, 189, 248, 0.12) 0%,
+        rgba(255, 255, 255, 0.07) 55%,
+        rgba(148, 163, 184, 0.1) 100%
+    );
+}
+
+.signin-underlay-stripe {
+    position: absolute;
+    left: -10%;
+    right: -10%;
+    top: 46%;
+    height: 1.5px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.22),
+        rgba(56, 189, 248, 0.28),
+        rgba(255, 255, 255, 0.16),
+        transparent
+    );
+    transform: rotate(-8deg);
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.15);
+    opacity: 0.7;
 }
 
 /* Soft floor reflection under the glass card */
 .signin-stage::after {
     content: "";
     position: absolute;
-    left: 12%;
-    right: 12%;
-    bottom: -2.1rem;
-    height: 2.4rem;
+    left: 10%;
+    right: 10%;
+    bottom: -2.4rem;
+    height: 2.8rem;
     border-radius: 50%;
-    background:
-        radial-gradient(ellipse at center, rgba(255, 255, 255, 0.28) 0%, transparent 70%),
-        radial-gradient(ellipse at 30% 50%, rgba(251, 191, 36, 0.22) 0%, transparent 65%);
-    filter: blur(14px);
+    background: radial-gradient(ellipse at center, rgba(255, 255, 255, 0.35) 0%, transparent 70%);
+    filter: blur(16px);
     opacity: 0.7;
     pointer-events: none;
     z-index: 0;
 }
 
-/* ---------- Acrylic glass card ---------- */
+/* ---------- Dark chrome glass card ---------- */
 .signin-card {
     position: relative;
     z-index: 1;
-    isolation: isolate;
     overflow: hidden;
     width: 100%;
     padding: clamp(2.1rem, 4.5vw, 2.85rem) clamp(1.5rem, 4vw, 2.35rem);
-    border-radius: 1.5rem;
-    border: 1px solid transparent;
-    background: rgba(255, 255, 255, 0.045);
-    backdrop-filter: blur(14px) saturate(1.25);
-    -webkit-backdrop-filter: blur(14px) saturate(1.25);
+    border-radius: 1.9rem;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background:
+        linear-gradient(
+            180deg,
+            rgba(8, 10, 14, 0.42) 0%,
+            rgba(20, 24, 32, 0.28) 50%,
+            rgba(36, 42, 54, 0.22) 100%
+        );
+    backdrop-filter: blur(22px) saturate(1.55);
+    -webkit-backdrop-filter: blur(22px) saturate(1.55);
     box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.22),
-        inset 0 -1px 0 rgba(255, 255, 255, 0.04),
-        0 28px 60px -24px rgba(0, 0, 0, 0.85),
-        0 0 40px -18px rgba(255, 255, 255, 0.12),
-        0 18px 36px -22px rgba(251, 191, 36, 0.28);
+        inset 0 1.5px 0 rgba(255, 255, 255, 0.7),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+        inset 0 -10px 18px -8px rgba(255, 255, 255, 0.18),
+        inset 0 20px 36px -28px rgba(255, 255, 255, 0.12),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.28),
+        0 0 0 1px rgba(255, 255, 255, 0.06),
+        0 0 28px rgba(255, 255, 255, 0.12),
+        0 30px 60px -18px rgba(0, 0, 0, 0.95),
+        0 18px 40px rgba(0, 0, 0, 0.55);
     animation: siCardIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* Dual-tone glowing rim: amber (top-left) → cool white */
+/* Glossy silver rim — thick-glass chrome edge */
 .signin-card::before {
     content: "";
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    padding: 1.35px;
+    padding: 2px;
     background: linear-gradient(
-        135deg,
-        rgba(251, 191, 36, 0.95) 0%,
-        rgba(255, 255, 255, 0.95) 18%,
-        rgba(255, 255, 255, 0.45) 42%,
-        rgba(226, 232, 240, 0.28) 62%,
-        rgba(255, 255, 255, 0.75) 82%,
-        rgba(251, 191, 36, 0.4) 100%
+        145deg,
+        rgba(255, 255, 255, 0.95) 0%,
+        rgba(210, 215, 225, 0.55) 18%,
+        rgba(120, 125, 140, 0.35) 42%,
+        rgba(255, 255, 255, 0.75) 62%,
+        rgba(160, 165, 180, 0.45) 78%,
+        rgba(255, 255, 255, 0.9) 100%
     );
     -webkit-mask:
         linear-gradient(#000 0 0) content-box,
@@ -128,10 +393,11 @@
     mask-composite: exclude;
     pointer-events: none;
     z-index: 2;
-    opacity: 0.95;
+    opacity: 1;
+    filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.35));
 }
 
-/* Window-pane reflection + soft sheen on glass face */
+/* Surface sheen + liquid bottom puddle reflection */
 .signin-card::after {
     content: "";
     position: absolute;
@@ -140,32 +406,33 @@
     pointer-events: none;
     z-index: 1;
     background:
+        /* top specular highlight */
         linear-gradient(
-            115deg,
-            rgba(255, 255, 255, 0.16) 0%,
-            rgba(255, 255, 255, 0.05) 18%,
-            transparent 36%
+            180deg,
+            rgba(255, 255, 255, 0.22) 0%,
+            rgba(255, 255, 255, 0.06) 12%,
+            transparent 28%
         ),
+        /* soft left catch light */
         linear-gradient(
-            90deg,
-            transparent 12%,
-            rgba(255, 255, 255, 0.05) 12.5%,
-            transparent 13.5%,
-            transparent 28%,
-            rgba(255, 255, 255, 0.04) 28.5%,
-            transparent 29.5%
+            105deg,
+            rgba(255, 255, 255, 0.1) 0%,
+            transparent 28%
         ),
+        /* liquid pooled reflection along bottom rim */
+        radial-gradient(
+            ellipse 78% 28% at 50% 100%,
+            rgba(255, 255, 255, 0.34) 0%,
+            rgba(255, 255, 255, 0.1) 35%,
+            transparent 70%
+        ),
+        /* faint bottom edge band */
         linear-gradient(
-            0deg,
-            transparent 18%,
-            rgba(255, 255, 255, 0.045) 18.5%,
-            transparent 19.5%,
-            transparent 34%,
-            rgba(255, 255, 255, 0.035) 34.5%,
-            transparent 35.5%
+            to top,
+            rgba(255, 255, 255, 0.14) 0%,
+            transparent 14%
         );
-    opacity: 0.85;
-    mix-blend-mode: soft-light;
+    opacity: 1;
 }
 
 .signin-card > * {
@@ -503,7 +770,10 @@
 
 @media (prefers-reduced-motion: reduce) {
     .signin-card,
-    .signin-orb {
+    .signin-orb,
+    .signin-bg-ring--2,
+    .signin-bg-panel,
+    .signin-underlay-blob {
         animation: none !important;
     }
 
@@ -518,13 +788,13 @@
     }
 
     .signin-stage::after {
-        bottom: -1.4rem;
-        height: 1.6rem;
-        opacity: 0.45;
+        bottom: -1.6rem;
+        height: 1.8rem;
+        opacity: 0.55;
     }
 
     .signin-card {
         padding: 2rem 1.35rem 1.6rem;
-        border-radius: 1.25rem;
+        border-radius: 1.55rem;
     }
 }

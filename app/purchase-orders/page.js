@@ -77,7 +77,9 @@ function fmt(n) { return Number(n || 0).toLocaleString(undefined, { minimumFract
 function toDateKey(d) {
     if (!d) return "";
     const raw = String(d).trim();
-    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+    // Pure calendar date from MySQL DATE / ISO date-only — keep as-is
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    // Timestamps: use local calendar day (avoid UTC slice turning PH midnight into previous day)
     const date = new Date(raw);
     if (isNaN(date.getTime())) return "";
     const y = date.getFullYear();
@@ -552,7 +554,7 @@ export default function PurchaseOrdersPage() {
         let active = true;
         (async () => {
             try {
-                const res = await fetchWithAuth("/api/branches?source=mysql");
+                const res = await fetchWithAuth("/api/branches");
                 if (res.ok && active) {
                     const branches = await res.json();
                     const options = branches.map((b) => ({

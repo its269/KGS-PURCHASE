@@ -130,10 +130,30 @@ function SignInContent() {
 
     return (
         <div className="signin-wrapper">
-            <div className="signin-orb signin-orb--a" aria-hidden="true" />
-            <div className="signin-orb signin-orb--b" aria-hidden="true" />
+            <div className="signin-bg" aria-hidden="true">
+                <div className="signin-orb signin-orb--a" />
+                <div className="signin-orb signin-orb--b" />
+                <div className="signin-orb signin-orb--c" />
+                <div className="signin-bg-grid" />
+                <div className="signin-bg-ring signin-bg-ring--1" />
+                <div className="signin-bg-ring signin-bg-ring--2" />
+                <div className="signin-bg-panel signin-bg-panel--1" />
+                <div className="signin-bg-panel signin-bg-panel--2" />
+                <div className="signin-bg-panel signin-bg-panel--3" />
+                <div className="signin-bg-beam signin-bg-beam--1" />
+                <div className="signin-bg-beam signin-bg-beam--2" />
+            </div>
 
             <div className="signin-stage">
+                <div className="signin-underlay" aria-hidden="true">
+                    <span className="signin-underlay-blob signin-underlay-blob--a" />
+                    <span className="signin-underlay-blob signin-underlay-blob--b" />
+                    <span className="signin-underlay-blob signin-underlay-blob--c" />
+                    <span className="signin-underlay-shape signin-underlay-shape--1" />
+                    <span className="signin-underlay-shape signin-underlay-shape--2" />
+                    <span className="signin-underlay-shape signin-underlay-shape--3" />
+                    <span className="signin-underlay-stripe" />
+                </div>
             <div className="signin-card">
                 <div className="signin-header">
                     <div className="signin-logo-container">

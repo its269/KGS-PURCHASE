@@ -444,37 +444,92 @@ export const AcumaticaService = {
         return out;
     },
 
+    /** Acumatica Branch master (organizational units) — never Warehouse. */
     async getBranches(cookie) {
-        const url = `${ACU_BASE}/Warehouse?$select=WarehouseID,Description`;
-        const res = await this.fetchWithRetry(url, cookie);
-        const data = await res.json();
-        return (data.value || []).map(w => ({ SiteID: w.WarehouseID?.value || w.WarehouseID })).sort((a, b) => a.SiteID.localeCompare(b.SiteID));
+        const real = await this.getRealBranches(cookie);
+        return real
+            .map((b) => {
+                const id = String(b.BranchID || "").trim();
+                const name = String(b.Description || b.BranchID || id).trim();
+                if (!id) return null;
+                return {
+                    SiteID: id,
+                    BranchID: id,
+                    Description: { value: name || id },
+                };
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.SiteID.localeCompare(b.SiteID));
     },
 
-    async getRealBranches(cookie) {
-        // Try the Branch endpoint first; fall back to Warehouse if unavailable (404)
-        try {
-            const url = `${ACU_BASE}/Branch?$select=BranchID,Description`;
-            const res = await this.fetchWithRetry(url, cookie);
-            const data = await res.json();
-            const raw = data.value || (Array.isArray(data) ? data : []);
-            if (raw.length > 0) {
-                return raw.map(b => ({
-                    BranchID: getF(b, "BranchID"),
-                    Description: getF(b, "Description")
-                }));
-            }
-        } catch { /* fall through to Warehouse fallback */ }
-
-        // Fallback: derive branches from Warehouse
+    /** Physical warehouses / sites (Inventory destinations only — do not use for Branch pickers). */
+    async getWarehouses(cookie) {
         const url = `${ACU_BASE}/Warehouse?$select=WarehouseID,Description`;
         const res = await this.fetchWithRetry(url, cookie);
         const data = await res.json();
-        const raw = data.value || (Array.isArray(data) ? data : []);
-        return raw.map(w => ({
-            BranchID: getF(w, "WarehouseID"),
-            Description: getF(w, "Description") || getF(w, "WarehouseID")
-        }));
+        return (data.value || [])
+            .map((w) => ({
+                SiteID: w.WarehouseID?.value || w.WarehouseID,
+                Description: {
+                    value: getF(w, "Description") || (w.WarehouseID?.value || w.WarehouseID),
+                },
+            }))
+            .filter((w) => w.SiteID)
+            .sort((a, b) => String(a.SiteID).localeCompare(String(b.SiteID)));
+    },
+
+    /**
+     * Acumatica Branch entity only.
+     * Does NOT fall back to Warehouse — Branch pickers must never show warehouse sites.
+     */
+    async getRealBranches(cookie) {
+        const attempts = [
+            `${ACU_BASE}/Branch?$select=BranchID,BranchName,Description,Active&$filter=Active eq true`,
+            `${ACU_BASE}/Branch?$select=BranchID,BranchName,Description,Active`,
+            `${ACU_BASE}/Branch?$select=BranchID,Description`,
+            `${ACU_BASE}/Branch?$top=500`,
+        ];
+
+        let lastError = null;
+        for (const url of attempts) {
+            try {
+                const res = await this.fetchWithRetry(url, cookie);
+                const data = await res.json();
+                const raw = data.value || (Array.isArray(data) ? data : []);
+                const mapped = raw
+                    .map((b) => {
+                        const id = String(getAny(b, "BranchID", "Branch") || "").trim();
+                        if (!id) return null;
+                        const activeRaw = getAny(b, "Active");
+                        if (activeRaw !== "" && activeRaw !== null && activeRaw !== undefined) {
+                            const active =
+                                activeRaw === true ||
+                                activeRaw === "true" ||
+                                activeRaw === 1 ||
+                                activeRaw === "1";
+                            if (!active) return null;
+                        }
+                        const name = String(
+                            getAny(b, "BranchName", "Description", "BranchID") || id
+                        ).trim();
+                        return { BranchID: id, Description: name || id };
+                    })
+                    .filter(Boolean);
+
+                if (mapped.length > 0) {
+                    console.log(`[Acumatica] Loaded ${mapped.length} Branch record(s)`);
+                    return mapped;
+                }
+            } catch (err) {
+                lastError = err;
+                console.warn(`[Acumatica] Branch fetch attempt failed: ${err.message}`);
+            }
+        }
+
+        throw new Error(
+            lastError?.message ||
+                "Acumatica Branch entity returned no records (Warehouse fallback disabled)"
+        );
     },
 
     async getStockItems({ page = 1, pageSize = 50, search = "", branch = "", cookie, includeStats = false, includeCount = false }) {

@@ -530,19 +530,13 @@ export async function POST(request) {
                 let salesRowsSynced = 0;
                 let poRowsSynced = 0;
 
-                // 1. BRANCHES + WAREHOUSES (Always fast — master list for replenishment picker)
+                // 1. BRANCHES (Acumatica Branch entity only — not Warehouse)
                 send({ section: "Inventory", details: "Updating branches...", progress: 5 });
                 try {
-                    const [realBranches, warehouses] = await Promise.all([
-                        AcumaticaService.getRealBranches(effectiveCookie).catch((e) => {
-                            console.warn("[Sync API] getRealBranches:", e.message);
-                            return [];
-                        }),
-                        AcumaticaService.getBranches(effectiveCookie).catch((e) => {
-                            console.warn("[Sync API] getBranches(Warehouse):", e.message);
-                            return [];
-                        }),
-                    ]);
+                    const realBranches = await AcumaticaService.getRealBranches(effectiveCookie).catch((e) => {
+                        console.warn("[Sync API] getRealBranches:", e.message);
+                        return [];
+                    });
 
                     const byId = new Map();
                     for (const b of realBranches) {
@@ -554,23 +548,10 @@ export async function POST(request) {
                             active: true,
                         });
                     }
-                    for (const w of warehouses) {
-                        const id = String(w.SiteID || "").trim();
-                        if (!id) continue;
-                        const key = id.toUpperCase();
-                        const existing = byId.get(key);
-                        if (!existing) {
-                            byId.set(key, {
-                                branch_id: id,
-                                branch_name: id,
-                                active: true,
-                            });
-                        }
-                    }
 
                     const branchRows = [...byId.values()];
                     if (branchRows.length > 0) {
-                        await MySqlService.upsertBranches(branchRows);
+                        await MySqlService.replaceMasterBranches(branchRows);
                     }
                     await MySqlService.logSyncEvent(options.mode, "Branches", "completed", branchRows.length);
                 } catch (e) {

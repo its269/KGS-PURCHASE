@@ -5,6 +5,7 @@ import {
     ECOM_BRANCH_ALIASES,
     isEcomBranchAlias,
     isExcludedBranchAlias,
+    isWarehouseLikeAlias,
     sqlOnlyEcomBranches,
     sqlExcludeBranches,
     sqlExcludeSalesBranches,
@@ -324,13 +325,14 @@ export const MySqlService = {
             }
 
             if (startDate) {
-                whereClauses.push("h.order_date >= ?");
-                params.push(startDate);
+                // Compare calendar dates so timezone/DATETIME storage does not drop valid rows
+                whereClauses.push("DATE(h.order_date) >= ?");
+                params.push(String(startDate).slice(0, 10));
             }
 
             if (endDate) {
-                whereClauses.push("h.order_date <= ?");
-                params.push(`${endDate} 23:59:59`);
+                whereClauses.push("DATE(h.order_date) <= ?");
+                params.push(String(endDate).slice(0, 10));
             }
 
             if (search) {
@@ -344,14 +346,29 @@ export const MySqlService = {
             }
 
             if (branch) {
-                // Indexed destination table (normalized uppercase at sync / backfill).
-                const branchNorm = String(branch).trim().toUpperCase();
-                whereClauses.push(`EXISTS (
-                    SELECT 1 FROM purchase_order_dest pd
-                    WHERE pd.order_nbr = h.order_nbr
-                      AND pd.branch_id = ?
+                // Match Acumatica Branch + related warehouse destinations (e.g. MAIN → MAIN WH11).
+                // COLLATE required: purchase_history is utf8mb4_0900_ai_ci, dest/details are unicode_ci.
+                const destinations = getStockWarehouseIdsForBranch(branch);
+                const ids = (destinations.length ? destinations : [String(branch).trim().toUpperCase()])
+                    .map((id) => String(id).trim().toUpperCase())
+                    .filter(Boolean);
+                const ph = ids.map(() => "?").join(",");
+                whereClauses.push(`(
+                    EXISTS (
+                        SELECT 1 FROM purchase_order_dest pd
+                        WHERE pd.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                          AND UPPER(TRIM(pd.branch_id)) IN (${ph})
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM purchase_order_details d
+                        WHERE d.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                          AND (
+                            UPPER(TRIM(COALESCE(d.branch_id, ''))) IN (${ph})
+                            OR UPPER(TRIM(COALESCE(d.warehouse_id, ''))) IN (${ph})
+                          )
+                    )
                 )`);
-                params.push(branchNorm);
+                params.push(...ids, ...ids, ...ids);
             }
 
             const wherePart = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
@@ -521,8 +538,8 @@ export const MySqlService = {
         try {
             await purchasePool.query(`
                 CREATE TABLE IF NOT EXISTS purchase_order_dest (
-                  order_nbr VARCHAR(64) NOT NULL,
-                  branch_id VARCHAR(100) NOT NULL,
+                  order_nbr VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+                  branch_id VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
                   PRIMARY KEY (order_nbr, branch_id),
                   KEY idx_podest_branch (branch_id, order_nbr)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -1818,11 +1835,8 @@ export const MySqlService = {
 
     async _getReplenishmentBranchesUncached(companyId = "main") {
         try {
-            const [invBranches, masterBranches, salesBranches] = await Promise.all([
-                this.getBranches(companyId),
-                this.getMasterBranches(),
-                this.getSalesBranchNames(),
-            ]);
+            // Branch entity master only — do not merge Warehouse / inventory site IDs
+            const masterBranches = await this.getMasterBranches();
 
             const byId = new Map();
             const add = (id, name = "") => {
@@ -1830,6 +1844,7 @@ export const MySqlService = {
                 if (!key || key === "__catalog__") return;
                 const upper = key.toUpperCase();
                 if (isExcludedBranchAlias(upper)) return;
+                if (isWarehouseLikeAlias(upper) || isWarehouseLikeAlias(name)) return;
                 const existing = byId.get(upper);
                 const label = String(name || "").trim();
                 if (!existing) {
@@ -1843,12 +1858,6 @@ export const MySqlService = {
 
             add("MAIN", "MAIN");
             for (const b of masterBranches) add(b.branch_id || b.SiteID, b.branch_name || b.Description);
-            for (const b of invBranches) {
-                const id = b.SiteID || b.branch_id || "";
-                const name = typeof b.Description === "object" ? b.Description?.value : b.Description;
-                add(id, name || id);
-            }
-            for (const id of salesBranches) add(id, id);
 
             return [...byId.values()].sort((a, b) => {
                 if (a.SiteID === "MAIN") return -1;
@@ -1862,7 +1871,7 @@ export const MySqlService = {
         }
     },
 
-    /** Active branches/warehouses synced from Acumatica (master list). */
+    /** Active Acumatica Branch master list (organizational units — not warehouses). */
     async getMasterBranches() {
         try {
             const [rows] = await pool.query(
@@ -2145,10 +2154,8 @@ export const MySqlService = {
 
     /**
      * Fetch unique branches for Inventory / PO filters.
-     * Prefer the Acumatica-synced master `branches` table so the dropdown stays
-     * complete even when warehouse inventory rows are missing or mid-sync.
-     * Also merges any branch_id still present on inventory_items.
-     * Cached 10 min — invalidated on upsertBranches / inventory sync layout changes.
+     * Uses the Acumatica Branch master table only (not Warehouse / inventory sites).
+     * Cached 10 min — invalidated on replaceMasterBranches / upsertBranches.
      */
     async getBranches(companyId = "main") {
         return getCached(`branches:list:${companyId}`, 600_000, () =>
@@ -2158,16 +2165,13 @@ export const MySqlService = {
 
     async _getBranchesUncached(companyId = "main") {
         try {
-            const [masterBranches, invBranches] = await Promise.all([
-                this.getMasterBranches(),
-                this.getInventoryBranchIds(companyId),
-            ]);
-
+            const masterBranches = await this.getMasterBranches();
             const byId = new Map();
             const add = (id, name = "") => {
                 const key = String(id || "").trim();
                 if (!key || key === "__catalog__") return;
                 if (isExcludedBranchAlias(key)) return;
+                if (isWarehouseLikeAlias(key) || isWarehouseLikeAlias(name)) return;
                 if (companyId === "ecommerce" && !isEcomBranchAlias(key)) return;
 
                 const upper = key.toUpperCase();
@@ -2192,11 +2196,9 @@ export const MySqlService = {
             for (const b of masterBranches) {
                 add(b.branch_id || b.SiteID, b.branch_name || b.Description);
             }
-            for (const id of invBranches) add(id, id);
 
             if (byId.size === 0) {
-                // Last resort: previous inventory-only query path
-                return this.getInventoryBranchesLegacy(companyId);
+                return [];
             }
 
             return [...byId.values()].sort((a, b) =>
@@ -2204,7 +2206,7 @@ export const MySqlService = {
             );
         } catch (err) {
             console.error("[MySQL getBranches Error]", err);
-            return this.getInventoryBranchesLegacy(companyId);
+            return [];
         }
     },
 
@@ -2329,6 +2331,45 @@ export const MySqlService = {
         } catch (err) {
             await connection.rollback();
             console.error("[MySQL upsertBranches Error]", err);
+            throw err;
+        } finally {
+            connection.release();
+        }
+    },
+
+    /**
+     * Replace master Branch list with Acumatica Branch entities only.
+     * Removes stale Warehouse IDs previously merged into this table.
+     */
+    async replaceMasterBranches(branches) {
+        if (!branches.length) return;
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            const keepIds = [];
+            for (const b of branches) {
+                const id = String(b.branch_id || "").trim();
+                if (!id) continue;
+                keepIds.push(id);
+                await connection.execute(
+                    `INSERT INTO branches (branch_id, branch_name, active)
+                     VALUES (?, ?, ?)
+                     ON DUPLICATE KEY UPDATE branch_name = VALUES(branch_name), active = VALUES(active)`,
+                    [id, String(b.branch_name || id).trim(), b.active === false ? 0 : 1]
+                );
+            }
+            if (keepIds.length) {
+                const ph = keepIds.map(() => "?").join(",");
+                await connection.execute(
+                    `DELETE FROM branches WHERE branch_id NOT IN (${ph})`,
+                    keepIds
+                );
+            }
+            await connection.commit();
+            invalidateCache("branches:");
+        } catch (err) {
+            await connection.rollback();
+            console.error("[MySQL replaceMasterBranches Error]", err);
             throw err;
         } finally {
             connection.release();

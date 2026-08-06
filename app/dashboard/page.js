@@ -214,7 +214,7 @@ export default function DashboardPage() {
     useEffect(() => {
         const fetchBranches = async () => {
             try {
-                const res = await fetchWithAuth("/api/branches?source=mysql");
+                const res = await fetchWithAuth("/api/branches");
                 if (res.ok) {
                     const data = await res.json();
                     const list = Array.isArray(data) ? data : (data?.value || []);

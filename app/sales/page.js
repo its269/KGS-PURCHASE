@@ -98,7 +98,7 @@ export default function SalesPeriodicPage() {
     useEffect(() => {
         const fetchBranches = async () => {
             try {
-                const res = await fetch("/api/branches?source=mysql");
+                const res = await fetch("/api/branches");
                 if (res.ok) {
                     const data = await res.json();
                     const list = Array.isArray(data) ? data : (data?.value || []);
