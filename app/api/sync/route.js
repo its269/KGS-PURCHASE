@@ -4,6 +4,12 @@ import { NextResponse } from "next/server";
 import { getSessionFromRequest, getSessionIdFromRequest, getCompanyCredential, getSessionCookies } from "@/lib/session-store";
 import { COMPANIES, getAcumaticaCompanyName, splitLevelsByCompany } from "@/lib/companies";
 import { rebuildAllReplenishmentCache } from "@/lib/replenishment-engine";
+import {
+    systemLoginForCompany,
+    obtainSyncCredential,
+    isUnauthorizedError,
+    hasSystemAcumaticaCredentials,
+} from "@/lib/sync-acumatica-auth";
 import mysql from "mysql2/promise";
 
 export const runtime = "nodejs";
@@ -11,21 +17,6 @@ export const dynamic = "force-dynamic";
 
 /** Prevent overlapping syncs in this Node process (manual + auto-sync). */
 let syncInProgress = false;
-
-async function systemLoginForCompany(acumaticaCompany) {
-    const loginRes = await fetch(`${process.env.ACUMATICA_BASE_URL}/entity/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            name: process.env.ACUMATICA_USERNAME || process.env.ACU_USERNAME,
-            password: process.env.ACUMATICA_PASSWORD || process.env.ACU_PASSWORD,
-            company: acumaticaCompany,
-        }),
-    });
-    if (!loginRes.ok) throw new Error(`Acumatica login failed for ${acumaticaCompany}: ${loginRes.status}`);
-    const setCookies = loginRes.headers.getSetCookie();
-    return setCookies.map((c) => c.split(";")[0]).join("; ");
-}
 
 /**
  * BFF API Route for Data Synchronization
@@ -50,37 +41,37 @@ export async function POST(request) {
         );
     }
     syncInProgress = true;
-    
+
     let effectiveCookie = cookie;
-    if (isSecretValid && !cookie) {
-        console.log(">>> [Sync API] Secret valid. Performing system login to Acumatica...");
-        try {
-            const loginRes = await fetch(`${process.env.ACUMATICA_BASE_URL}/entity/auth/login`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    name: process.env.ACUMATICA_USERNAME,
-                    password: process.env.ACUMATICA_PASSWORD,
-                    company: process.env.ACUMATICA_COMPANY
-                })
-            });
-            if (!loginRes.ok) throw new Error(`Acumatica login failed: ${loginRes.status}`);
-            
-            // Capture all cookies (especially .ASPXAUTH and ASP.NET_SessionId)
-            const setCookies = loginRes.headers.getSetCookie();
-            effectiveCookie = setCookies.map(c => c.split(";")[0]).join("; ");
+    // Prefer a fresh system login for long syncs (user OAuth tokens expire mid-run)
+    try {
+        const fresh = await obtainSyncCredential({
+            companyName: getAcumaticaCompanyName("main"),
+            sessionCookie: cookie,
+            sessionId,
+            getSessionCookies,
+            getCompanyCredential,
+        });
+        if (fresh) {
+            effectiveCookie = fresh;
+        } else if (isSecretValid && !cookie) {
+            console.log(">>> [Sync API] Secret valid. Performing system login to Acumatica...");
+            effectiveCookie = await systemLoginForCompany(process.env.ACUMATICA_COMPANY);
             console.log(">>> [Sync API] System login successful. Captured cookies.");
-        } catch (loginErr) {
-            console.error(">>> [Sync API] System login failed:", loginErr.message);
+        }
+    } catch (loginErr) {
+        console.error(">>> [Sync API] Credential bootstrap failed:", loginErr.message);
+        if (isSecretValid && !cookie) {
             syncInProgress = false;
             return NextResponse.json({ message: "System login failed" }, { status: 500 });
         }
     }
 
-    if (effectiveCookie === "__bypass__" && !isSecretValid) {
+    if (effectiveCookie === "__bypass__" && !isSecretValid && !hasSystemAcumaticaCredentials()) {
         syncInProgress = false;
-        return NextResponse.json({ 
-            message: "Synchronization is unavailable in Bypass Mode because the Acumatica API Limit is currently reached. Please try again later when Acumatica sessions have expired." 
+        return NextResponse.json({
+            message:
+                "Synchronization needs Acumatica system credentials in the server environment (ACUMATICA_USERNAME / ACUMATICA_PASSWORD). Local app login alone cannot call Acumatica.",
         }, { status: 403 });
     }
 
@@ -608,17 +599,41 @@ export async function POST(request) {
 
                 // 2. INVENTORY — one KGSC fetch, split stock into main vs ecommerce (ECOMMERCE branch)
                 if (options.inventory) {
-                    let invCookie = null;
+                    let invCookie = effectiveCookie;
+                    let totalSynced = 0;
                     try {
-                        invCookie = isSecretValid
-                            ? await systemLoginForCompany(getAcumaticaCompanyName("main"))
-                            : (getSessionCookies(sessionId, "main") || getCompanyCredential(sessionId, "main") || effectiveCookie);
+                        const freshInv = await obtainSyncCredential({
+                            companyName: getAcumaticaCompanyName("main"),
+                            sessionCookie: effectiveCookie,
+                            sessionId,
+                            getSessionCookies,
+                            getCompanyCredential,
+                        });
+                        if (freshInv) invCookie = freshInv;
                     } catch (loginErr) {
                         console.error(">>> [Sync API] Inventory login error:", loginErr.message);
                     }
 
+                    const refreshInventoryAuth = async (reason) => {
+                        send({
+                            section: "Inventory",
+                            details: `Acumatica session expired (${reason}) — signing in again and retrying…`,
+                            progress: Math.max(10, Math.min(95, Math.floor((totalSynced || 0) / 30))),
+                            count: totalSynced || 0,
+                        });
+                        invCookie = await systemLoginForCompany(getAcumaticaCompanyName("main"));
+                        effectiveCookie = invCookie;
+                        console.log(">>> [Sync API] Re-authenticated after Unauthorized");
+                        return invCookie;
+                    };
+
                     if (!invCookie || invCookie === "__bypass__") {
                         console.warn(">>> [Sync API] Skipping inventory — no credential");
+                        send({
+                            section: "Inventory",
+                            details: "Skipped inventory — no Acumatica credentials available.",
+                            progress: 0,
+                        });
                     } else {
                         const inventorySyncStartedAt = new Date();
                         const filterArr = [];
@@ -631,9 +646,9 @@ export async function POST(request) {
 
                         const filterStr = filterArr.length > 0 ? `&$filter=${filterArr.join(" and ")}` : "";
                         let skip = 0;
-                        let totalSynced = 0;
                         let totalLevelsSynced = 0;
                         const top = 50;
+                        let authRetries = 0;
 
                         while (!signal.aborted) {
                             let items = [];
@@ -642,7 +657,13 @@ export async function POST(request) {
                                 const res = await AcumaticaService.fetchWithRetry(url, invCookie);
                                 const data = await res.json();
                                 items = data.value || (Array.isArray(data) ? data : []);
+                                authRetries = 0;
                             } catch (fetchErr) {
+                                if (isUnauthorizedError(fetchErr) && authRetries < 3 && hasSystemAcumaticaCredentials()) {
+                                    authRetries += 1;
+                                    await refreshInventoryAuth(`page skip=${skip}`);
+                                    continue;
+                                }
                                 console.error(`>>> [Sync API] Inventory Fetch Error at skip ${skip}:`, fetchErr.message);
                                 throw fetchErr;
                             }
@@ -674,14 +695,35 @@ export async function POST(request) {
                                 }
                             }
 
-                            // Inventory Summary per item so DAMAGE / DISCOUNTED locations are excluded
+                            // Inventory Summary per item so DAMAGE / DISCOUNTED locations are excluded from sellable,
+                            // and aggregated into DAMAGE rows for the Damage KPI.
                             try {
-                                const levels = await AcumaticaService.resolveWarehouseLevelsBatch(
-                                    prepared,
-                                    invCookie,
-                                    8
-                                );
-                                allLevels.push(...levels);
+                                let resolved;
+                                try {
+                                    resolved = await AcumaticaService.resolveWarehouseLevelsBatch(
+                                        prepared,
+                                        invCookie,
+                                        8
+                                    );
+                                } catch (summaryErr) {
+                                    if (isUnauthorizedError(summaryErr) && hasSystemAcumaticaCredentials()) {
+                                        await refreshInventoryAuth("inventory summary");
+                                        resolved = await AcumaticaService.resolveWarehouseLevelsBatch(
+                                            prepared,
+                                            invCookie,
+                                            8
+                                        );
+                                    } else {
+                                        throw summaryErr;
+                                    }
+                                }
+                                const sellable = Array.isArray(resolved)
+                                    ? resolved
+                                    : resolved?.levels || [];
+                                const damage = Array.isArray(resolved)
+                                    ? []
+                                    : resolved?.damageLevels || [];
+                                allLevels.push(...sellable, ...damage);
                             } catch (summaryErr) {
                                 console.warn(
                                     ">>> [Sync API] Location summary batch failed; falling back to WarehouseDetails:",
@@ -764,30 +806,47 @@ export async function POST(request) {
                     let sTotal = 0;
                     let salesFinished = false;
                     try {
-                        const salesRows = await AcumaticaService.fetchPeriodicSalesForSync({
-                            cookie: effectiveCookie,
-                            startDate: sStart,
-                            endDate: sEnd,
-                            lastModifiedAfter: isDelta && lastSalesSync ? lastSalesSync : null,
-                            maxCatchupDays: 14,
-                            onBatch: async (batch) => {
-                                if (signal.aborted || !batch?.length) return;
-                                await MySqlService.upsertPeriodicSales(batch);
-                                sTotal += batch.length;
-                                if (options.mode === "delta") {
-                                    for (const r of batch) {
-                                        if (r.inventory_id) affectedInventoryIds.add(r.inventory_id);
+                        const runSales = async (cookie) =>
+                            AcumaticaService.fetchPeriodicSalesForSync({
+                                cookie,
+                                startDate: sStart,
+                                endDate: sEnd,
+                                lastModifiedAfter: isDelta && lastSalesSync ? lastSalesSync : null,
+                                maxCatchupDays: 14,
+                                onBatch: async (batch) => {
+                                    if (signal.aborted || !batch?.length) return;
+                                    await MySqlService.upsertPeriodicSales(batch);
+                                    sTotal += batch.length;
+                                    if (options.mode === "delta") {
+                                        for (const r of batch) {
+                                            if (r.inventory_id) affectedInventoryIds.add(r.inventory_id);
+                                        }
                                     }
-                                }
-                                const salesProg = Math.min(95, 10 + Math.floor(sTotal / 20));
-                                send({
-                                    section: "Sales history",
-                                    details: `Synced ${sTotal} line(s)...`,
-                                    progress: salesProg,
-                                    count: sTotal,
-                                });
-                            },
-                        });
+                                    const salesProg = Math.min(95, 10 + Math.floor(sTotal / 20));
+                                    send({
+                                        section: "Sales history",
+                                        details: `Synced ${sTotal} line(s)...`,
+                                        progress: salesProg,
+                                        count: sTotal,
+                                    });
+                                },
+                            });
+
+                        let salesRows;
+                        try {
+                            salesRows = await runSales(effectiveCookie);
+                        } catch (salesAuthErr) {
+                            if (!isUnauthorizedError(salesAuthErr) || !hasSystemAcumaticaCredentials()) {
+                                throw salesAuthErr;
+                            }
+                            send({
+                                section: "Sales history",
+                                details: "Acumatica session expired — signing in again and retrying sales…",
+                                progress: 12,
+                            });
+                            effectiveCookie = await systemLoginForCompany(getAcumaticaCompanyName("main"));
+                            salesRows = await runSales(effectiveCookie);
+                        }
 
                         // Safety: upsert return value only if onBatch did not run
                         if (sTotal === 0 && salesRows?.length) {
@@ -980,13 +1039,18 @@ export async function POST(request) {
                             });
                         }
                         try {
-                            levels.push(
-                                ...(await AcumaticaService.resolveWarehouseLevelsBatch(
-                                    prepared,
-                                    effectiveCookie,
-                                    8
-                                ))
+                            const resolved = await AcumaticaService.resolveWarehouseLevelsBatch(
+                                prepared,
+                                effectiveCookie,
+                                8
                             );
+                            const sellable = Array.isArray(resolved)
+                                ? resolved
+                                : resolved?.levels || [];
+                            const damage = Array.isArray(resolved)
+                                ? []
+                                : resolved?.damageLevels || [];
+                            levels.push(...sellable, ...damage);
                         } catch {
                             for (const { item, catalogFields } of prepared) {
                                 levels.push(...extractWarehouseLevels(item, catalogFields));

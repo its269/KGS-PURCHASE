@@ -1,16 +1,19 @@
 import { NextResponse } from "next/server";
 import { AuthService } from "@/services/auth";
-import { getSessionFromRequest, deleteSession } from "@/lib/session-store";
+import { getSessionFromRequest, deleteSession, getSessionIdFromRequest } from "@/lib/session-store";
 import { buildAppRedirectUrl, clearAllCookies } from "@/lib/base-path";
+import { removePersistedAppSession } from "@/lib/persist-session";
 
 export async function GET(request) {
     console.log("[Logout] Clearing session and redirecting to /signin");
-    const authHeader = request.headers.get("Authorization");
-    const sessionId = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : request.cookies.get("acu_session")?.value;
+    const sessionId = getSessionIdFromRequest(request);
     const cookie = getSessionFromRequest(request);
-    
+
     if (cookie) await AuthService.logout(cookie).catch(() => {});
-    if (sessionId) deleteSession(sessionId);
+    if (sessionId) {
+        deleteSession(sessionId);
+        await removePersistedAppSession(sessionId);
+    }
 
     const expired = request.nextUrl.searchParams.get("expired") === "1";
     const signInUrl = buildAppRedirectUrl(

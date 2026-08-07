@@ -39,6 +39,7 @@ const IconChevronLeft = () => (
 function formatMode(mode) {
     if (mode === "incremental" || mode === "delta" || mode === "quick") return "Quick";
     if (mode === "full") return "Full";
+    if (mode === "import") return "Import";
     return mode || "—";
 }
 
@@ -47,6 +48,14 @@ function statusClass(status) {
     if (status === "started") return "is-run";
     return "is-err";
 }
+
+const IconUpload = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="17 8 12 3 7 8" />
+        <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+);
 
 export default function SyncingClient() {
     const [isSyncing, setIsSyncing] = useState(false);
@@ -58,7 +67,10 @@ export default function SyncingClient() {
     const [logs, setLogs] = useState([]);
     const [history, setHistory] = useState([]);
     const [loadingHistory, setLoadingHistory] = useState(true);
+    const [importFile, setImportFile] = useState(null);
+    const [showImport, setShowImport] = useState(false);
     const logsEndRef = useRef(null);
+    const fileInputRef = useRef(null);
 
     const addLog = (msg) => {
         setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -96,6 +108,56 @@ export default function SyncingClient() {
         setOverallProgress(0);
         setLogs([]);
         setSyncMode(null);
+        setShowImport(false);
+        setImportFile(null);
+    };
+
+    const startImport = async () => {
+        if (isSyncing || !importFile) return;
+
+        setIsSyncing(true);
+        setSyncMode("import");
+        setShowImport(false);
+        setComplete(false);
+        setError(null);
+        setSections({
+            Inventory: { status: "run", details: `Uploading ${importFile.name}…`, progress: 15, count: 0 },
+        });
+        setOverallProgress(15);
+        setLogs([]);
+        addLog(`Importing Acumatica export: ${importFile.name}`);
+
+        try {
+            const form = new FormData();
+            form.append("file", importFile);
+            const res = await fetch("/api/sync/import", { method: "POST", body: form });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || `Import failed (${res.status})`);
+
+            setSections({
+                Inventory: {
+                    status: "done",
+                    details: data.message,
+                    progress: 100,
+                    count: data.catalogs || 0,
+                },
+            });
+            setOverallProgress(100);
+            setComplete(true);
+            addLog(data.message || "Import completed.");
+            if (data.detected?.columns) {
+                addLog(`Detected columns: ${data.detected.columns.join(", ")}`);
+            }
+            fetchHistory();
+        } catch (err) {
+            setError(err.message);
+            addLog(`ERROR: ${err.message}`);
+            fetchHistory();
+        } finally {
+            setIsSyncing(false);
+            setImportFile(null);
+            if (fileInputRef.current) fileInputRef.current.value = "";
+        }
     };
 
     const startSync = async (mode) => {
@@ -230,7 +292,8 @@ export default function SyncingClient() {
                         </h2>
                         <p className="sync-hero-copy">
                             Choose a sync mode. Quick pulls only new and changed records;
-                            Full rebuilds the local dataset from Acumatica.
+                            Full rebuilds from Acumatica online; Import loads an Excel/CSV
+                            export when online Full Sync is unreliable.
                         </p>
 
                         <div className="sync-mode-grid" role="group" aria-label="Sync modes">
@@ -275,7 +338,67 @@ export default function SyncingClient() {
                                     <span className="sync-mode-cta">Start Full Sync →</span>
                                 </div>
                             </button>
+
+                            <button
+                                type="button"
+                                className="sync-mode-card is-import"
+                                onClick={() => setShowImport(true)}
+                            >
+                                <div className="sync-mode-icon" aria-hidden="true">
+                                    <IconUpload />
+                                </div>
+                                <div className="sync-mode-body">
+                                    <div className="sync-mode-head">
+                                        <span className="sync-mode-name">Import File</span>
+                                        <span className="sync-mode-badge is-muted">Offline</span>
+                                    </div>
+                                    <p className="sync-mode-desc">
+                                        Upload an Acumatica Stock Items Excel/CSV (Inventory ID,
+                                        Description, Item Class, Default Price, etc.). For qty by
+                                        warehouse, use an Inventory Summary export instead.
+                                    </p>
+                                    <span className="sync-mode-cta">Choose file →</span>
+                                </div>
+                            </button>
                         </div>
+
+                        {showImport ? (
+                            <div className="sync-import-panel" role="region" aria-label="Import Acumatica file">
+                                <h3>Import Acumatica export</h3>
+                                <p>
+                                    Your Stock Items export works here (Inventory ID, Description, Type,
+                                    Item Class, Default Warehouse, Base Unit, Default Price, Item Status).
+                                    Catalog fields are updated; existing on-hand quantities are kept unless
+                                    the file also has qty columns.
+                                </p>
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                                    onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                                />
+                                <div className="sync-import-actions">
+                                    <button
+                                        type="button"
+                                        className="sync-btn sync-btn-ghost"
+                                        onClick={() => {
+                                            setShowImport(false);
+                                            setImportFile(null);
+                                        }}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="sync-btn sync-btn-primary"
+                                        disabled={!importFile || isSyncing}
+                                        onClick={startImport}
+                                    >
+                                        {importFile ? `Import ${importFile.name}` : "Select a file first"}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : null}
                     </section>
                 ) : (
                     <section
@@ -290,7 +413,13 @@ export default function SyncingClient() {
                                         ? "Synchronization complete"
                                         : error
                                         ? "Synchronization failed"
-                                        : `Running ${syncMode === "full" ? "Full" : "Quick"} Sync`}
+                                        : `Running ${
+                                              syncMode === "full"
+                                                  ? "Full"
+                                                  : syncMode === "import"
+                                                    ? "Import"
+                                                    : "Quick"
+                                          } Sync`}
                                 </strong>
                                 {!complete && !error ? (
                                     <span>Streaming progress from Acumatica…</span>

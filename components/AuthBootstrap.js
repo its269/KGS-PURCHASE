@@ -2,12 +2,11 @@
 
 import { useEffect } from "react";
 import { withBasePath } from "@/lib/base-path";
-import { handleSessionExpired, isAuthProbeUrl } from "@/lib/session-client";
 
 /**
  * AuthBootstrap intercepts fetch calls to /api/*:
  * - Adds Authorization from localStorage
- * - On 401 (except auth probes), shows expired notice and redirects to sign-in
+ * - Does NOT auto-logout on 401 (sessions end only via Logout)
  */
 export default function AuthBootstrap() {
     useEffect(() => {
@@ -51,17 +50,7 @@ export default function AuthBootstrap() {
                 }
             }
 
-            const response = await originalFetch(resource, config);
-
-            if (
-                isApiCall &&
-                response.status === 401 &&
-                !isAuthProbeUrl(urlStr)
-            ) {
-                handleSessionExpired();
-            }
-
-            return response;
+            return originalFetch(resource, config);
         };
 
         return () => {

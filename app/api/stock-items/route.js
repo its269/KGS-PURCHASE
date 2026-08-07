@@ -21,7 +21,10 @@ export async function GET(request) {
 
         console.log(`[Stock Items API] MySQL — company: ${companyId}, page: ${page}${cursor ? `, cursor: ${cursor}` : ""}`);
         const result = await MySqlService.getStockItems({ page, pageSize, search, companyId, cursor });
-        
+        console.log(
+            `[Stock Items API] mode=${result.dataMode || "warehouse"} totalCount=${result.totalCount} totalStock=${result.totalStock}`
+        );
+
         if (result.items.length === 0) {
             if (cookie === "__bypass__") {
                 return NextResponse.json({ items: [], totalCount: 0, source: "mysql-bypass-empty" }, NO_STORE);

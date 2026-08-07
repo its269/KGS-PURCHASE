@@ -4,12 +4,14 @@ import {
     getSessionMeta,
     getSession,
     getActiveCompanyId,
+    setBypassSession,
+    setLocalUserSession,
     deleteSession,
 } from "@/lib/session-store";
-import { AuthService } from "@/services/auth";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/session-messages";
 import { MySqlService } from "@/services/mysql";
 import { sanitizeUser } from "@/lib/app-users";
+import { hydrateSessionFromDb, removePersistedAppSession } from "@/lib/persist-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,16 +20,27 @@ const expired = (extra = {}) =>
     NextResponse.json(
         {
             authenticated: false,
-            source: "acumatica",
+            source: "local",
             message: SESSION_EXPIRED_MESSAGE,
             ...extra,
         },
         { status: 401 }
     );
 
+function localUserPayload(localUser) {
+    return {
+        id: localUser.id,
+        username: localUser.username,
+        fullName: localUser.fullName || "",
+        email: localUser.email || "",
+        role: localUser.role,
+        active: true,
+    };
+}
+
 /**
- * Session probe for the UI — local app users stay valid while active in DB;
- * Acumatica sessions are validated against ERP credentials.
+ * Session probe — local logins stay signed in until explicit logout
+ * (or the account is deactivated). ERP/token issues never force sign-out.
  */
 export async function GET(request) {
     try {
@@ -36,103 +49,69 @@ export async function GET(request) {
             return expired({ reason: "no_local_session" });
         }
 
-        const meta = getSessionMeta(sessionId);
-        const cred = getSession(sessionId);
-        if (!meta?.companies || Object.keys(meta.companies).length === 0 || !cred) {
+        if (!getSessionMeta(sessionId)?.localUser?.id) {
+            await hydrateSessionFromDb(sessionId);
+        }
+
+        let meta = getSessionMeta(sessionId);
+        let cred = getSession(sessionId);
+
+        if (!meta?.localUser?.id) {
             return expired({ reason: "local_session_missing" });
+        }
+
+        // Ensure company entries exist (bypass is enough for MySQL-backed UI)
+        if (!meta.companies || Object.keys(meta.companies).length === 0 || !cred) {
+            setBypassSession(sessionId);
+            setLocalUserSession(sessionId, meta.localUser);
+            meta = getSessionMeta(sessionId);
+            cred = getSession(sessionId);
         }
 
         const activeCompanyId = getActiveCompanyId(sessionId) || "main";
         const companyEntry = meta.companies?.[activeCompanyId] || meta.companies?.main;
 
-        // Local app user session
-        if (meta.localUser?.id) {
-            try {
-                const row = await MySqlService.getAppUserById(meta.localUser.id);
-                if (!row || !(row.active === 1 || row.active === true)) {
-                    deleteSession(sessionId);
-                    return expired({ reason: "local_user_inactive" });
-                }
-            } catch (err) {
-                console.warn("[Auth Session] Local user check failed:", err.message);
+        try {
+            const row = await MySqlService.getAppUserById(meta.localUser.id);
+            if (!row || !(row.active === 1 || row.active === true)) {
+                deleteSession(sessionId);
+                await removePersistedAppSession(sessionId);
+                return expired({ reason: "local_user_inactive" });
             }
-
-            // Bypass / degraded ERP is fine for local users
-            if (cred === "__bypass__" || companyEntry?.isBypass) {
-                return NextResponse.json({
-                    authenticated: true,
-                    sessionId,
-                    activeCompanyId,
-                    isBypass: true,
-                    source: "local",
-                    authType: "local",
-                    user: sanitizeUser({
-                        ...meta.localUser,
-                        full_name: meta.localUser.fullName,
-                        active: 1,
-                    }),
-                    degraded: true,
-                });
-            }
+            setLocalUserSession(sessionId, sanitizeUser(row));
+            meta = getSessionMeta(sessionId);
+            MySqlService.touchAppSession(sessionId).catch(() => {});
+        } catch (err) {
+            console.warn("[Auth Session] Local user check failed:", err.message);
         }
 
-        // OAuth token clock expiry
-        if (
-            companyEntry?.isTokenAuth &&
-            companyEntry.acumaticaTokenExpiresAt &&
-            Date.now() >= Number(companyEntry.acumaticaTokenExpiresAt)
-        ) {
-            deleteSession(sessionId);
-            return expired({ reason: "acumatica_token_expired" });
-        }
-
-        const probe = await AuthService.validateSession(cred);
-        if (!probe.ok) {
-            // Local users can keep working in bypass if ERP probe fails
-            if (meta.localUser?.id) {
-                return NextResponse.json({
-                    authenticated: true,
-                    sessionId,
-                    activeCompanyId,
-                    isBypass: cred === "__bypass__",
-                    source: "local",
-                    authType: "local",
-                    user: {
-                        id: meta.localUser.id,
-                        username: meta.localUser.username,
-                        fullName: meta.localUser.fullName || "",
-                        email: meta.localUser.email || "",
-                        role: meta.localUser.role,
-                        active: true,
-                    },
-                    degraded: true,
-                });
-            }
-            deleteSession(sessionId);
-            return expired({ reason: probe.reason || "acumatica_expired" });
-        }
-
+        const isBypass = cred === "__bypass__" || !!companyEntry?.isBypass;
         return NextResponse.json({
             authenticated: true,
             sessionId,
             activeCompanyId,
-            isBypass: !!probe.bypass || cred === "__bypass__",
-            source: meta.localUser ? "local" : probe.source || "acumatica",
-            authType: meta.localUser ? "local" : "acumatica",
-            user: meta.localUser
-                ? {
-                    id: meta.localUser.id,
-                    username: meta.localUser.username,
-                    fullName: meta.localUser.fullName || "",
-                    email: meta.localUser.email || "",
-                    role: meta.localUser.role,
-                    active: true,
-                }
-                : null,
-            degraded: !!probe.degraded,
+            isBypass,
+            source: "local",
+            authType: "local",
+            user: localUserPayload(meta.localUser),
+            degraded: isBypass,
         });
     } catch (err) {
         console.error("[Auth Session]", err);
+        const sessionId = getSessionIdFromRequest(request);
+        const meta = sessionId ? getSessionMeta(sessionId) : null;
+        if (meta?.localUser?.id) {
+            return NextResponse.json({
+                authenticated: true,
+                sessionId,
+                activeCompanyId: getActiveCompanyId(sessionId) || "main",
+                isBypass: true,
+                source: "local",
+                authType: "local",
+                user: localUserPayload(meta.localUser),
+                degraded: true,
+            });
+        }
         return expired({ reason: "error" });
     }
 }

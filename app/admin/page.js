@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { fetchWithAuth } from "@/lib/api-client";
 import "@/styles/admin.css";
 
@@ -24,7 +25,7 @@ export default function AdminPage() {
     const [form, setForm] = useState(EMPTY_FORM);
     const [editingId, setEditingId] = useState(null);
     const [saving, setSaving] = useState(false);
-    const [profile, setProfile] = useState({ username: "", password: "", fullName: "", email: "" });
+    const [profile, setProfile] = useState({ username: "", fullName: "", email: "" });
     const [savingProfile, setSavingProfile] = useState(false);
 
     const load = useCallback(async () => {
@@ -48,7 +49,6 @@ export default function AdminPage() {
             setMe(sessionData.user);
             setProfile({
                 username: sessionData.user.username || "",
-                password: "",
                 fullName: sessionData.user.fullName || "",
                 email: sessionData.user.email || "",
             });
@@ -165,7 +165,6 @@ export default function AdminPage() {
                 fullName: profile.fullName,
                 email: profile.email,
             };
-            if (profile.password) payload.password = profile.password;
             const res = await fetchWithAuth("/api/auth/profile", {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
@@ -174,7 +173,6 @@ export default function AdminPage() {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || "Profile update failed");
             setNotice("Your profile was updated.");
-            setProfile((p) => ({ ...p, password: "" }));
             localStorage.setItem("userName", data.user.fullName || data.user.username);
             localStorage.setItem("userRole", data.user.role);
             setMe(data.user);
@@ -208,6 +206,10 @@ export default function AdminPage() {
 
             <section className="admin-card">
                 <h2>My account</h2>
+                <p className="admin-header-hint">
+                    To change your password, open{" "}
+                    <Link href="/account">Account</Link> in the sidebar.
+                </p>
                 <form className="admin-form" onSubmit={handleSaveProfile}>
                     <div className="admin-form-grid">
                         <label>
@@ -217,16 +219,6 @@ export default function AdminPage() {
                                 onChange={(e) => setProfile((p) => ({ ...p, username: e.target.value }))}
                                 required
                                 autoComplete="username"
-                            />
-                        </label>
-                        <label>
-                            New password
-                            <input
-                                type="password"
-                                value={profile.password}
-                                onChange={(e) => setProfile((p) => ({ ...p, password: e.target.value }))}
-                                placeholder="Leave blank to keep"
-                                autoComplete="new-password"
                             />
                         </label>
                         <label>

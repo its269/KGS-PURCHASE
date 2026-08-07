@@ -96,7 +96,7 @@ export async function GET(request, { params }) {
             return NextResponse.json({ error: "Item not found in Acumatica ERP" }, { status: 404 });
         }
 
-        const levels = await AcumaticaService.resolveWarehouseLevels(
+        const resolved = await AcumaticaService.resolveWarehouseLevels(
             item,
             {
                 description: String(getF(item, "Description")).trim(),
@@ -107,6 +107,7 @@ export async function GET(request, { params }) {
             },
             cookie
         );
+        const levels = Array.isArray(resolved) ? resolved : resolved?.levels || [];
 
         const branches = levels
             .filter((l) => !isExcludedBranchAlias(l.branch_id))

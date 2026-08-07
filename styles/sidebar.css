@@ -347,7 +347,8 @@ body.sidebar-collapsed .main-content {
 }
 
 .sidebar.collapsed .sidebar-item,
-.sidebar.collapsed .sidebar-logout {
+.sidebar.collapsed .sidebar-logout,
+.sidebar.collapsed .sidebar-account {
   justify-content: center;
   padding: 0.8rem 0;
 }

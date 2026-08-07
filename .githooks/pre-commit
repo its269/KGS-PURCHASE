@@ -1,0 +1,28 @@
+#!/bin/sh
+# Auto-bump app version (patch) on every commit so the sidebar stays in sync.
+#
+# Skip for one commit:  SKIP_VERSION_BUMP=1 git commit ...
+# Minor / major bump:   VERSION_BUMP=minor git commit ...
+#                       VERSION_BUMP=major git commit ...
+
+if [ "$SKIP_VERSION_BUMP" = "1" ] || [ "$SKIP_VERSION_BUMP" = "true" ]; then
+  exit 0
+fi
+
+GIT_DIR=$(git rev-parse --git-path . 2>/dev/null) || exit 0
+
+if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+  exit 0
+fi
+if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "[version] node not found on PATH — skipping version bump" >&2
+  exit 0
+fi
+
+node scripts/bump-version.mjs || exit 1
+git add package.json package-lock.json lib/app-version.js
+exit 0

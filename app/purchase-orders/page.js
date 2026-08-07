@@ -58,7 +58,7 @@ const IconChevronSelect = () => (
     </svg>
 );
 const IconFilter = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
         <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
     </svg>
 );
@@ -66,6 +66,7 @@ const IconFilter = () => (
 function poStatusClass(status) {
     const s = (status || "").toLowerCase();
     if (s === "open") return "po-status-open";
+    if (s === "on hold" || s === "hold") return "po-status-default";
     if (s === "closed") return "po-status-closed";
     if (s === "completed") return "po-status-completed";
     if (s === "cancelled" || s === "canceled") return "po-status-cancelled";
@@ -154,6 +155,88 @@ function textIncludes(haystack, needle) {
     return String(haystack ?? "").toLowerCase().includes(String(needle).toLowerCase().trim());
 }
 
+/** Logistics fields stored as JSON arrays (legacy single strings still parse). */
+const LOGISTICS_MULTI_FIELDS = ["containerNumber", "shipOutDate", "eta", "receivedDate"];
+
+function parseMultiValue(raw) {
+    if (raw == null || raw === "") return [""];
+    if (Array.isArray(raw)) {
+        const arr = raw.map((v) => (v == null ? "" : String(v)));
+        return arr.length ? arr : [""];
+    }
+    const s = String(raw).trim();
+    if (!s) return [""];
+    if (s.startsWith("[")) {
+        try {
+            const parsed = JSON.parse(s);
+            if (Array.isArray(parsed)) {
+                const arr = parsed.map((v) => (v == null ? "" : String(v)));
+                return arr.length ? arr : [""];
+            }
+        } catch {
+            /* fall through */
+        }
+    }
+    if (s.includes("\n") || s.includes("|")) {
+        const parts = s.split(/\n|\|/).map((p) => p.trim());
+        return parts.length ? parts : [""];
+    }
+    return [s];
+}
+
+function serializeMultiValue(arr) {
+    const cleaned = (Array.isArray(arr) ? arr : [arr]).map((v) => (v == null ? "" : String(v)));
+    return JSON.stringify(cleaned.length ? cleaned : [""]);
+}
+
+function multiTextIncludes(haystack, needle) {
+    if (!needle) return true;
+    const n = String(needle).toLowerCase().trim();
+    return parseMultiValue(haystack).some((v) => String(v).toLowerCase().includes(n));
+}
+
+function multiDateMatches(haystack, filterDate, erpFallback) {
+    if (!filterDate) return true;
+    const arr = parseMultiValue(haystack);
+    if (arr.some((v) => toDateKey(v) === filterDate)) return true;
+    if (erpFallback && !arr.some(Boolean) && toDateKey(erpFallback) === filterDate) return true;
+    return false;
+}
+
+function hasAnyMultiValue(raw) {
+    return parseMultiValue(raw).some((v) => String(v).trim());
+}
+
+/** Aligned multi-entry slots for container / ship out / ETA / received. */
+function getLogisticsEntries(ui, receiptDate) {
+    const fields = {};
+    let maxLen = 1;
+    for (const f of LOGISTICS_MULTI_FIELDS) {
+        let arr = parseMultiValue(ui?.[f]);
+        if (f === "receivedDate" && !arr.some(Boolean) && receiptDate) {
+            arr = [toDateKey(receiptDate) || String(receiptDate)];
+        }
+        fields[f] = arr;
+        if (arr.length > maxLen) maxLen = arr.length;
+    }
+    for (const f of LOGISTICS_MULTI_FIELDS) {
+        while (fields[f].length < maxLen) fields[f].push("");
+    }
+    return fields;
+}
+
+function normalizeAnnotationInputs(dbInputs) {
+    const out = {};
+    for (const [refId, fields] of Object.entries(dbInputs || {})) {
+        const next = { ...fields };
+        for (const f of LOGISTICS_MULTI_FIELDS) {
+            if (f in next) next[f] = parseMultiValue(next[f]);
+        }
+        out[refId] = next;
+    }
+    return out;
+}
+
 const EMPTY_COLUMN_FILTERS = {
     orderNbr: "",
     vendorId: "",
@@ -189,8 +272,62 @@ const COLUMN_FILTER_META = [
 ];
 
 const PO_STATUS_FILTER_OPTIONS = [
-    "Hold", "Open", "Balanced", "Pending Approval", "Completed", "Cancelled", "Closed",
+    "On Hold",
+    "Hold",
+    "Open",
+    "Balanced",
+    "Pending Approval",
+    "Pending Printing",
+    "Pending Email",
+    "Completed",
+    "Cancelled",
+    "Closed",
 ];
+
+const ACUMATICA_PO_STATUS_OPTIONS = [
+    "On Hold",
+    "Open",
+    "Balanced",
+    "Pending Approval",
+    "Pending Printing",
+    "Pending Email",
+    "Completed",
+    "Cancelled",
+    "Closed",
+];
+
+function normalizePoStatus(status) {
+    const s = String(status || "").trim();
+    if (!s) return "";
+    if (s.toLowerCase() === "hold") return "On Hold";
+    if (s.toLowerCase() === "canceled") return "Cancelled";
+    return s;
+}
+
+function ErpStatusCell({ value, onChange, disabled }) {
+    const current = normalizePoStatus(value);
+    const options = ACUMATICA_PO_STATUS_OPTIONS.includes(current)
+        ? ACUMATICA_PO_STATUS_OPTIONS
+        : current
+          ? [current, ...ACUMATICA_PO_STATUS_OPTIONS]
+          : ACUMATICA_PO_STATUS_OPTIONS;
+
+    return (
+        <select
+            className={`po-erp-status-select ${poStatusClass(current)}`}
+            value={current}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            aria-label="Purchase order status"
+        >
+            {!current && <option value="">— Select —</option>}
+            {options.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+            ))}
+        </select>
+    );
+}
 
 const ORIGIN_OPTIONS = ["Philippines", "China"];
 
@@ -266,71 +403,119 @@ function PoDateInput({ value = "", onChange, className = "", style }) {
     );
 }
 
-function ColumnFilterHeader({
-    label,
+/** Stacked multi-value cell (container # / dates) — Excel-style vertical list. */
+function PoMultiEntryCell({
+    entries,
+    onChangeAt,
+    onAdd,
+    onRemove,
+    type = "text",
+    placeholder = "",
+    showAdd = true,
+    showRemove = true,
+}) {
+    const list = entries?.length ? entries : [""];
+    return (
+        <div className="po-multi-entry">
+            {list.map((value, i) => (
+                <div key={i} className="po-multi-entry-row">
+                    {type === "date" ? (
+                        <PoDateInput
+                            className="po-multi-entry-date"
+                            value={value}
+                            onChange={(val) => onChangeAt(i, val)}
+                        />
+                    ) : (
+                        <input
+                            type="text"
+                            className="po-input-text po-multi-entry-input"
+                            placeholder={placeholder}
+                            value={value}
+                            onChange={(e) => onChangeAt(i, e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                    )}
+                    {showRemove && list.length > 1 && (
+                        <button
+                            type="button"
+                            className="po-multi-entry-remove"
+                            aria-label={`Remove entry ${i + 1}`}
+                            title="Remove"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onRemove(i);
+                            }}
+                        >
+                            ×
+                        </button>
+                    )}
+                </div>
+            ))}
+            {showAdd && (
+                <button
+                    type="button"
+                    className="po-multi-entry-add"
+                    aria-label="Add entry"
+                    title="Add container / date row"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        onAdd();
+                    }}
+                >
+                    + Add
+                </button>
+            )}
+        </div>
+    );
+}
+
+function PoColHeader({ label, className = "" }) {
+    return (
+        <th className={className}>
+            <span className="po-th-label">{label}</span>
+        </th>
+    );
+}
+
+function ColumnFilterCell({
     filterKey,
     type = "text",
     value,
     options = [],
     onChange,
     className = "",
+    placeholder = "Filter…",
 }) {
-    const popoverId = `po-col-filter-${filterKey}`;
-    const active = Boolean(value);
-
     return (
-        <th className={className}>
-            <div className="po-th-filter">
-                <span className="po-th-label">{label}</span>
-                <button
-                    type="button"
-                    className={`po-th-filter-btn ${active ? "active" : ""}`}
-                    popoverTarget={popoverId}
-                    aria-label={`Filter ${label}`}
-                    onClick={(e) => e.stopPropagation()}
+        <th className={`po-filter-cell ${className}`.trim()}>
+            {type === "select" ? (
+                <select
+                    className="po-inline-filter"
+                    value={value || ""}
+                    onChange={(e) => onChange(e.target.value)}
+                    aria-label={`Filter ${filterKey}`}
                 >
-                    <IconFilter />
-                </button>
-                <div
-                    id={popoverId}
-                    popover="auto"
-                    className="po-col-filter-popover"
-                    onClick={(e) => e.stopPropagation()}
-                >
-                    <div className="po-col-filter-title">Filter: {label}</div>
-                    {type === "select" ? (
-                        <select
-                            className="po-col-filter-input"
-                            value={value || ""}
-                            onChange={(e) => onChange(e.target.value)}
-                        >
-                            <option value="">All</option>
-                            {options.map((opt) => (
-                                <option key={opt} value={opt}>{opt}</option>
-                            ))}
-                        </select>
-                    ) : type === "date" ? (
-                        <PoDateInput
-                            value={value || ""}
-                            onChange={onChange}
-                            className="po-col-filter-date"
-                        />
-                    ) : (
-                        <input
-                            type="text"
-                            className="po-col-filter-input"
-                            placeholder="Contains…"
-                            value={value || ""}
-                            onChange={(e) => onChange(e.target.value)}
-                        />
-                    )}
-                    <div className="po-col-filter-actions">
-                        <button type="button" className="po-col-filter-clear" onClick={() => onChange("")}>
-                            Clear
-                        </button>
-                    </div>
-                </div>
-            </div>
+                    <option value="">All</option>
+                    {options.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                </select>
+            ) : type === "date" ? (
+                <PoDateInput
+                    value={value || ""}
+                    onChange={onChange}
+                    className="po-inline-filter-date"
+                />
+            ) : (
+                <input
+                    type="text"
+                    className="po-inline-filter"
+                    placeholder={placeholder}
+                    value={value || ""}
+                    onChange={(e) => onChange(e.target.value)}
+                    aria-label={`Filter ${filterKey}`}
+                />
+            )}
         </th>
     );
 }
@@ -534,16 +719,16 @@ export default function PurchaseOrdersPage() {
                 const res = await fetchWithAuth("/api/annotations?module=po");
                 if (res.ok) {
                     const dbInputs = await res.json();
-                    setUserInputs(prev => ({ ...prev, ...dbInputs }));
+                    setUserInputs(prev => ({ ...prev, ...normalizeAnnotationInputs(dbInputs) }));
                 } else {
                     // Fallback to local if DB fails
                     const savedInputs = localStorage.getItem("po_user_inputs");
-                    if (savedInputs) setUserInputs(JSON.parse(savedInputs));
+                    if (savedInputs) setUserInputs(normalizeAnnotationInputs(JSON.parse(savedInputs)));
                 }
             } catch (e) {
                 console.error("Failed to fetch annotations", e);
                 const savedInputs = localStorage.getItem("po_user_inputs");
-                if (savedInputs) setUserInputs(JSON.parse(savedInputs));
+                if (savedInputs) setUserInputs(normalizeAnnotationInputs(JSON.parse(savedInputs)));
             }
 
             isInitialMount.current = false;
@@ -557,10 +742,13 @@ export default function PurchaseOrdersPage() {
                 const res = await fetchWithAuth("/api/branches");
                 if (res.ok && active) {
                     const branches = await res.json();
-                    const options = branches.map((b) => ({
-                        id: b.SiteID || b.branch_id || "",
-                        name: b.Description?.value || b.branch_name || b.SiteID || "",
-                    })).filter((b) => b.id);
+                    const options = branches.map((b) => {
+                        const rawName = b.Description?.value || b.Description || b.BranchName?.value || b.branch_name || "";
+                        const name = rawName && !String(rawName).startsWith("[object")
+                            ? String(rawName)
+                            : (b.SiteID || b.branch_id || "");
+                        return { id: b.SiteID || b.branch_id || "", name };
+                    }).filter((b) => b.id);
                     setBranchOptions(options);
                 }
             } catch (err) {
@@ -585,6 +773,7 @@ export default function PurchaseOrdersPage() {
         }));
 
         // 2. Persist to DB (Debounced)
+        const persistValue = Array.isArray(value) ? serializeMultiValue(value) : value;
         if (saveTimeoutRef.current[key + field]) {
             clearTimeout(saveTimeoutRef.current[key + field]);
         }
@@ -597,13 +786,116 @@ export default function PurchaseOrdersPage() {
                         module: "po",
                         refId: key,
                         fieldKey: field,
-                        fieldValue: value
+                        fieldValue: persistValue
                     })
                 });
             } catch (e) {
                 console.error("Failed to persist annotation", e);
             }
         }, 800);
+    };
+
+    const persistLogisticsFields = (key, nextUi) => {
+        const debounceKey = `${key}::logistics`;
+        if (saveTimeoutRef.current[debounceKey]) {
+            clearTimeout(saveTimeoutRef.current[debounceKey]);
+        }
+        saveTimeoutRef.current[debounceKey] = setTimeout(async () => {
+            try {
+                await Promise.all(
+                    LOGISTICS_MULTI_FIELDS.map((field) =>
+                        fetchWithAuth("/api/annotations", {
+                            method: "POST",
+                            body: JSON.stringify({
+                                module: "po",
+                                refId: key,
+                                fieldKey: field,
+                                fieldValue: serializeMultiValue(nextUi[field]),
+                            }),
+                        })
+                    )
+                );
+            } catch (e) {
+                console.error("Failed to persist logistics annotations", e);
+            }
+        }, 800);
+    };
+
+    const updateLogistics = (key, receiptDate, mutator) => {
+        setUserInputs((prev) => {
+            const ui = prev[key] || {};
+            const entries = getLogisticsEntries(ui, receiptDate);
+            mutator(entries);
+            const nextUi = { ...ui };
+            for (const f of LOGISTICS_MULTI_FIELDS) {
+                nextUi[f] = entries[f];
+            }
+            persistLogisticsFields(key, nextUi);
+            return { ...prev, [key]: nextUi };
+        });
+    };
+
+    const handleLogisticsChange = (key, field, index, value, receiptDate) => {
+        updateLogistics(key, receiptDate, (entries) => {
+            entries[field][index] = value;
+        });
+    };
+
+    const handleLogisticsAdd = (key, receiptDate) => {
+        updateLogistics(key, receiptDate, (entries) => {
+            for (const f of LOGISTICS_MULTI_FIELDS) {
+                entries[f].push("");
+            }
+        });
+    };
+
+    const handleLogisticsRemove = (key, index, receiptDate) => {
+        updateLogistics(key, receiptDate, (entries) => {
+            if (entries.containerNumber.length <= 1) {
+                for (const f of LOGISTICS_MULTI_FIELDS) entries[f][0] = "";
+                return;
+            }
+            for (const f of LOGISTICS_MULTI_FIELDS) {
+                entries[f].splice(index, 1);
+            }
+        });
+    };
+
+    const handleErpStatusChange = async (orderNbr, nextStatus) => {
+        const status = normalizePoStatus(nextStatus);
+        if (!orderNbr || !status) return;
+        setOrders((prev) =>
+            prev.map((po) => (po.orderNbr === orderNbr ? { ...po, status } : po))
+        );
+        try {
+            const res = await fetchWithAuth("/api/po/status", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ orderNbr, status }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || "Failed to update status");
+            if (data.status && data.status !== status) {
+                setOrders((prev) =>
+                    prev.map((po) =>
+                        po.orderNbr === orderNbr ? { ...po, status: data.status } : po
+                    )
+                );
+            }
+        } catch (err) {
+            console.error("Failed to update PO status", err);
+            alert(err.message || "Failed to update status");
+            // reload list to restore server value
+            try {
+                const res = await fetchWithAuth(`/api/po?page=${page}&pageSize=${PAGE_SIZE}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    setOrders(data.orders ?? []);
+                }
+            } catch {
+                /* ignore */
+            }
+        }
     };
 
     // Save filters to localStorage
@@ -669,7 +961,10 @@ export default function PurchaseOrdersPage() {
 
     const summaryStats = useMemo(() => {
         const totalValue = orders.reduce((sum, o) => sum + (Number(o.totalAmount) || 0), 0);
-        const pendingEtaCount = orders.filter(o => !userInputs[`${o.orderType}-${o.orderNbr}`]?.eta).length;
+        const pendingEtaCount = orders.filter(o => {
+            const ui = userInputs[`${o.orderType}-${o.orderNbr}`];
+            return !hasAnyMultiValue(ui?.eta);
+        }).length;
         const openCount = orders.filter(o => o.status === 'Open').length;
         return { totalValue, pendingEtaCount, openCount };
     }, [orders, userInputs]);
@@ -692,12 +987,12 @@ export default function PurchaseOrdersPage() {
             const etdValue = o.promisedDate || ui.etd;
             if (f.origin && (ui.origin || "") !== f.origin) return false;
             if (f.status && String(o.status || "").toLowerCase() !== f.status.toLowerCase()) return false;
-            if (!textIncludes(ui.containerNumber, f.containerNumber)) return false;
+            if (!multiTextIncludes(ui.containerNumber, f.containerNumber)) return false;
             if (f.date && toDateKey(o.date) !== f.date) return false;
             if (f.etd && toDateKey(etdValue) !== f.etd) return false;
-            if (f.shipOutDate && toDateKey(ui.shipOutDate) !== f.shipOutDate) return false;
-            if (f.eta && toDateKey(ui.eta) !== f.eta) return false;
-            if (f.receivedDate && toDateKey(o.receiptDate) !== f.receivedDate) return false;
+            if (!multiDateMatches(ui.shipOutDate, f.shipOutDate)) return false;
+            if (!multiDateMatches(ui.eta, f.eta)) return false;
+            if (!multiDateMatches(ui.receivedDate, f.receivedDate, o.receiptDate)) return false;
             if (!textIncludes(ui.remarks, f.remarks)) return false;
             if (f.userStatus && (ui.userStatus || "") !== f.userStatus) return false;
             if (f.totalAmount && !textIncludes(String(o.totalAmount ?? ""), f.totalAmount)
@@ -833,18 +1128,17 @@ export default function PurchaseOrdersPage() {
                     </div>
 
                     <div className="po-filter-group">
-                        <span className="po-filter-label">Branch:</span>
                         <div className="db-select-wrapper">
+                            <IconFilter />
                             <select
-                                className="po-select-box"
-                                style={{ width: '180px' }}
+                                className="db-select"
                                 value={selectedBranch}
                                 onChange={(e) => setSelectedBranch(e.target.value)}
+                                aria-label="Branch filter"
                             >
                                 <option value="">All Branches</option>
-                                <option value="MAIN">MAIN</option>
-                                {branchOptions.filter((b) => b.id !== "MAIN").map((b) => (
-                                    <option key={b.id} value={b.id}>{b.name || b.id}</option>
+                                {branchOptions.map((b) => (
+                                    <option key={b.id} value={b.id}>{b.id}</option>
                                 ))}
                             </select>
                             <IconChevronSelect />
@@ -886,31 +1180,47 @@ export default function PurchaseOrdersPage() {
                 <div className="db-table-wrap po-table-wrap">
                     <table className="db-table po-table">
                         <thead>
-                            <tr>
+                            <tr className="po-head-labels">
                                 <th className="po-col-expand"></th>
-                                <ColumnFilterHeader
-                                    label="Order #"
+                                <PoColHeader label="Order #" className="po-col-order" />
+                                <PoColHeader label="Vendor ID" className="po-col-vendor-id" />
+                                <PoColHeader label="Vendor Name" className="po-col-vendor-name" />
+                                <PoColHeader label="Origin" className="po-col-origin" />
+                                <PoColHeader label="Status" className="po-col-status" />
+                                <PoColHeader label="Container" className="po-col-container" />
+                                <PoColHeader label="PO Date" className="po-col-date" />
+                                <PoColHeader label="ETD" className="po-col-etd" />
+                                <PoColHeader label="Ship Out" className="po-col-ship-out" />
+                                <PoColHeader label="ETA" className="po-col-eta" />
+                                <PoColHeader label="Received" className="po-col-received" />
+                                <PoColHeader label="Remarks" className="po-col-remarks" />
+                                <PoColHeader label="User Status" className="po-col-user-status" />
+                                <PoColHeader label="Amount" className="po-col-amount" />
+                            </tr>
+                            <tr className="po-head-filters">
+                                <th className="po-col-expand"></th>
+                                <ColumnFilterCell
                                     filterKey="orderNbr"
                                     className="po-col-order"
                                     value={columnFilters.orderNbr}
                                     onChange={(v) => setColumnFilter("orderNbr", v)}
+                                    placeholder="Order #…"
                                 />
-                                <ColumnFilterHeader
-                                    label="Vendor ID"
+                                <ColumnFilterCell
                                     filterKey="vendorId"
                                     className="po-col-vendor-id"
                                     value={columnFilters.vendorId}
                                     onChange={(v) => setColumnFilter("vendorId", v)}
+                                    placeholder="Vendor ID…"
                                 />
-                                <ColumnFilterHeader
-                                    label="Vendor Name"
+                                <ColumnFilterCell
                                     filterKey="vendorName"
                                     className="po-col-vendor-name"
                                     value={columnFilters.vendorName}
                                     onChange={(v) => setColumnFilter("vendorName", v)}
+                                    placeholder="Name…"
                                 />
-                                <ColumnFilterHeader
-                                    label="Origin"
+                                <ColumnFilterCell
                                     filterKey="origin"
                                     type="select"
                                     options={ORIGIN_OPTIONS}
@@ -918,8 +1228,7 @@ export default function PurchaseOrdersPage() {
                                     value={columnFilters.origin}
                                     onChange={(v) => setColumnFilter("origin", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="Status"
+                                <ColumnFilterCell
                                     filterKey="status"
                                     type="select"
                                     options={PO_STATUS_FILTER_OPTIONS}
@@ -927,62 +1236,56 @@ export default function PurchaseOrdersPage() {
                                     value={columnFilters.status}
                                     onChange={(v) => setColumnFilter("status", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="Container"
+                                <ColumnFilterCell
                                     filterKey="containerNumber"
                                     className="po-col-container"
                                     value={columnFilters.containerNumber}
                                     onChange={(v) => setColumnFilter("containerNumber", v)}
+                                    placeholder="Container…"
                                 />
-                                <ColumnFilterHeader
-                                    label="PO Date"
+                                <ColumnFilterCell
                                     filterKey="date"
                                     type="date"
                                     className="po-col-date"
                                     value={columnFilters.date}
                                     onChange={(v) => setColumnFilter("date", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="ETD"
+                                <ColumnFilterCell
                                     filterKey="etd"
                                     type="date"
                                     className="po-col-etd"
                                     value={columnFilters.etd}
                                     onChange={(v) => setColumnFilter("etd", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="Ship Out"
+                                <ColumnFilterCell
                                     filterKey="shipOutDate"
                                     type="date"
                                     className="po-col-ship-out"
                                     value={columnFilters.shipOutDate}
                                     onChange={(v) => setColumnFilter("shipOutDate", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="ETA"
+                                <ColumnFilterCell
                                     filterKey="eta"
                                     type="date"
                                     className="po-col-eta"
                                     value={columnFilters.eta}
                                     onChange={(v) => setColumnFilter("eta", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="Received"
+                                <ColumnFilterCell
                                     filterKey="receivedDate"
                                     type="date"
                                     className="po-col-received"
                                     value={columnFilters.receivedDate}
                                     onChange={(v) => setColumnFilter("receivedDate", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="Remarks"
+                                <ColumnFilterCell
                                     filterKey="remarks"
                                     className="po-col-remarks"
                                     value={columnFilters.remarks}
                                     onChange={(v) => setColumnFilter("remarks", v)}
+                                    placeholder="Remarks…"
                                 />
-                                <ColumnFilterHeader
-                                    label="User Status"
+                                <ColumnFilterCell
                                     filterKey="userStatus"
                                     type="select"
                                     options={USER_STATUS_OPTIONS}
@@ -990,12 +1293,12 @@ export default function PurchaseOrdersPage() {
                                     value={columnFilters.userStatus}
                                     onChange={(v) => setColumnFilter("userStatus", v)}
                                 />
-                                <ColumnFilterHeader
-                                    label="Amount"
+                                <ColumnFilterCell
                                     filterKey="totalAmount"
                                     className="po-col-amount"
                                     value={columnFilters.totalAmount}
                                     onChange={(v) => setColumnFilter("totalAmount", v)}
+                                    placeholder="Amount…"
                                 />
                             </tr>
                         </thead>
@@ -1018,6 +1321,9 @@ export default function PurchaseOrdersPage() {
                                 const isOpen = !!expanded[key];
                                 const ui = userInputs[key] || {};
                                 const etdValue = po.promisedDate || ui.etd;
+                                const logistics = getLogisticsEntries(ui, po.receiptDate);
+                                const onLogisticsAdd = () => handleLogisticsAdd(key, po.receiptDate);
+                                const onLogisticsRemove = (i) => handleLogisticsRemove(key, i, po.receiptDate);
                                 return (
                                     <Fragment key={key}>
                                         <tr className={`db-clickable-row ${isOpen ? "po-row-expanded" : ""}`} onClick={() => toggleExpand(key)}>
@@ -1042,17 +1348,19 @@ export default function PurchaseOrdersPage() {
                                                     <option value="China">China</option>
                                                 </select>
                                             </td>
-                                            <td>
-                                                <span className={`db-badge ${poStatusClass(po.status)}`}>{po.status || "—"}</span>
-                                            </td>
                                             <td onClick={(e) => e.stopPropagation()}>
-                                                <input
-                                                    type="text"
-                                                    className="po-input-text"
-                                                    style={{ width: '100%' }}
+                                                <ErpStatusCell
+                                                    value={po.status}
+                                                    onChange={(val) => handleErpStatusChange(po.orderNbr, val)}
+                                                />
+                                            </td>
+                                            <td className="po-multi-entry-td" onClick={(e) => e.stopPropagation()}>
+                                                <PoMultiEntryCell
+                                                    entries={logistics.containerNumber}
                                                     placeholder="Container"
-                                                    value={ui.containerNumber || ""}
-                                                    onChange={(e) => handleUserInput(key, 'containerNumber', e.target.value)}
+                                                    onChangeAt={(i, val) => handleLogisticsChange(key, "containerNumber", i, val, po.receiptDate)}
+                                                    onAdd={onLogisticsAdd}
+                                                    onRemove={onLogisticsRemove}
                                                 />
                                             </td>
                                             <td>
@@ -1063,22 +1371,38 @@ export default function PurchaseOrdersPage() {
                                                     {fmtDate(etdValue)}
                                                 </span>
                                             </td>
-                                            <td onClick={(e) => e.stopPropagation()}>
-                                                <PoDateInput
-                                                    value={ui.shipOutDate || ""}
-                                                    onChange={(val) => handleUserInput(key, "shipOutDate", val)}
+                                            <td className="po-multi-entry-td" onClick={(e) => e.stopPropagation()}>
+                                                <PoMultiEntryCell
+                                                    type="date"
+                                                    entries={logistics.shipOutDate}
+                                                    showAdd={false}
+                                                    showRemove={false}
+                                                    onChangeAt={(i, val) => handleLogisticsChange(key, "shipOutDate", i, val, po.receiptDate)}
+                                                    onAdd={onLogisticsAdd}
+                                                    onRemove={onLogisticsRemove}
                                                 />
                                             </td>
-                                            <td onClick={(e) => e.stopPropagation()}>
-                                                <PoDateInput
-                                                    value={ui.eta || ""}
-                                                    onChange={(val) => handleUserInput(key, "eta", val)}
+                                            <td className="po-multi-entry-td" onClick={(e) => e.stopPropagation()}>
+                                                <PoMultiEntryCell
+                                                    type="date"
+                                                    entries={logistics.eta}
+                                                    showAdd={false}
+                                                    showRemove={false}
+                                                    onChangeAt={(i, val) => handleLogisticsChange(key, "eta", i, val, po.receiptDate)}
+                                                    onAdd={onLogisticsAdd}
+                                                    onRemove={onLogisticsRemove}
                                                 />
                                             </td>
-                                            <td>
-                                                <span className="po-readonly-date" title={po.receiptDate ? "From Purchase Receipt" : ""}>
-                                                    {fmtDate(po.receiptDate)}
-                                                </span>
+                                            <td className="po-multi-entry-td" onClick={(e) => e.stopPropagation()}>
+                                                <PoMultiEntryCell
+                                                    type="date"
+                                                    entries={logistics.receivedDate}
+                                                    showAdd={false}
+                                                    showRemove={false}
+                                                    onChangeAt={(i, val) => handleLogisticsChange(key, "receivedDate", i, val, po.receiptDate)}
+                                                    onAdd={onLogisticsAdd}
+                                                    onRemove={onLogisticsRemove}
+                                                />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
                                                 <input

@@ -220,10 +220,8 @@ export default function StockItemsPage() {
                                 }`}
                             >
                                 <span className="si-chip-dot" aria-hidden="true" />
-                                {dataSource === "mysql"
+                                {dataSource === "mysql" || dataSource === "mysql-catalog"
                                     ? "Live from MySQL"
-                                    : dataSource === "mysql-catalog"
-                                    ? "MySQL catalog (run sync for stock)"
                                     : dataSource === "acumatica-fallback"
                                     ? "Fallback: Live ERP"
                                     : "Live from ERP"}

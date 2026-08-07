@@ -41,6 +41,38 @@ export async function GET(request) {
                 ];
                 csvContent += row.join(",") + "\n";
             });
+        } else if (type === "inventory-levels") {
+            const branch = searchParams.get("branch") || "";
+            const search = searchParams.get("search") || "";
+            const companyId = searchParams.get("companyId") || "main";
+            const result = await MySqlService.getInventory({
+                page: 1,
+                pageSize: 20000,
+                branch,
+                search,
+                companyId,
+            });
+            fileName = `Inventory_Levels_${new Date().toISOString().split("T")[0]}.csv`;
+            csvContent =
+                "Inventory ID,Description,Item Class,Branch,On Hand,Available,Safety Stock\n";
+            (result.data || []).forEach((item) => {
+                const id = item.InventoryID?.value ?? "";
+                const desc = String(item.Description?.value ?? "").replace(/"/g, '""');
+                const itemClass = String(item.ItemClass?.value ?? "").replace(/"/g, '""');
+                const br = String(item.Branch?.value ?? "").replace(/"/g, '""');
+                const onHand = item.OnHand?.value ?? 0;
+                const available = item.Available?.value ?? "";
+                const safety = item.SafetyStock?.value ?? "";
+                csvContent += [
+                    `"${id}"`,
+                    `"${desc}"`,
+                    `"${itemClass}"`,
+                    `"${br}"`,
+                    onHand,
+                    available,
+                    safety,
+                ].join(",") + "\n";
+            });
         } else if (type === "po") {
             const result = await MySqlService.getPurchaseOrders({ page: 1, pageSize: 5000 });
             fileName = `PurchaseOrders_Export_${new Date().toISOString().split('T')[0]}.csv`;

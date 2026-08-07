@@ -98,7 +98,7 @@ export default function BackgroundIncrementalSync() {
                     return;
                 }
                 if (res.status === 401) {
-                    console.warn("[AutoSync] Session expired — stopping auto-sync.");
+                    console.warn("[AutoSync] Unauthorized — pausing auto-sync until next cycle.");
                     return;
                 }
 

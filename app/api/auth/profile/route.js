@@ -4,6 +4,7 @@ import {
     requireLocalUser,
     sanitizeUser,
     hashPassword,
+    verifyPassword,
     validateUsername,
     validatePassword,
 } from "@/lib/app-users";
@@ -43,8 +44,26 @@ export async function PATCH(request) {
         }
 
         if (body.password !== undefined && body.password !== "") {
+            const currentPassword = String(body.currentPassword || "");
+            if (!currentPassword) {
+                return NextResponse.json({ message: "Current password is required." }, { status: 400 });
+            }
+
+            const row = await MySqlService.getAppUserById(me.id);
+            if (!row) {
+                return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+            }
+            if (!verifyPassword(currentPassword, row.password_hash)) {
+                return NextResponse.json({ message: "Current password is incorrect." }, { status: 401 });
+            }
+
             const passErr = validatePassword(body.password);
             if (passErr) return NextResponse.json({ message: passErr }, { status: 400 });
+
+            if (String(body.confirmPassword ?? "") !== String(body.password)) {
+                return NextResponse.json({ message: "New passwords do not match." }, { status: 400 });
+            }
+
             fields.passwordHash = hashPassword(body.password);
         }
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, memo } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
+import { withBasePath } from "@/lib/base-path";
 import "@/styles/dashboard.css";
 
 /* ── SVG Icons ─────────────────────────────────────────────── */
@@ -54,6 +55,14 @@ const IconRefresh = memo(() => (
     </svg>
 ));
 IconRefresh.displayName = "IconRefresh";
+const IconDownload = memo(() => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+));
+IconDownload.displayName = "IconDownload";
 const IconSync = memo(() => (
     <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
@@ -79,6 +88,8 @@ const EMPTY_GLOBAL_STATS = {
     outOfStock: 0,
     deadStock: 0,
     overstock: 0,
+    damageStock: 0,
+    damageCount: 0,
     lastSync: null,
 };
 const cellVal = (row, key) => {
@@ -97,6 +108,11 @@ const cellNum = (row, key) => {
 
 /* ── Table Row Component ───────────────────────────────────── */
 const InventoryRow = memo(({ row }) => {
+    const [open, setOpen] = useState(false);
+    const [locs, setLocs] = useState(null);
+    const [locLoading, setLocLoading] = useState(false);
+    const [locError, setLocError] = useState("");
+
     const onHand = Number(row.OnHand?.value);
     const onHandVal = Number.isFinite(onHand) ? onHand : NaN;
     let available = Number(row.Available?.value);
@@ -107,30 +123,130 @@ const InventoryRow = memo(({ row }) => {
         ? "db-status-low"
         : "db-badge-green";
 
+    const inventoryId = String(row.InventoryID?.value || "").trim();
+
+    const toggle = async (e) => {
+        e.stopPropagation();
+        const next = !open;
+        setOpen(next);
+        if (!next || locs !== null || !inventoryId) return;
+        setLocLoading(true);
+        setLocError("");
+        try {
+            const res = await fetchWithAuth(
+                `/api/inventory/locations?inventoryId=${encodeURIComponent(inventoryId)}`
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || "Failed to load locations");
+            setLocs(data.locations || []);
+        } catch (err) {
+            setLocError(err.message || "Failed to load locations");
+            setLocs([]);
+        } finally {
+            setLocLoading(false);
+        }
+    };
+
+    const locationSummary = () => {
+        if (!open) return "Trace";
+        if (locLoading) return "…";
+        if (locError) return "Error";
+        if (!locs?.length) return "None";
+        if (locs.length === 1) return locs[0].locationId || locs[0].warehouseId;
+        return `${locs.length} locs`;
+    };
+
     return (
-        <tr>
-            <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
-            <td className="db-desc">{cellVal(row, "Description")}</td>
-            <td><span className="db-class-tag">{cellVal(row, "ItemClass") || cellVal(row, "Category")}</span></td>
-            <td>
-                {cellVal(row, "Branch") !== "—" ? (
-                    <span className="db-branch-tag">{cellVal(row, "Branch")}</span>
-                ) : (
-                    "—"
-                )}
-            </td>
-            <td className="db-num">
-                {Number.isFinite(onHandVal) ? (
-                    <span className={`db-badge ${stockClass}`}>{onHandVal.toLocaleString()}</span>
-                ) : (
-                    cellNum(row, "OnHand")
-                )}
-            </td>
-            <td className="db-num">
-                {Number.isFinite(available) ? available.toLocaleString() : cellNum(row, "Available")}
-            </td>
-            <td className="db-num">{cellNum(row, "SafetyStock")}</td>
-        </tr>
+        <>
+            <tr className={open ? "db-row-expanded" : undefined}>
+                <td>
+                    <button
+                        type="button"
+                        className={`db-expand-btn ${open ? "is-open" : ""}`}
+                        onClick={toggle}
+                        aria-expanded={open}
+                        aria-label={`Locations for ${inventoryId || "item"}`}
+                        title="Show warehouse locations"
+                    >
+                        <IconChevron />
+                    </button>
+                </td>
+                <td><span className="db-inv-id">{cellVal(row, "InventoryID")}</span></td>
+                <td className="db-desc">{cellVal(row, "Description")}</td>
+                <td><span className="db-class-tag">{cellVal(row, "ItemClass") || cellVal(row, "Category")}</span></td>
+                <td>
+                    {cellVal(row, "Branch") !== "—" ? (
+                        <span className="db-branch-tag">{cellVal(row, "Branch")}</span>
+                    ) : (
+                        "—"
+                    )}
+                </td>
+                <td>
+                    <button type="button" className="db-location-chip" onClick={toggle}>
+                        {locationSummary()}
+                    </button>
+                </td>
+                <td className="db-num">
+                    {Number.isFinite(onHandVal) ? (
+                        <span className={`db-badge ${stockClass}`}>{onHandVal.toLocaleString()}</span>
+                    ) : (
+                        cellNum(row, "OnHand")
+                    )}
+                </td>
+                <td className="db-num">
+                    {Number.isFinite(available) ? available.toLocaleString() : cellNum(row, "Available")}
+                </td>
+                <td className="db-num">{cellNum(row, "SafetyStock")}</td>
+            </tr>
+            {open && (
+                <tr className="db-location-detail-row">
+                    <td colSpan={9}>
+                        <div className="db-location-panel">
+                            <div className="db-location-panel-head">
+                                <strong>Locations</strong>
+                                <span>Warehouse / bin on-hand from Acumatica Inventory Summary</span>
+                            </div>
+                            {locLoading ? (
+                                <div className="db-location-empty">Loading locations…</div>
+                            ) : locError ? (
+                                <div className="db-location-empty db-location-error">{locError}</div>
+                            ) : !locs?.length ? (
+                                <div className="db-location-empty">No location rows returned for this item.</div>
+                            ) : (
+                                <table className="db-location-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Warehouse</th>
+                                            <th>Location</th>
+                                            <th className="db-num">On Hand</th>
+                                            <th className="db-num">Available</th>
+                                            <th>Type</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {locs.map((loc, idx) => (
+                                            <tr key={`${loc.warehouseId}-${loc.locationId}-${idx}`}>
+                                                <td>{loc.warehouseId}</td>
+                                                <td>{loc.locationId}</td>
+                                                <td className="db-num">{Number(loc.onHand || 0).toLocaleString()}</td>
+                                                <td className="db-num">{Number(loc.available || 0).toLocaleString()}</td>
+                                                <td>
+                                                    {loc.isDamage ? (
+                                                        <span className="db-badge db-status-low">Damage</span>
+                                                    ) : (
+                                                        <span className="db-badge db-badge-green">Stock</span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    </td>
+                </tr>
+            )}
+        </>
     );
 });
 InventoryRow.displayName = "InventoryRow";
@@ -156,6 +272,7 @@ export default function DashboardPage() {
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [loading, setLoading] = useState(true);
     const [statsLoading, setStatsLoading] = useState(true);
+    const [exporting, setExporting] = useState(false);
     const [companyLabel, setCompanyLabel] = useState("KGSC");
 
     const searchTimer = useRef(null);
@@ -208,6 +325,22 @@ export default function DashboardPage() {
         setGlobalStats({ ...EMPTY_GLOBAL_STATS, count: 0 });
         setAllInventory([]);
         setTotalCount(0);
+    };
+
+    const handleExport = () => {
+        setExporting(true);
+        try {
+            const params = new URLSearchParams({
+                type: "inventory-levels",
+                branch: selectedBranch || "",
+                search: debouncedSearch || "",
+            });
+            window.location.href = withBasePath(`/api/export?${params}`);
+        } catch (e) {
+            console.error("Export failed", e);
+        } finally {
+            setTimeout(() => setExporting(false), 2000);
+        }
     };
 
     /* ── Init Data ────────────────────────────────────────── */
@@ -285,7 +418,32 @@ export default function DashboardPage() {
             const res = await fetchWithAuth(`/api/inventory?${statsParams.toString()}`);
             if (res.ok) {
                 const result = await res.json();
-                if (result.globalStats) setGlobalStats(result.globalStats);
+                if (result.globalStats) {
+                    setGlobalStats(result.globalStats);
+                    // Backfill DAMAGE / DISCOUNTED qty once when the card is still empty
+                    if (
+                        !result.globalStats.damageStock &&
+                        typeof window !== "undefined" &&
+                        !window.__kgsDamageSyncStarted
+                    ) {
+                        window.__kgsDamageSyncStarted = true;
+                        fetchWithAuth("/api/inventory/damage-sync", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ limit: 120 }),
+                        })
+                            .then((r) => (r.ok ? r.json() : null))
+                            .then((data) => {
+                                if (!data || !(Number(data.damageStock) > 0)) return;
+                                return fetchWithAuth(`/api/inventory?${statsParams.toString()}`);
+                            })
+                            .then((r) => (r && r.ok ? r.json() : null))
+                            .then((fresh) => {
+                                if (fresh?.globalStats) setGlobalStats(fresh.globalStats);
+                            })
+                            .catch(() => {});
+                    }
+                }
             }
         } catch (e) {
             if (e.message !== "Unauthorized") console.error("Stats fetch error", e);
@@ -371,6 +529,14 @@ export default function DashboardPage() {
                     <span className="db-stat-value">{(globalStats.overstock || 0).toLocaleString()}</span>
                     <span className="db-stat-sub">{">"}180 days of supply</span>
                 </div>
+                <div className="db-stat-card db-stat-danger db-stat-clickable" onClick={() => setActiveFilter("damage")}>
+                    <span className="db-stat-label">Damage</span>
+                    <span className="db-stat-value">{statsLoading ? "..." : (globalStats.damageStock || 0).toLocaleString()}</span>
+                    <span className="db-stat-sub">
+                        {(globalStats.damageCount || 0).toLocaleString()} products in DAMAGE / DISCOUNTED
+                        {" "}(excluded from other totals)
+                    </span>
+                </div>
                 <div className={`db-stat-card ${isStale ? "db-stat-danger db-stat-stale" : "db-stat-info"}`}>
                     <span className="db-stat-label">Data Freshness</span>
                     <span className="db-stat-value db-stat-value-sm">
@@ -380,11 +546,11 @@ export default function DashboardPage() {
                 </div>
                 </div>
 
-                <div className="db-toolbar">
+                <div className="db-toolbar db-toolbar--flat">
                     <div className="db-toolbar-left">
                         <div className="db-select-wrapper">
                             <IconFilter />
-                            <select className="db-select" value={selectedBranch} onChange={(e) => handleBranchChange(e.target.value)}>
+                            <select className="db-select" value={selectedBranch} onChange={(e) => handleBranchChange(e.target.value)} aria-label="Branch filter">
                                 <option value="">All Branches</option>
                                 {branchOptions.map(b => <option key={b.id} value={b.id}>{b.id}</option>)}
                             </select>
@@ -392,11 +558,19 @@ export default function DashboardPage() {
                         </div>
                         <div className="db-search-wrapper">
                             <IconSearch />
-                            <input className="db-search" type="text" placeholder="Search ID or description..." value={search} onChange={(e) => setSearch(e.target.value)} />
+                            <input className="db-search" type="search" placeholder="Search ID or description..." value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search inventory" />
                         </div>
                     </div>
                     <div className="db-toolbar-right">
-                        <button className="db-refresh-btn" onClick={() => { fetchInventoryTable(); fetchInventoryStats(); }}><IconRefresh /> <span>Refresh</span></button>
+                        <button
+                            className="db-export-btn"
+                            type="button"
+                            onClick={handleExport}
+                            disabled={exporting}
+                        >
+                            <IconDownload /> <span>{exporting ? "Exporting…" : "Export CSV"}</span>
+                        </button>
+                        <button className="db-refresh-btn" type="button" onClick={() => { fetchInventoryTable(); fetchInventoryStats(); }}><IconRefresh /> <span>Refresh</span></button>
                     </div>
                 </div>
 
@@ -412,10 +586,12 @@ export default function DashboardPage() {
                         <table className="db-table db-table--inventory db-table--fit">
                             <thead>
                                 <tr>
+                                    <th className="db-col-expand" aria-label="Expand" />
                                     <th>Inventory ID</th>
                                     <th>Description</th>
                                     <th>Item Class</th>
                                     <th>Branch</th>
+                                    <th>Location</th>
                                     <th className="db-num">On Hand</th>
                                     <th className="db-num">Available</th>
                                     <th className="db-num">Safety Stock</th>
@@ -424,7 +600,7 @@ export default function DashboardPage() {
                             <tbody>
                                 {allInventory.length === 0 ? (
                                     <tr>
-                                        <td colSpan={7} className="db-empty-cell">
+                                        <td colSpan={9} className="db-empty-cell">
                                             No inventory records found. Try another branch or run a full Inventory sync.
                                         </td>
                                     </tr>
@@ -471,6 +647,7 @@ function FilteredStockModal({ filter, branch, onClose }) {
         : filter === "out_of_stock" ? "Out of Stock Items"
         : filter === "dead_stock" ? "Dead Stock (No sales in 90 days)"
         : filter === "overstock" ? "Overstock Items (Excessive Supply)"
+        : filter === "damage" ? "Damage / Discounted Stock"
         : "Filtered Items";
 
     useEffect(() => {

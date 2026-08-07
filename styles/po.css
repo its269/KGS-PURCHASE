@@ -433,12 +433,12 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem 1rem;
-    background: var(--bg-surface);
-    padding: 1rem 1.25rem;
-    border-radius: var(--radius-xl);
-    border: 1px solid var(--border-light);
-    box-shadow: var(--shadow-md);
+    gap: 0.65rem 0.85rem;
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
     min-width: 0;
 }
 
@@ -576,46 +576,101 @@ select.po-select-box:focus {
 
 .db-table.po-table,
 .po-table {
-    table-layout: fixed !important;
-    width: 100% !important;
-    min-width: 0 !important;
-    max-width: 100%;
-    border-collapse: collapse;
+    table-layout: auto;
+    width: max-content;
+    min-width: 100%;
+    max-width: none;
+    border-collapse: separate;
+    border-spacing: 0;
 }
 
 .po-table th,
 .po-table td {
-    font-size: 0.72rem;
-    padding: 0.4rem 0.3rem;
+    font-size: 0.78rem;
+    padding: 0.55rem 0.7rem;
     vertical-align: middle;
     overflow: hidden;
     word-break: break-word;
+    border-bottom: 1px solid var(--border-light);
 }
 
 .po-table thead th {
-    white-space: normal;
-    vertical-align: bottom;
-    line-height: 1.2;
-    font-size: 0.62rem;
-    padding: 0.45rem 0.28rem;
+    white-space: nowrap;
+    vertical-align: middle;
+    line-height: 1.25;
+    font-size: 0.7rem;
+    padding: 0.55rem 0.7rem;
 }
 
-/* Column share of available width (sums ~100%) */
-.po-col-expand { width: 2.5%; }
-.po-col-order { width: 6.5%; }
-.po-col-vendor-id { width: 5.5%; }
-.po-col-vendor-name { width: 8%; }
-.po-col-origin { width: 7.5%; }
-.po-col-status { width: 5.5%; }
-.po-col-container { width: 7%; }
-.po-col-date { width: 5.5%; }
-.po-col-etd { width: 5.5%; }
-.po-col-ship-out { width: 7.5%; }
-.po-col-eta { width: 7.5%; }
-.po-col-received { width: 6%; }
-.po-col-remarks { width: 8%; }
-.po-col-user-status { width: 8%; }
-.po-col-amount { width: 7%; text-align: right; }
+.po-head-labels th {
+    border-bottom: none;
+    padding-bottom: 0.2rem;
+}
+
+.po-head-filters th {
+    padding-top: 0.15rem;
+    padding-bottom: 0.55rem;
+    background: rgba(15, 23, 42, 0.35);
+    border-bottom: 1px solid var(--border-medium);
+    vertical-align: top;
+}
+
+/* Fixed min widths so columns are not crushed together */
+.po-col-expand { min-width: 2.5rem; width: 2.5rem; }
+.po-col-order { min-width: 7.75rem; }
+.po-col-vendor-id { min-width: 6.75rem; }
+.po-col-vendor-name { min-width: 11.5rem; }
+.po-col-origin { min-width: 8.75rem; }
+.po-col-status { min-width: 8.75rem; }
+.po-col-container { min-width: 9.5rem; }
+.po-col-date { min-width: 6.75rem; }
+.po-col-etd { min-width: 6.75rem; }
+.po-col-ship-out { min-width: 9.75rem; }
+.po-col-eta { min-width: 9.75rem; }
+.po-col-received { min-width: 9.75rem; }
+.po-col-remarks { min-width: 9.5rem; }
+.po-col-user-status { min-width: 8.75rem; }
+.po-col-amount { min-width: 7.25rem; text-align: right; }
+
+.po-th-label {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.po-inline-filter,
+.po-filter-cell .po-inline-filter {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 30px;
+    padding: 0.25rem 0.45rem;
+    border: 1px solid var(--border-medium);
+    border-radius: 4px;
+    background: var(--bg-main);
+    color: var(--text-primary);
+    font-size: 0.72rem;
+    font-weight: 500;
+}
+
+.po-inline-filter:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
+
+.po-inline-filter-date {
+    width: 100%;
+}
+
+.po-inline-filter-date .po-input-date-mdy {
+    height: 30px !important;
+    min-height: 30px !important;
+    font-size: 0.7rem !important;
+    padding: 0.25rem 1.5rem 0.25rem 0.4rem !important;
+}
 
 .po-readonly-date {
     display: block;
@@ -1003,6 +1058,87 @@ input.po-select-box[type="date"] {
     background-color: var(--bg-main);
 }
 
+/* ── Multi-entry logistics cells (container / ship / ETA / received) ── */
+.po-multi-entry-td {
+    vertical-align: top !important;
+    padding-top: 0.4rem !important;
+    padding-bottom: 0.4rem !important;
+}
+
+.po-multi-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-width: 0;
+    width: 100%;
+}
+
+.po-multi-entry-row {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 0.15rem 0;
+    border-bottom: 1px dotted var(--border-medium);
+    min-width: 0;
+}
+
+.po-multi-entry-row:last-of-type {
+    border-bottom: none;
+}
+
+.po-multi-entry-input,
+.po-multi-entry .po-input-text,
+.po-multi-entry .po-date-mdy {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+}
+
+.po-multi-entry .po-input-text,
+.po-multi-entry .po-input-date {
+    height: 32px;
+    font-size: 0.75rem;
+}
+
+.po-multi-entry-remove {
+    flex-shrink: 0;
+    width: 1.35rem;
+    height: 1.35rem;
+    border: none;
+    border-radius: var(--radius-sm, 4px);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.55;
+    padding: 0;
+}
+
+.po-multi-entry-remove:hover {
+    opacity: 1;
+    color: #b91c1c;
+    background: rgba(185, 28, 28, 0.08);
+}
+
+.po-multi-entry-add {
+    align-self: flex-start;
+    margin-top: 0.25rem;
+    border: none;
+    background: transparent;
+    color: var(--accent-primary, #2563eb);
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0.15rem 0.1rem;
+    opacity: 0.85;
+}
+
+.po-multi-entry-add:hover {
+    opacity: 1;
+    text-decoration: underline;
+}
+
 /* ── Summary strip (above table, full width) ───────────── */
 .po-summary-strip {
     display: grid;
@@ -1170,4 +1306,40 @@ input.po-select-box[type="date"] {
     .po-summary-grid {
         grid-template-columns: 1fr;
     }
+}
+
+/* Acumatica-style ERP status dropdown */
+.po-erp-status-select {
+    min-width: 8.5rem;
+    max-width: 11rem;
+    height: 32px;
+    padding: 0 1.6rem 0 0.55rem;
+    border: 1px solid var(--border-medium);
+    border-radius: 4px;
+    background: var(--bg-main);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%94a3b8' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.4rem center;
+}
+.po-erp-status-select:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
+.po-erp-status-select.po-status-open {
+    border-color: rgba(14, 165, 233, 0.55);
+    color: #38bdf8;
+}
+.po-erp-status-select.po-status-closed,
+.po-erp-status-select.po-status-completed {
+    border-color: rgba(16, 185, 129, 0.45);
+    color: #34d399;
+}
+.po-erp-status-select.po-status-cancelled {
+    border-color: rgba(239, 68, 68, 0.45);
+    color: #f87171;
 }

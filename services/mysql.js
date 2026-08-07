@@ -8,6 +8,7 @@ import {
     isWarehouseLikeAlias,
     sqlOnlyEcomBranches,
     sqlExcludeBranches,
+    sqlOnlyDamageBranches,
     sqlExcludeSalesBranches,
     resolveCompanyIdForBranch,
     sqlExcludeEcomSalesBranches,
@@ -237,6 +238,8 @@ const EMPTY_GLOBAL_STATS = {
     outOfStock: 0,
     deadStock: 0,
     overstock: 0,
+    damageStock: 0,
+    damageCount: 0,
     count: 0,
     lastSync: null,
 };
@@ -483,6 +486,25 @@ export const MySqlService = {
         } finally {
             connection.release();
         }
+    },
+
+    /** Update local PO ERP status (Acumatica-aligned values). */
+    async updatePurchaseOrderStatus(orderNbr, status) {
+        const nbr = String(orderNbr || "").trim();
+        const next = String(status || "").trim();
+        if (!nbr) throw Object.assign(new Error("Order number is required."), { status: 400 });
+        if (!next) throw Object.assign(new Error("Status is required."), { status: 400 });
+
+        const [result] = await purchasePool.query(
+            `UPDATE purchase_history SET status = ? WHERE order_nbr = ?`,
+            [next, nbr]
+        );
+        if (!result?.affectedRows) {
+            throw Object.assign(new Error("Purchase order not found."), { status: 404 });
+        }
+        invalidateCache("po:");
+        invalidateCache("openPo:");
+        return { orderNbr: nbr, status: next };
     },
 
     async ensureReceivedQtyColumn() {
@@ -992,6 +1014,17 @@ export const MySqlService = {
 
         try {
             await this.ensureInventoryPlanningColumns();
+
+            if (filter === "damage") {
+                return await this._getDamageInventory({
+                    page,
+                    pageSize,
+                    offset,
+                    searchTerm,
+                    effectiveCompanyId,
+                });
+            }
+
             const layout = await resolveInventoryLayout(effectiveCompanyId);
             const hasWarehouse = layout === "warehouse";
 
@@ -999,11 +1032,11 @@ export const MySqlService = {
                 return { data: [], totalCount: 0, hasMore: false, dataMode: "warehouse-missing" };
             }
 
-            // Searching must find products even when the selected branch has no stock row yet
-            // (Acumatica still lists the item). Catalog-anchored + LEFT JOIN stock.
-            // Dead/overstock filters need sales joins against warehouse qty rows.
+            // Always list from catalog so imported Stock Items appear even when
+            // only a subset of warehouses have stock rows (branch filter LEFT JOINs qty).
+            // Dead/overstock still need warehouse-anchored rows with sales joins.
             const needsWarehouseFilter = filter === "dead_stock" || filter === "overstock";
-            if ((searchTerm || !hasWarehouse) && !needsWarehouseFilter) {
+            if (!needsWarehouseFilter) {
                 return await this._getInventoryFromCatalogWithStock({
                     page,
                     pageSize,
@@ -1322,6 +1355,62 @@ export const MySqlService = {
         };
     },
 
+    /** Damage / discounted warehouse stock for the Damage KPI modal. */
+    async _getDamageInventory({ page, pageSize, offset, searchTerm, effectiveCompanyId }) {
+        const damageEx = sqlOnlyDamageBranches("i");
+        const whereClauses = [
+            "i.company_id = ?",
+            "i.default_warehouse != '__catalog__'",
+            damageEx.clause,
+            "COALESCE(i.on_hand, 0) > 0",
+        ];
+        const params = [effectiveCompanyId, ...damageEx.params];
+
+        if (searchTerm) {
+            whereClauses.push(
+                "(UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.inventory_name,'')) LIKE UPPER(?))"
+            );
+            params.push(`%${searchTerm}%`, `%${searchTerm}%`);
+        }
+
+        const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
+        const limitInt = parseInt(pageSize, 10) || 50;
+        const offsetInt = parseInt(offset, 10) || 0;
+
+        const [rows] = await pool.query(
+            `SELECT
+                TRIM(i.inventory_id) AS InventoryID,
+                i.inventory_name AS Description,
+                i.item_class AS ItemClass,
+                i.branch_id AS Branch,
+                i.site_id AS SiteID,
+                i.on_hand AS OnHand,
+                i.available AS Available,
+                i.default_price AS DefaultPrice,
+                i.safety_stock AS SafetyStock,
+                i.moq AS MOQ,
+                i.vendor_id AS VendorID,
+                i.lead_time_days AS LeadTimeDays,
+                0 AS QtySold
+             FROM inventory_items i
+             ${wherePart}
+             ORDER BY i.on_hand DESC, TRIM(i.inventory_id) ASC
+             LIMIT ${limitInt} OFFSET ${offsetInt}`,
+            params
+        );
+        const [[{ total }]] = await pool.query(
+            `SELECT COUNT(*) AS total FROM inventory_items i ${wherePart}`,
+            params
+        );
+
+        return {
+            data: mapInventoryRows(rows),
+            totalCount: Number(total) || 0,
+            hasMore: (Number(total) || 0) > offsetInt + limitInt,
+            dataMode: "damage",
+        };
+    },
+
     /**
      * List products from catalog rows when warehouse levels have not been synced yet.
      */
@@ -1406,7 +1495,7 @@ export const MySqlService = {
      * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
     async getGlobalStats(branch = "", search = "", companyId = "main") {
-        const cacheKey = `global-stats-v3:${companyId}:${branch}:${search}`;
+        const cacheKey = `global-stats-v5:${companyId}:${branch}:${search}`;
         return getCached(cacheKey, 120_000, () => this._computeGlobalStats(branch, search, companyId));
     },
 
@@ -1419,14 +1508,16 @@ export const MySqlService = {
                 return { ...EMPTY_GLOBAL_STATS };
             }
 
+            const catalogCount = await countCatalogRows(effectiveCompanyId);
             const warehouseRows = await countWarehouseRows(effectiveCompanyId);
+
+            // Catalog-only import (or no warehouse stock yet): product count = full catalog
             if (warehouseRows === 0) {
-                const catalogCount = await countCatalogRows(effectiveCompanyId);
                 return {
                     ...EMPTY_GLOBAL_STATS,
                     count: catalogCount,
                     lastSync: await this.getLastInventorySyncTime(),
-                    dataMode: "warehouse-missing",
+                    dataMode: catalogCount > 0 ? "warehouse-missing" : "catalog-empty",
                 };
             }
 
@@ -1493,7 +1584,38 @@ export const MySqlService = {
 
             const [[stats]] = await pool.query(query, [...salesParams, ...params]);
 
-            const totalProducts = Number(stats.totalProducts) || 0;
+            // Damage warehouse rows (synced separately; excluded from sellable totals above)
+            const damageEx = sqlOnlyDamageBranches("i");
+            const damageParams = [effectiveCompanyId, ...damageEx.params];
+            let damageWhere = `WHERE i.company_id = ? AND i.default_warehouse != '__catalog__' AND ${damageEx.clause}`;
+            if (search) {
+                const searchTerm = normalizeInventorySearch(search);
+                damageWhere +=
+                    " AND (UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.inventory_name,'')) LIKE UPPER(?))";
+                damageParams.push(`%${searchTerm}%`, `%${searchTerm}%`);
+            }
+            const [[damageStats]] = await pool.query(
+                `SELECT
+                    COALESCE(SUM(COALESCE(i.on_hand, 0)), 0) AS damageStock,
+                    COUNT(DISTINCT CASE WHEN COALESCE(i.on_hand, 0) > 0 THEN i.inventory_id END) AS damageCount
+                 FROM inventory_items i
+                 ${damageWhere}`,
+                damageParams
+            );
+
+            // Product count prefers full catalog (Stock Items import) so branch filters
+            // do not hide items that simply have 0 stock at that site yet.
+            let productCount = catalogCount > 0 ? catalogCount : (Number(stats.totalProducts) || 0);
+            if (search && catalogCount > 0) {
+                const searchTerm = normalizeInventorySearch(search);
+                const [[catSearch]] = await pool.query(
+                    `SELECT COUNT(*) AS c FROM inventory_items
+                     WHERE company_id = ? AND default_warehouse = '__catalog__'
+                       AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(inventory_name,'')) LIKE UPPER(?))`,
+                    [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
+                );
+                productCount = Number(catSearch?.c) || 0;
+            }
 
             return {
                 totalStock: Number(stats.totalStock) || 0,
@@ -1503,7 +1625,9 @@ export const MySqlService = {
                 outOfStock: Number(stats.outOfStockCount) || 0,
                 deadStock: Number(stats.deadStockCount) || 0,
                 overstock: Number(stats.overstockCount) || 0,
-                count: totalProducts,
+                damageStock: Number(damageStats?.damageStock) || 0,
+                damageCount: Number(damageStats?.damageCount) || 0,
+                count: productCount,
                 lastSync: stats.lastSync || await this.getLastInventorySyncTime(),
                 dataMode: "warehouse",
             };
@@ -1582,8 +1706,8 @@ export const MySqlService = {
     },
 
     /**
-     * Fetch stock items from MySQL database (one row per unique inventory_id)
-     * Enriched with total sales and quantity sold.
+     * Stock Items masterlist — product types from catalog (__catalog__),
+     * with optional warehouse on-hand rollup. Not limited to sites that have stock.
      */
     async getStockItems({ page = 1, pageSize = 50, search = "", branch = "", companyId = "main", cursor = "" } = {}) {
         const offset = (page - 1) * pageSize;
@@ -1597,7 +1721,22 @@ export const MySqlService = {
         }
 
         try {
-            const whereParts = ["i.company_id = ?"];
+            const catalogRows = await countCatalogRows(effectiveCompanyId);
+            if (catalogRows > 0) {
+                return await this._getStockItemsFromCatalogWithStock({
+                    page,
+                    pageSize,
+                    offset: offsetInt,
+                    limitInt,
+                    search,
+                    branch,
+                    companyId: effectiveCompanyId,
+                    cursorId,
+                });
+            }
+
+            // Legacy fallback: no catalog yet — list distinct IDs from warehouse rows
+            const whereParts = ["i.company_id = ?", "i.default_warehouse != '__catalog__'"];
             const params = [effectiveCompanyId];
 
             const branchEx = sqlExcludeBranches("i");
@@ -1609,17 +1748,13 @@ export const MySqlService = {
                 params.push(`%${search}%`, `%${search}%`);
             }
             if (cursorId) {
-                // Keyset pagination — preferred for deep catalogs (no large OFFSET).
                 whereParts.push("TRIM(i.inventory_id) > ?");
                 params.push(cursorId);
             }
             if (branch && branch !== "All Branches") {
-                whereParts.push("i.default_warehouse != '__catalog__'");
                 whereParts.push("i.branch_id IS NOT NULL AND TRIM(i.branch_id) != ''");
                 whereParts.push("UPPER(TRIM(i.branch_id)) = UPPER(TRIM(?))");
                 params.push(branch);
-            } else {
-                whereParts.push("i.default_warehouse != '__catalog__'");
             }
 
             if (effectiveCompanyId === "main") {
@@ -1632,14 +1767,8 @@ export const MySqlService = {
                 params.push(...ecomOnly.params);
             }
 
-            const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
-
-            // Keyset (cursor) skips OFFSET entirely. Deep page numbers use deferred ID pick.
-            const useKeyset = Boolean(cursorId);
-            const useDeferredPage = !useKeyset && offsetInt >= 100;
-            let query;
-            if (useKeyset) {
-                query = `
+            const whereClause = `WHERE ${whereParts.join(" AND ")}`;
+            const query = `
                 SELECT 
                     TRIM(i.inventory_id) as inventoryId, 
                     MAX(i.inventory_name) as description, 
@@ -1648,61 +1777,20 @@ export const MySqlService = {
                     MAX(i.base_unit) as baseUnit,
                     MAX(i.default_price) as price,
                     MAX(i.moq) as moq,
-                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand,
-                    GROUP_CONCAT(DISTINCT CASE WHEN i.default_warehouse != '__catalog__' AND i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
+                    SUM(COALESCE(i.on_hand, 0)) as totalOnHand,
+                    GROUP_CONCAT(DISTINCT CASE WHEN i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
                  FROM inventory_items i
                  ${whereClause} 
                  GROUP BY TRIM(i.inventory_id)
                  ORDER BY TRIM(i.inventory_id) ASC 
-                 LIMIT ${limitInt}`;
-            } else if (useDeferredPage) {
-                query = `
-                SELECT 
-                    TRIM(i.inventory_id) as inventoryId, 
-                    MAX(i.inventory_name) as description, 
-                    MAX(i.item_class) as itemClass, 
-                    MAX(i.item_status) as itemStatus,
-                    MAX(i.base_unit) as baseUnit,
-                    MAX(i.default_price) as price,
-                    MAX(i.moq) as moq,
-                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand,
-                    GROUP_CONCAT(DISTINCT CASE WHEN i.default_warehouse != '__catalog__' AND i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
-                 FROM inventory_items i
-                 INNER JOIN (
-                    SELECT TRIM(i2.inventory_id) AS pick_id
-                    FROM inventory_items i2
-                    ${whereClause.replace(/\bi\./g, "i2.")}
-                    GROUP BY TRIM(i2.inventory_id)
-                    ORDER BY TRIM(i2.inventory_id) ASC
-                    LIMIT ${limitInt} OFFSET ${offsetInt}
-                 ) pg ON TRIM(i.inventory_id) = pg.pick_id
-                 GROUP BY TRIM(i.inventory_id)
-                 ORDER BY TRIM(i.inventory_id) ASC`;
-            } else {
-                query = `
-                SELECT 
-                    TRIM(i.inventory_id) as inventoryId, 
-                    MAX(i.inventory_name) as description, 
-                    MAX(i.item_class) as itemClass, 
-                    MAX(i.item_status) as itemStatus,
-                    MAX(i.base_unit) as baseUnit,
-                    MAX(i.default_price) as price,
-                    MAX(i.moq) as moq,
-                    SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as totalOnHand,
-                    GROUP_CONCAT(DISTINCT CASE WHEN i.default_warehouse != '__catalog__' AND i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
-                 FROM inventory_items i
-                 ${whereClause} 
-                 GROUP BY TRIM(i.inventory_id)
-                 ORDER BY i.inventory_id ASC 
                  LIMIT ${limitInt} OFFSET ${offsetInt}`;
-            }
 
             const [[rows], [[{ total, overallStock }]]] = await Promise.all([
                 pool.query(query, params),
                 pool.query(
                     `SELECT 
                         COUNT(DISTINCT TRIM(i.inventory_id)) as total,
-                        SUM(CASE WHEN i.default_warehouse != '__catalog__' THEN COALESCE(i.on_hand, 0) ELSE 0 END) as overallStock
+                        SUM(COALESCE(i.on_hand, 0)) as overallStock
                      FROM inventory_items i ${whereClause}`,
                     params
                 ),
@@ -1714,41 +1802,24 @@ export const MySqlService = {
                 this.getDimensionIdSet(pageIds),
             ]);
 
-            const enriched = rows.map(r => {
+            const withDims = rows.map((r) => {
                 const key = (r.inventoryId || "").toUpperCase().trim();
                 const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
                 return {
                     ...r,
                     totalOnHand: Number(r.totalOnHand) || 0,
                     totalQtySold: sales.qty_sold,
-                    totalSales: sales.total_sales
+                    totalSales: sales.total_sales,
+                    hasDimensions: dimSet.has(key),
                 };
             });
-
-            const withDims = enriched.map((r) => ({
-                ...r,
-                hasDimensions: dimSet.has((r.inventoryId || "").toUpperCase().trim()),
-            }));
-
-            if (total === 0 && !branch) {
-                const warehouseRows = await countWarehouseRows(effectiveCompanyId);
-                if (warehouseRows === 0) {
-                    const catalog = await this.getStockItemsFromCatalog({
-                        page,
-                        pageSize,
-                        search,
-                        companyId: effectiveCompanyId,
-                        offset,
-                    });
-                    if (catalog.totalCount > 0) return catalog;
-                }
-            }
 
             return {
                 items: withDims,
                 totalCount: total,
                 totalStock: Number(overallStock) || 0,
                 nextCursor: withDims.length ? withDims[withDims.length - 1].inventoryId : null,
+                dataMode: "warehouse",
             };
         } catch (err) {
             console.error("[MySQL getStockItems Error]", err);
@@ -1757,20 +1828,69 @@ export const MySqlService = {
     },
 
     /**
-     * Stock items masterlist from catalog when warehouse levels are not synced yet.
+     * Catalog-first Stock Items list (product types) with warehouse on-hand rollup.
      */
-    async getStockItemsFromCatalog({ page, pageSize, search, companyId, offset }) {
-        const limitInt = parseInt(pageSize, 10);
-        const offsetInt = parseInt(offset, 10);
+    async _getStockItemsFromCatalogWithStock({
+        page,
+        pageSize,
+        offset,
+        limitInt,
+        search,
+        branch,
+        companyId,
+        cursorId,
+    }) {
         const whereParts = ["i.company_id = ?", "i.default_warehouse = '__catalog__'"];
         const params = [companyId];
 
         if (search) {
-            whereParts.push("(i.inventory_id LIKE ? OR i.inventory_name LIKE ?)");
+            whereParts.push(
+                "(UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.inventory_name,'')) LIKE UPPER(?))"
+            );
             params.push(`%${search}%`, `%${search}%`);
+        }
+        if (cursorId) {
+            whereParts.push("TRIM(i.inventory_id) > ?");
+            params.push(cursorId);
         }
 
         const whereClause = `WHERE ${whereParts.join(" AND ")}`;
+
+        // Optional stock rollup (all warehouses, or one branch)
+        let stockJoin = `
+            LEFT JOIN (
+                SELECT
+                    TRIM(w.inventory_id) AS inventory_id,
+                    w.company_id,
+                    SUM(COALESCE(w.on_hand, 0)) AS on_hand,
+                    GROUP_CONCAT(DISTINCT CASE WHEN w.on_hand > 0 THEN w.branch_id END SEPARATOR ', ') AS branches
+                FROM inventory_items w
+                WHERE w.company_id = ?
+                  AND w.default_warehouse != '__catalog__'
+                GROUP BY TRIM(w.inventory_id), w.company_id
+            ) w ON w.inventory_id = TRIM(i.inventory_id) AND w.company_id = i.company_id`;
+        const stockParams = [companyId];
+
+        if (branch && branch !== "All Branches") {
+            stockJoin = `
+            LEFT JOIN (
+                SELECT
+                    TRIM(w.inventory_id) AS inventory_id,
+                    w.company_id,
+                    SUM(COALESCE(w.on_hand, 0)) AS on_hand,
+                    GROUP_CONCAT(DISTINCT CASE WHEN w.on_hand > 0 THEN w.branch_id END SEPARATOR ', ') AS branches
+                FROM inventory_items w
+                WHERE w.company_id = ?
+                  AND w.default_warehouse != '__catalog__'
+                  AND UPPER(TRIM(w.branch_id)) = UPPER(TRIM(?))
+                GROUP BY TRIM(w.inventory_id), w.company_id
+            ) w ON w.inventory_id = TRIM(i.inventory_id) AND w.company_id = i.company_id`;
+            stockParams.push(branch);
+        }
+
+        const offsetInt = parseInt(offset, 10) || 0;
+        const lim = parseInt(limitInt || pageSize, 10) || 50;
+
         const query = `
             SELECT
                 TRIM(i.inventory_id) as inventoryId,
@@ -1780,46 +1900,76 @@ export const MySqlService = {
                 i.base_unit as baseUnit,
                 i.default_price as price,
                 i.moq as moq,
-                0 as totalOnHand,
-                '' as branches
+                COALESCE(w.on_hand, 0) as totalOnHand,
+                COALESCE(w.branches, '') as branches
              FROM inventory_items i
+             ${stockJoin}
              ${whereClause}
-             ORDER BY i.inventory_id ASC
-             LIMIT ${limitInt} OFFSET ${offsetInt}`;
+             ORDER BY TRIM(i.inventory_id) ASC
+             LIMIT ${lim} ${cursorId ? "" : `OFFSET ${offsetInt}`}`;
 
-        const [rows] = await pool.query(query, params);
-        const [[{ total }]] = await pool.query(
-            `SELECT COUNT(*) AS total FROM inventory_items i ${whereClause}`,
-            params
-        );
+        const stockWhere = `
+            FROM inventory_items w
+            WHERE w.company_id = ?
+              AND w.default_warehouse != '__catalog__'
+              ${branch && branch !== "All Branches" ? "AND UPPER(TRIM(w.branch_id)) = UPPER(TRIM(?))" : ""}
+        `;
+        const stockSumParams =
+            branch && branch !== "All Branches" ? [companyId, branch] : [companyId];
+
+        const [[rows], [[{ total }]], [[{ overallStock }]]] = await Promise.all([
+            pool.query(query, [...stockParams, ...params]),
+            pool.query(
+                `SELECT COUNT(*) AS total FROM inventory_items i ${whereClause}`,
+                params
+            ),
+            pool.query(
+                `SELECT COALESCE(SUM(COALESCE(w.on_hand, 0)), 0) AS overallStock ${stockWhere}`,
+                stockSumParams
+            ),
+        ]);
 
         const pageIds = rows.map((r) => r.inventoryId);
         const [salesMap, dimSet] = await Promise.all([
-            this.getPeriodicSalesSummaryForIds({ ids: pageIds }),
+            this.getPeriodicSalesSummaryForIds({ ids: pageIds, branch }),
             this.getDimensionIdSet(pageIds),
         ]);
-        const enriched = rows.map((r) => {
+
+        const withDims = rows.map((r) => {
             const key = (r.inventoryId || "").toUpperCase().trim();
             const sales = salesMap.get(key) || { qty_sold: 0, total_sales: 0 };
             return {
                 ...r,
-                totalOnHand: 0,
+                totalOnHand: Number(r.totalOnHand) || 0,
                 totalQtySold: sales.qty_sold,
                 totalSales: sales.total_sales,
+                hasDimensions: dimSet.has(key),
             };
         });
 
-        const withDims = enriched.map((r) => ({
-            ...r,
-            hasDimensions: dimSet.has((r.inventoryId || "").toUpperCase().trim()),
-        }));
-
         return {
             items: withDims,
-            totalCount: total,
-            totalStock: 0,
+            totalCount: Number(total) || 0,
+            totalStock: Number(overallStock) || 0,
+            nextCursor: withDims.length ? withDims[withDims.length - 1].inventoryId : null,
             dataMode: "catalog",
         };
+    },
+
+    /**
+     * Stock items masterlist from catalog when warehouse levels are not synced yet.
+     */
+    async getStockItemsFromCatalog({ page, pageSize, search, companyId, offset }) {
+        return this._getStockItemsFromCatalogWithStock({
+            page,
+            pageSize,
+            offset,
+            limitInt: pageSize,
+            search,
+            branch: "",
+            companyId,
+            cursorId: "",
+        });
     },
 
     /**
@@ -2484,6 +2634,73 @@ export const MySqlService = {
         return Number(c) || 0;
     },
 
+    // ── Persistent app sessions (survive restarts; logout clears) ─
+
+    async ensureAppSessionsTable() {
+        if (MySqlService._appSessionsReady) return true;
+        try {
+            await this.ensureAppUsersTable();
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS app_sessions (
+                  session_id VARCHAR(64) NOT NULL,
+                  user_id INT UNSIGNED NOT NULL,
+                  active_company_id VARCHAR(32) NOT NULL DEFAULT 'main',
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (session_id),
+                  KEY idx_app_sessions_user (user_id),
+                  KEY idx_app_sessions_seen (last_seen_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            MySqlService._appSessionsReady = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureAppSessionsTable]", err.message);
+            return false;
+        }
+    },
+
+    async upsertAppSession({ sessionId, userId, activeCompanyId = "main" } = {}) {
+        await this.ensureAppSessionsTable();
+        await purchasePool.execute(
+            `INSERT INTO app_sessions (session_id, user_id, active_company_id)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               user_id = VALUES(user_id),
+               active_company_id = VALUES(active_company_id),
+               last_seen_at = CURRENT_TIMESTAMP`,
+            [String(sessionId), Number(userId), String(activeCompanyId || "main")]
+        );
+        return true;
+    },
+
+    async getAppSession(sessionId) {
+        await this.ensureAppSessionsTable();
+        const [rows] = await purchasePool.execute(
+            `SELECT session_id, user_id, active_company_id, created_at, last_seen_at
+             FROM app_sessions WHERE session_id = ? LIMIT 1`,
+            [String(sessionId || "")]
+        );
+        return rows[0] || null;
+    },
+
+    async touchAppSession(sessionId) {
+        await this.ensureAppSessionsTable();
+        await purchasePool.execute(
+            `UPDATE app_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE session_id = ?`,
+            [String(sessionId || "")]
+        );
+    },
+
+    async deleteAppSession(sessionId) {
+        await this.ensureAppSessionsTable();
+        const [result] = await purchasePool.execute(
+            `DELETE FROM app_sessions WHERE session_id = ?`,
+            [String(sessionId || "")]
+        );
+        return result.affectedRows > 0;
+    },
+
     /**
      * Bulk upsert branches
      */
@@ -2663,6 +2880,26 @@ export const MySqlService = {
         }
     },
 
+    /** Inventory IDs with sellable on-hand (excludes DAMAGE / DISCOUNTED warehouses). */
+    async listStockedInventoryIds({ companyId = "main", limit = 120 } = {}) {
+        const lim = Math.min(500, Math.max(1, parseInt(limit, 10) || 120));
+        const [rows] = await pool.query(
+            `SELECT DISTINCT TRIM(inventory_id) AS inventory_id
+             FROM inventory_items
+             WHERE company_id = ?
+               AND default_warehouse != '__catalog__'
+               AND UPPER(TRIM(COALESCE(default_warehouse, ''))) NOT LIKE '%DAMAGE%'
+               AND UPPER(TRIM(COALESCE(default_warehouse, ''))) NOT LIKE '%DISCOUNTED%'
+               AND UPPER(TRIM(COALESCE(branch_id, ''))) NOT LIKE '%DAMAGE%'
+               AND UPPER(TRIM(COALESCE(branch_id, ''))) NOT LIKE '%DISCOUNTED%'
+               AND COALESCE(on_hand, 0) > 0
+             ORDER BY on_hand DESC
+             LIMIT ${lim}`,
+            [companyId]
+        );
+        return rows.map((r) => String(r.inventory_id || "").trim()).filter(Boolean);
+    },
+
     /**
      * Bulk upsert inventory levels.
      */
@@ -2718,6 +2955,8 @@ export const MySqlService = {
             }
             await connection.commit();
             invalidateCache("branches:");
+            invalidateCache("global-stats-v5:");
+            invalidateCache("global-stats-v4:");
             invalidateCache("global-stats-v3:");
             invalidateCache("wh-count:");
             invalidateCache("cat-count:");

@@ -144,6 +144,133 @@ export function aggregateSummaryByWarehouse(summaryResults = []) {
 }
 
 /**
+ * Aggregate DAMAGE / DISCOUNTED qty from Inventory Summary into one DAMAGE row per item.
+ * Sellable warehouse totals still exclude these; this is for the Damage KPI only.
+ */
+export function extractDamageLevelsFromSummary(
+    inventoryId,
+    summaryResults = [],
+    catalogFields = {},
+    item = null
+) {
+    const invId = String(inventoryId || "").trim();
+    if (!invId) return [];
+
+    let onHand = 0;
+    let available = 0;
+    let found = false;
+
+    for (const row of summaryResults) {
+        const warehouseId = String(getAny(row, "WarehouseID", "SiteID", "Branch") || "").trim();
+        const locationId = String(getAny(row, "LocationID", "Location") || "").trim();
+        const isDamage =
+            isExcludedBranchAlias(warehouseId) || isExcludedLocationAlias(locationId);
+        if (!isDamage) continue;
+
+        found = true;
+        const qty = parseFloat(getAny(row, "QtyOnHand", "OnHand", "BaseQty") || 0);
+        const rawAvail = getAny(
+            row,
+            "QtyAvailable",
+            "Available",
+            "QtyAvailableForShipment",
+            "QtyAvail"
+        );
+        let avail = rawAvail === "" || rawAvail == null ? NaN : parseFloat(rawAvail);
+        if (Number.isNaN(avail)) avail = Number.isNaN(qty) ? 0 : qty;
+        onHand += Number.isNaN(qty) ? 0 : qty;
+        available += Number.isNaN(avail) ? 0 : avail;
+    }
+
+    // WarehouseDetails fallback: whole warehouses named DAMAGE / DISCOUNTED
+    if (item) {
+        let wds = item.WarehouseDetails || [];
+        if (wds && !Array.isArray(wds) && wds.value) wds = wds.value;
+        if (Array.isArray(wds)) {
+            for (const wh of wds) {
+                const siteId = String(
+                    getAny(wh, "SiteID", "Branch", "BranchID", "LinkBranch") ||
+                        getAny(wh, "WarehouseID")
+                ).trim();
+                const warehouseId = String(getAny(wh, "WarehouseID") || siteId).trim();
+                if (!isExcludedBranchAlias(siteId) && !isExcludedBranchAlias(warehouseId)) {
+                    continue;
+                }
+                found = true;
+                const qty = parseFloat(getAny(wh, "QtyOnHand", "OnHand", "Qty") || 0);
+                const rawAvail = getAny(
+                    wh,
+                    "QtyAvailable",
+                    "Available",
+                    "QtyAvail",
+                    "AvailableQty",
+                    "QtyHardAvailable"
+                );
+                let avail = rawAvail === "" || rawAvail == null ? NaN : parseFloat(rawAvail);
+                if (Number.isNaN(avail)) avail = Number.isNaN(qty) ? 0 : qty;
+                onHand += Number.isNaN(qty) ? 0 : qty;
+                available += Number.isNaN(avail) ? 0 : avail;
+            }
+        }
+    }
+
+    if (!found) return [];
+
+    return [
+        {
+            inventory_id: invId,
+            branch_id: "DAMAGE",
+            site_id: "DAMAGE",
+            warehouse_id: "DAMAGE",
+            on_hand: onHand,
+            available,
+            ...catalogFields,
+            item_type: catalogFields.item_type || (item ? getF(item, "ItemType") : "") || "",
+            posting_class:
+                catalogFields.posting_class || (item ? getF(item, "PostingClass") : "") || "",
+        },
+    ];
+}
+
+/**
+ * Flatten Inventory Summary rows into location-level lines for tracing.
+ */
+export function mapSummaryLocations(summaryResults = []) {
+    const locations = [];
+    for (const row of summaryResults) {
+        const warehouseId = String(getAny(row, "WarehouseID", "SiteID", "Branch") || "").trim();
+        const locationId = String(getAny(row, "LocationID", "Location") || "").trim();
+        if (!warehouseId && !locationId) continue;
+        const onHand = parseFloat(getAny(row, "QtyOnHand", "OnHand", "BaseQty") || 0);
+        const rawAvail = getAny(
+            row,
+            "QtyAvailable",
+            "Available",
+            "QtyAvailableForShipment",
+            "QtyAvail"
+        );
+        let available = rawAvail === "" || rawAvail == null ? NaN : parseFloat(rawAvail);
+        if (Number.isNaN(available)) available = Number.isNaN(onHand) ? 0 : onHand;
+        const isDamage =
+            isExcludedBranchAlias(warehouseId) || isExcludedLocationAlias(locationId);
+        locations.push({
+            warehouseId: warehouseId || "—",
+            locationId: locationId || "—",
+            onHand: Number.isNaN(onHand) ? 0 : onHand,
+            available: Number.isNaN(available) ? 0 : available,
+            isDamage,
+        });
+    }
+    locations.sort((a, b) => {
+        if (a.warehouseId !== b.warehouseId) {
+            return a.warehouseId.localeCompare(b.warehouseId);
+        }
+        return String(a.locationId).localeCompare(String(b.locationId));
+    });
+    return locations;
+}
+
+/**
  * Build per-warehouse levels from Inventory Summary (location-accurate).
  * - Warehouses present in Summary: use Summary totals (0 if only DAMAGE/DISCOUNTED).
  * - Warehouses only in WarehouseDetails fallback: keep fallback qty (Summary omitted them).
@@ -405,28 +532,51 @@ export const AcumaticaService = {
     async resolveWarehouseLevels(item, catalogFields = {}, cookie) {
         const fallback = extractWarehouseLevels(item, catalogFields);
         const invId = String(getF(item, "InventoryID") || catalogFields.inventory_id || "").trim();
-        if (!invId || !cookie) return fallback;
+        const damageFromDetails = extractDamageLevelsFromSummary(invId, [], catalogFields, item);
+
+        if (!invId || !cookie) {
+            return { levels: fallback, damageLevels: damageFromDetails };
+        }
 
         const hasStock = fallback.some(
             (l) => (Number(l.on_hand) || 0) > 0 || (Number(l.available) || 0) > 0
         );
-        if (!hasStock) return fallback;
+        // Always probe Inventory Summary when sellable stock exists OR WarehouseDetails
+        // already showed a DAMAGE/DISCOUNTED site — location-level damage lives in Summary.
+        const needsSummary = hasStock || damageFromDetails.length > 0;
+        if (!needsSummary) {
+            return { levels: fallback, damageLevels: damageFromDetails };
+        }
 
         try {
             const results = await this.getInventorySummaryResults(invId, cookie);
-            if (!results.length) return fallback;
-            return extractWarehouseLevelsFromSummary(invId, results, catalogFields, fallback);
+            if (!results.length) {
+                return { levels: fallback, damageLevels: damageFromDetails };
+            }
+            const damageLevels = extractDamageLevelsFromSummary(
+                invId,
+                results,
+                catalogFields,
+                item
+            );
+            return {
+                levels: extractWarehouseLevelsFromSummary(invId, results, catalogFields, fallback),
+                // Prefer summary damage; fall back to WarehouseDetails-only damage
+                damageLevels: damageLevels.length ? damageLevels : damageFromDetails,
+            };
         } catch (err) {
             console.warn(`[Acumatica] Inventory Summary failed for ${invId}:`, err.message);
-            return fallback;
+            return { levels: fallback, damageLevels: damageFromDetails };
         }
     },
 
     /**
      * Resolve warehouse levels for many StockItems with limited concurrency.
+     * Returns sellable levels plus aggregated DAMAGE rows for the Damage KPI.
      */
     async resolveWarehouseLevelsBatch(itemsWithCatalog, cookie, concurrency = 8) {
-        const out = [];
+        const levels = [];
+        const damageLevels = [];
         for (let i = 0; i < itemsWithCatalog.length; i += concurrency) {
             const slice = itemsWithCatalog.slice(i, i + concurrency);
             const batch = await Promise.all(
@@ -435,13 +585,29 @@ export const AcumaticaService = {
                         return await this.resolveWarehouseLevels(item, catalogFields, cookie);
                     } catch (err) {
                         console.warn("[Acumatica] resolveWarehouseLevels:", err.message);
-                        return extractWarehouseLevels(item, catalogFields);
+                        return {
+                            levels: extractWarehouseLevels(item, catalogFields),
+                            damageLevels: extractDamageLevelsFromSummary(
+                                getF(item, "InventoryID"),
+                                [],
+                                catalogFields,
+                                item
+                            ),
+                        };
                     }
                 })
             );
-            for (const levels of batch) out.push(...levels);
+            for (const part of batch) {
+                if (Array.isArray(part)) {
+                    // Legacy array return safety
+                    levels.push(...part);
+                } else {
+                    levels.push(...(part.levels || []));
+                    damageLevels.push(...(part.damageLevels || []));
+                }
+            }
         }
-        return out;
+        return { levels, damageLevels };
     },
 
     /** Acumatica Branch master (organizational units) — never Warehouse. */
@@ -568,7 +734,8 @@ export const AcumaticaService = {
                 posting_class: getF(item, "PostingClass"),
             },
         }));
-        const levels = await this.resolveWarehouseLevelsBatch(prepared, cookie, 8);
+        const resolved = await this.resolveWarehouseLevelsBatch(prepared, cookie, 8);
+        const levels = Array.isArray(resolved) ? resolved : resolved?.levels || [];
 
         let flattened = [];
         const levelsByItem = new Map();

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionMeta } from "@/lib/session-store";
 import { buildAppRedirectUrl, getBasePath, clearAllCookies } from "@/lib/base-path";
+import { hydrateSessionFromDb } from "@/lib/persist-session";
 
 const PUBLIC_PATHS = [
     "/signin",
@@ -38,11 +39,10 @@ function isKnownSession(sessionId) {
     return Object.keys(meta.companies).length > 0;
 }
 
-export function proxy(request) {
+export async function proxy(request) {
     const { pathname: rawPathname } = request.nextUrl;
     const pathname = normalizePath(rawPathname);
 
-    // Allow static assets through unconditionally
     const isStatic =
         pathname.startsWith("/_next") ||
         pathname.startsWith("/favicon");
@@ -57,39 +57,49 @@ export function proxy(request) {
         request.nextUrl.searchParams.get("expired") === "1" ||
         request.nextUrl.searchParams.get("force") === "1";
 
-    // Signed-in users visiting /signin — unless session expired or cookie is stale
+    // Rebuild in-memory session from MySQL after server restart
+    if (sessionId && !isKnownSession(sessionId)) {
+        try {
+            await hydrateSessionFromDb(sessionId);
+        } catch (err) {
+            console.warn("[Middleware] Session hydrate failed:", err.message);
+        }
+    }
+
     if (sessionId && pathname.startsWith("/signin")) {
-        if (forceSignIn || !isKnownSession(sessionId)) {
-            if (!isKnownSession(sessionId)) {
-                console.log("[Middleware] Stale session cookie on /signin — clearing cookie");
-                return clearSessionCookie(request, NextResponse.next());
-            }
+        if (forceSignIn) {
             return NextResponse.next();
+        }
+        if (!isKnownSession(sessionId)) {
+            // Cookie without a recoverable session — allow sign-in page, clear stale cookie
+            console.log("[Middleware] Stale session cookie on /signin — clearing cookie");
+            return clearSessionCookie(request, NextResponse.next());
         }
         console.log(`[Middleware] Already authenticated — redirecting /signin → /dashboard`);
         return redirectTo(request, "/dashboard");
     }
 
-    // Allow auth API routes through without a session
     const isAuthApi = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
     if (isAuthApi) {
         console.log(`[Middleware] Public API path — allowing through`);
         return NextResponse.next();
     }
 
-    // All other routes require a valid session cookie
     if (!sessionId) {
         console.log(`[Middleware] No session — redirecting ${pathname} → /signin`);
         return redirectTo(request, "/signin");
     }
 
-    // Cookie present but server no longer knows this session (e.g. dev restart)
     if (!isKnownSession(sessionId)) {
-        console.log(`[Middleware] Unknown session — clearing cookie and redirecting to /signin`);
+        // Still unknown after hydrate — require login (no silent auto-logout loop with banner)
+        console.log(`[Middleware] Unknown session — redirecting to /signin`);
         if (pathname.startsWith("/api/")) {
-            return clearSessionCookie(request, NextResponse.next());
+            return clearSessionCookie(
+                request,
+                NextResponse.json({ message: "Unauthorized" }, { status: 401 })
+            );
         }
-        return clearSessionCookie(request, redirectTo(request, "/signin?expired=1"));
+        return clearSessionCookie(request, redirectTo(request, "/signin"));
     }
 
     console.log(`[Middleware] Session valid — allowing ${pathname}`);
@@ -98,14 +108,6 @@ export function proxy(request) {
 
 export const config = {
     matcher: [
-        /*
-         * Match all request paths except for the ones starting with:
-         * - api/auth (authentication endpoints)
-         * - _next/static (static files)
-         * - _next/image (image optimization files)
-         * - favicon.ico (favicon file)
-         * - all files in the public folder (e.g., logo, images)
-         */
         "/((?!api/auth|_next/static|_next/image|favicon.ico|.*\\..*).*)",
     ],
 };
