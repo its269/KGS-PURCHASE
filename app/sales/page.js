@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, memo, Fragment, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { fetchWithAuth } from "@/lib/api-client";
+import PaginationBar from "@/components/PaginationBar";
 import "@/styles/dashboard.css";
 import "@/styles/sales.css";
 
@@ -362,35 +363,15 @@ export default function SalesPeriodicPage() {
                             </table>
                         </div>
 
-                        {pagination.totalItems > 0 && pagination.totalPages > 1 && (
-                            <div className="db-pagination">
-                                <span className="db-page-info">
-                                    Showing <strong>{((currentPage - 1) * pageSize) + 1}</strong> to <strong>{Math.min(currentPage * pageSize, pagination.totalItems)}</strong> of <strong>{pagination.totalItems}</strong> unique items
-                                </span>
-                                <div className="db-page-btns">
-                                    <button
-                                        className="db-page-btn"
-                                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                                        disabled={currentPage === 1 || refreshing}
-                                        title="Previous Page"
-                                    >
-                                        <IconChevronLeft />
-                                    </button>
-
-                                    <span className="db-page-dots" style={{ minWidth: "100px" }}>
-                                        Page {currentPage} of {pagination.totalPages}
-                                    </span>
-
-                                    <button
-                                        className="db-page-btn"
-                                        onClick={() => setCurrentPage((p) => Math.min(pagination.totalPages, p + 1))}
-                                        disabled={currentPage === pagination.totalPages || refreshing}
-                                        title="Next Page"
-                                    >
-                                        <IconChevronRight />
-                                    </button>
-                                </div>
-                            </div>
+                        {pagination.totalItems > 0 && (
+                            <PaginationBar
+                                page={currentPage}
+                                pageSize={pageSize}
+                                totalCount={pagination.totalItems}
+                                onPageChange={setCurrentPage}
+                                itemLabel="unique items"
+                                disabled={refreshing}
+                            />
                         )}
                     </>
                 )}

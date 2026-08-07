@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
+import PaginationBar from "@/components/PaginationBar";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/inventory-detail.css";
@@ -473,18 +474,13 @@ export default function SuppliersPage() {
                 </div>
 
                 {!loading && (
-                    <div className="db-pagination" style={{ marginTop: '2rem' }}>
-                        <span className="db-page-info">Page <strong>{page}</strong></span>
-                        <div className="db-page-btns">
-                            <button className="db-page-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
-                                <IconChevronLeft />
-                            </button>
-                            <span className="db-page-dots">Page {page}</span>
-                            <button className="db-page-btn" onClick={() => setPage(p => p + 1)} disabled={!hasMore}>
-                                <IconChevronRight />
-                            </button>
-                        </div>
-                    </div>
+                    <PaginationBar
+                        page={page}
+                        pageSize={PAGE_SIZE}
+                        hasMore={hasMore}
+                        onPageChange={setPage}
+                        itemLabel="suppliers"
+                    />
                 )}
             </main>
 

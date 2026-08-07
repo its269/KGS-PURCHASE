@@ -3260,6 +3260,35 @@ export const MySqlService = {
         };
     },
 
+    async getItemDimensionsBatch(inventoryIds = []) {
+        await this.ensureItemDimensionsTable();
+        const ids = [...new Set(inventoryIds.map((id) => String(id || "").trim()).filter(Boolean))];
+        if (!ids.length) return {};
+        const [rows] = await pool.query(
+            `SELECT inventory_id, pcs_per_box, length_m, height_m, width_m, weight_kg, cbm, updated_at
+             FROM item_dimensions
+             WHERE TRIM(UPPER(inventory_id)) IN (${ids.map(() => "TRIM(UPPER(?))").join(",")})`,
+            ids
+        );
+        const out = {};
+        for (const r of rows) {
+            const key = String(r.inventory_id || "").trim();
+            if (!key) continue;
+            out[key] = {
+                inventoryId: key,
+                pcs_per_box: r.pcs_per_box != null ? Number(r.pcs_per_box) : null,
+                length_m: r.length_m != null ? Number(r.length_m) : null,
+                height_m: r.height_m != null ? Number(r.height_m) : null,
+                width_m: r.width_m != null ? Number(r.width_m) : null,
+                weight_kg: r.weight_kg != null ? Number(r.weight_kg) : null,
+                cbm: r.cbm != null ? Number(r.cbm) : null,
+                updatedAt: r.updated_at,
+            };
+            out[key.toUpperCase()] = out[key];
+        }
+        return out;
+    },
+
     async upsertItemDimensions(inventoryId, data) {
         await this.ensureItemDimensionsTable();
         await pool.execute(

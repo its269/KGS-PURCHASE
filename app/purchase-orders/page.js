@@ -4,6 +4,8 @@ import { Fragment, useState, useEffect, useCallback, useRef, useMemo } from "rea
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
+import PaginationBar from "@/components/PaginationBar";
+import { calcTotalCbm, formatCbm } from "@/lib/item-dimensions";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/po.css";
@@ -92,6 +94,11 @@ function toDateKey(d) {
 /** Today's date as ISO yyyy-mm-dd (local) */
 function todayIso() {
     return toDateKey(new Date());
+}
+
+/** First day of the current calendar year as ISO yyyy-mm-dd */
+function yearStartIso() {
+    return `${new Date().getFullYear()}-01-01`;
 }
 
 /** Display ISO / date value as yyyy/mm/dd */
@@ -638,7 +645,7 @@ export default function PurchaseOrdersPage() {
     const [hasMore, setHasMore] = useState(false);
     const [search, setSearch] = useState("");
     const [debSearch, setDebSearch] = useState("");
-    const [startDate, setStartDate] = useState(() => todayIso());
+    const [startDate, setStartDate] = useState(() => yearStartIso());
     const [endDate, setEndDate] = useState(() => todayIso());
     const [status, setStatus] = useState("Open");
     const [selectedBranch, setSelectedBranch] = useState("");
@@ -647,6 +654,7 @@ export default function PurchaseOrdersPage() {
     const [error, setError] = useState(null);
     const [expanded, setExpanded] = useState({}); // orderNbr -> bool
     const [selectedId, setSelectedId] = useState(null);
+    const [lineDimensions, setLineDimensions] = useState({}); // inventoryId -> dims
     const [userInputs, setUserInputs] = useState({}); // key -> { eta, userStatus }
     const [statusGuideTab, setStatusGuideTab] = useState(USER_STATUS_OPTIONS[0]);
     const [userStatusTableFilter, setUserStatusTableFilter] = useState("");
@@ -704,12 +712,13 @@ export default function PurchaseOrdersPage() {
         const savedStatus = localStorage.getItem("po_filter_status");
         const savedBranch = localStorage.getItem("po_filter_branch") || "";
         const today = todayIso();
+        const yearStart = yearStartIso();
 
         Promise.resolve().then(async () => {
-            // 1. Load filters — From/To always default to current date
+            // 1. Load filters — From defaults to Jan 1 of current year; To = today
             if (savedPage) setPage(parseInt(savedPage));
             if (savedSearch) setSearch(savedSearch);
-            setStartDate(today);
+            setStartDate(yearStart);
             setEndDate(today);
             if (savedStatus) setStatus(savedStatus);
             if (savedBranch) setSelectedBranch(savedBranch);
@@ -957,7 +966,41 @@ export default function PurchaseOrdersPage() {
         fetchOrders();
     }, [fetchOrders]);
 
+    // Load packaging dimensions for line Total CBM
+    useEffect(() => {
+        const ids = [
+            ...new Set(
+                orders.flatMap((o) => (o.lines || []).map((l) => String(l.inventoryId || "").trim()).filter(Boolean))
+            ),
+        ];
+        if (!ids.length) return;
+        let active = true;
+        (async () => {
+            try {
+                const res = await fetchWithAuth(
+                    `/api/stock-items/dimensions?ids=${ids.map(encodeURIComponent).join(",")}`
+                );
+                if (!res.ok || !active) return;
+                const data = await res.json();
+                if (active && data.dimensions) {
+                    setLineDimensions((prev) => ({ ...prev, ...data.dimensions }));
+                }
+            } catch (err) {
+                console.error("Failed to load item dimensions", err);
+            }
+        })();
+        return () => {
+            active = false;
+        };
+    }, [orders]);
+
     const toggleExpand = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
+
+    const lookupLineDim = (inventoryId) => {
+        if (!inventoryId) return null;
+        const id = String(inventoryId).trim();
+        return lineDimensions[id] || lineDimensions[id.toUpperCase()] || null;
+    };
 
     const summaryStats = useMemo(() => {
         const totalValue = orders.reduce((sum, o) => sum + (Number(o.totalAmount) || 0), 0);
@@ -1343,8 +1386,8 @@ export default function PurchaseOrdersPage() {
                                                     value={ui.origin || ""}
                                                     onChange={(e) => handleUserInput(key, "origin", e.target.value)}
                                                 >
-                                                    <option value="">— Select —</option>
-                                                    <option value="Philippines">Philippines (Local)</option>
+                                                    <option value="">—</option>
+                                                    <option value="Philippines">Philippines</option>
                                                     <option value="China">China</option>
                                                 </select>
                                             </td>
@@ -1434,11 +1477,22 @@ export default function PurchaseOrdersPage() {
                                                                     <th style={{ width: 180 }}>Item ID</th>
                                                                     <th>Description</th>
                                                                     <th style={{ textAlign: 'right', width: 120 }}>Quantity</th>
+                                                                    <th style={{ textAlign: 'right', width: 110 }}>Total CBM</th>
                                                                     <th style={{ textAlign: 'right', width: 150 }}>Ext. Cost</th>
                                                                 </tr>
                                                             </thead>
                                                             <tbody>
-                                                                {po.lines && po.lines.length > 0 ? po.lines.map((line, i) => (
+                                                                {po.lines && po.lines.length > 0 ? po.lines.map((line, i) => {
+                                                                    const dim = lookupLineDim(line.inventoryId);
+                                                                    const totalCbm = calcTotalCbm({
+                                                                        length_m: dim?.length_m,
+                                                                        height_m: dim?.height_m,
+                                                                        width_m: dim?.width_m,
+                                                                        cbm: dim?.cbm,
+                                                                        pcs_per_box: dim?.pcs_per_box,
+                                                                        qty: line.qty,
+                                                                    });
+                                                                    return (
                                                                     <tr key={i}>
                                                                         <td>
                                                                             <span 
@@ -1452,10 +1506,14 @@ export default function PurchaseOrdersPage() {
                                                                         <td style={{ textAlign: 'right', fontWeight: '700', color: 'var(--text-primary)' }}>
                                                                             {Number(line.qty).toLocaleString()} <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{line.uom}</span>
                                                                         </td>
+                                                                        <td style={{ textAlign: 'right', fontWeight: '700', color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }} title={dim ? "From L×H×W and PCS/BOX" : "Set packaging dimensions on the item"}>
+                                                                            {formatCbm(totalCbm, 4)}
+                                                                        </td>
                                                                         <td style={{ textAlign: 'right', fontWeight: '700', color: 'var(--accent-primary)' }}>₱{fmt(line.extCost)}</td>
                                                                     </tr>
-                                                                )) : (
-                                                                    <tr><td colSpan={4} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>No line items found for this order.</td></tr>
+                                                                    );
+                                                                }) : (
+                                                                    <tr><td colSpan={5} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>No line items found for this order.</td></tr>
                                                                 )}
                                                             </tbody>
                                                         </table>
@@ -1471,23 +1529,41 @@ export default function PurchaseOrdersPage() {
                 </div>
 
                 {!loading && (
-                    <div className="db-pagination">
-                        <span className="db-page-info">Showing page <strong>{page}</strong></span>
-                        <div className="db-page-btns">
-                            <button className="db-page-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
-                                <IconChevronLeft />
-                            </button>
-                            <span className="db-page-dots">Page {page}</span>
-                            <button className="db-page-btn" onClick={() => setPage(p => p + 1)} disabled={!hasMore}>
-                                <IconChevronRight />
-                            </button>
-                        </div>
-                    </div>
+                    <PaginationBar
+                        page={page}
+                        pageSize={PAGE_SIZE}
+                        hasMore={hasMore}
+                        onPageChange={setPage}
+                        itemLabel="orders"
+                        disabled={loading}
+                    />
                 )}
             </main>
 
             {selectedId && (
-                <InventoryDetailModal inventoryId={selectedId} onClose={() => setSelectedId(null)} />
+                <InventoryDetailModal
+                    inventoryId={selectedId}
+                    onClose={() => setSelectedId(null)}
+                    onDimensionsSaved={(dims) => {
+                        if (!dims) return;
+                        const id = String(dims.inventoryId || selectedId || "").trim();
+                        if (!id) return;
+                        const entry = {
+                            inventoryId: id,
+                            pcs_per_box: dims.pcs_per_box ?? null,
+                            length_m: dims.length_m ?? null,
+                            height_m: dims.height_m ?? null,
+                            width_m: dims.width_m ?? null,
+                            weight_kg: dims.weight_kg ?? null,
+                            cbm: dims.cbm ?? null,
+                        };
+                        setLineDimensions((prev) => ({
+                            ...prev,
+                            [id]: entry,
+                            [id.toUpperCase()]: entry,
+                        }));
+                    }}
+                />
             )}
         </div>
     );

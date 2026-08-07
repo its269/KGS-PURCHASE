@@ -5,6 +5,7 @@ import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
 import { DIMENSION_FIELDS } from "@/lib/item-dimensions";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
+import PaginationBar from "@/components/PaginationBar";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 
@@ -531,38 +532,14 @@ export default function StockItemsPage() {
                     </div>
                 </div>
 
-                {!loading && totalPages > 1 && (
-                    <div className="si-pagination">
-                        <span className="si-page-info">
-                            Showing{" "}
-                            <strong>{(page - 1) * PAGE_SIZE + 1}</strong> to{" "}
-                            <strong>{Math.min(page * PAGE_SIZE, totalCount)}</strong> of{" "}
-                            <strong>{totalCount.toLocaleString()}</strong>
-                        </span>
-                        <div className="si-page-btns">
-                            <button
-                                type="button"
-                                className="si-page-btn"
-                                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                                disabled={page === 1}
-                                aria-label="Previous page"
-                            >
-                                <IconChevronLeft />
-                            </button>
-                            <span className="si-page-dots">
-                                Page {page} of {totalPages}
-                            </span>
-                            <button
-                                type="button"
-                                className="si-page-btn"
-                                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                                disabled={page === totalPages}
-                                aria-label="Next page"
-                            >
-                                <IconChevronRight />
-                            </button>
-                        </div>
-                    </div>
+                {!loading && totalCount > 0 && (
+                    <PaginationBar
+                        page={page}
+                        pageSize={PAGE_SIZE}
+                        totalCount={totalCount}
+                        onPageChange={setPage}
+                        itemLabel="items"
+                    />
                 )}
             </main>
 

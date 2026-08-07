@@ -387,6 +387,13 @@
     border-color: var(--accent-primary);
 }
 
+.idm-dim-field-calc .idm-dim-input {
+    opacity: 0.92;
+    cursor: default;
+    background: var(--bg-surface);
+    font-weight: 700;
+}
+
 .idm-dim-actions {
     display: flex;
     align-items: center;

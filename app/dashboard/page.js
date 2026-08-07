@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef, memo } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
+import PaginationBar from "@/components/PaginationBar";
 import "@/styles/dashboard.css";
 
 /* ── SVG Icons ─────────────────────────────────────────────── */
@@ -616,14 +617,16 @@ export default function DashboardPage() {
                     </div>
                 </div>
 
-                <div className="db-pagination">
-                    <span className="db-page-info">Showing {allInventory.length} items</span>
-                    <div className="db-page-btns">
-                        <button className="db-page-btn" disabled={page === 1} onClick={() => setPage(p => p - 1)}>&lsaquo;</button>
-                        <span className="db-page-dots">Page {page}</span>
-                        <button className="db-page-btn" disabled={!hasMore} onClick={() => setPage(p => p + 1)}>&rsaquo;</button>
-                    </div>
-                </div>
+                {!loading && (
+                    <PaginationBar
+                        page={page}
+                        pageSize={ROWS_PER_PAGE}
+                        totalCount={totalCount}
+                        hasMore={hasMore}
+                        onPageChange={setPage}
+                        itemLabel="items"
+                    />
+                )}
 
             </main>
 

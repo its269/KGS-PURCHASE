@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
 import { buildReplenishmentInsight, TARGET_DAYS_OF_COVER } from "@/lib/replenishment-insights";
+import PaginationBar from "@/components/PaginationBar";
 import "@/styles/dashboard.css";
 import "@/styles/inventory-detail.css";
 import "@/styles/replenishment.css";
@@ -941,20 +942,13 @@ export default function ReplenishmentPage() {
                 </div>
 
                 {filteredRecs.length > 0 && (
-                    <div className="db-pagination">
-                        <span className="db-page-info">
-                            Showing <strong>{(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filteredRecs.length)}</strong> of <strong>{filteredRecs.length}</strong>
-                        </span>
-                        <div className="db-page-btns">
-                            <button className="db-page-btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
-                                <IconChevronLeft />
-                            </button>
-                            <span className="db-page-dots">Page {page} of {totalPages}</span>
-                            <button className="db-page-btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
-                                <IconChevronRight />
-                            </button>
-                        </div>
-                    </div>
+                    <PaginationBar
+                        page={page}
+                        pageSize={PAGE_SIZE}
+                        totalCount={filteredRecs.length}
+                        onPageChange={setPage}
+                        itemLabel="recommendations"
+                    />
                 )}
 
                 {meta?.generatedAt && (

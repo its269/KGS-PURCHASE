@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
-import { DIMENSION_FIELDS } from "@/lib/item-dimensions";
+import { DIMENSION_FIELDS, calcBoxCbm, formatCbm } from "@/lib/item-dimensions";
 import "@/styles/inventory-detail.css";
 
 const IconClose = () => (
@@ -58,7 +58,7 @@ function dimPayloadFromForm(form) {
     return out;
 }
 
-export default function InventoryDetailModal({ inventoryId, onClose }) {
+export default function InventoryDetailModal({ inventoryId, onClose, onDimensionsSaved }) {
     const [detail, setDetail] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -89,7 +89,10 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                 }
                 setDetail(d);
                 setNotes(d.annotations?.internal_notes || "");
-                setDimensions(dimObjectFromApi(d.dimensions));
+                const loaded = dimObjectFromApi(d.dimensions);
+                const boxCbm = calcBoxCbm(loaded.length_m, loaded.height_m, loaded.width_m);
+                if (boxCbm != null) loaded.cbm = formatCbm(boxCbm, 4);
+                setDimensions(loaded);
                 setError(null);
             } catch (err) {
                 if (cancelled) return;
@@ -135,24 +138,48 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
 
     const handleDimChange = (key, value) => {
         setDimSaved(false);
-        setDimensions((prev) => ({ ...prev, [key]: value }));
+        setDimensions((prev) => {
+            const next = { ...prev, [key]: value };
+            if (key === "length_m" || key === "height_m" || key === "width_m") {
+                const boxCbm = calcBoxCbm(next.length_m, next.height_m, next.width_m);
+                next.cbm = boxCbm != null ? formatCbm(boxCbm, 4) : "";
+            }
+            return next;
+        });
     };
+
+    const autoCbm = useMemo(
+        () => calcBoxCbm(dimensions.length_m, dimensions.height_m, dimensions.width_m),
+        [dimensions.length_m, dimensions.height_m, dimensions.width_m]
+    );
 
     const handleSaveDimensions = async () => {
         setSavingDims(true);
         setDimSaved(false);
         try {
+            const boxCbm = calcBoxCbm(dimensions.length_m, dimensions.height_m, dimensions.width_m);
+            const form = {
+                ...dimensions,
+                cbm: boxCbm != null ? String(boxCbm) : dimensions.cbm,
+            };
             const res = await fetchWithAuth(`/api/stock-items/${encodeURIComponent(inventoryId)}/dimensions`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(dimPayloadFromForm(dimensions)),
+                body: JSON.stringify(dimPayloadFromForm(form)),
             });
             if (!res.ok) throw new Error("Save failed");
             const data = await res.json();
             const saved = dimObjectFromApi(data.dimensions);
+            // Prefer recalculated CBM from sides when all three exist
+            const recalc = calcBoxCbm(saved.length_m, saved.height_m, saved.width_m);
+            if (recalc != null) saved.cbm = formatCbm(recalc, 4);
             setDimensions(saved);
             setDimSaved(true);
             setDetail((prev) => prev ? { ...prev, dimensions: data.dimensions } : prev);
+            onDimensionsSaved?.(data.dimensions || {
+                inventoryId,
+                ...dimPayloadFromForm(saved),
+            });
         } catch (err) {
             console.error("Failed to save dimensions", err);
         } finally {
@@ -276,22 +303,37 @@ export default function InventoryDetailModal({ inventoryId, onClose }) {
                         {/* Packaging dimensions */}
                         <div className="idm-section">
                             <h3 className="idm-section-title">Packaging Dimensions</h3>
-                            <p className="idm-dim-hint">Per-box measurements for this item (stored in this app only).</p>
+                            <p className="idm-dim-hint">
+                                Per-box measurements for this item (stored in this app only).
+                                CBM is auto-calculated as L × H × W.
+                            </p>
                             <div className="idm-dim-grid">
-                                {DIMENSION_FIELDS.map(({ key, label, step }) => (
-                                    <label key={key} className="idm-dim-field">
-                                        <span className="idm-dim-label">{label}</span>
-                                        <input
-                                            type="number"
-                                            step={step}
-                                            min="0"
-                                            className="idm-dim-input"
-                                            value={dimensions[key] ?? ""}
-                                            onChange={(e) => handleDimChange(key, e.target.value)}
-                                            placeholder="—"
-                                        />
-                                    </label>
-                                ))}
+                                {DIMENSION_FIELDS.map(({ key, label, step }) => {
+                                    const isCbm = key === "cbm";
+                                    const displayValue = isCbm
+                                        ? (autoCbm != null ? formatCbm(autoCbm, 4) : (dimensions[key] ?? ""))
+                                        : (dimensions[key] ?? "");
+                                    return (
+                                        <label key={key} className={`idm-dim-field${isCbm ? " idm-dim-field-calc" : ""}`}>
+                                            <span className="idm-dim-label">
+                                                {label}
+                                                {isCbm ? " (auto)" : ""}
+                                            </span>
+                                            <input
+                                                type="number"
+                                                step={step}
+                                                min="0"
+                                                className="idm-dim-input"
+                                                value={displayValue}
+                                                onChange={(e) => !isCbm && handleDimChange(key, e.target.value)}
+                                                placeholder="—"
+                                                readOnly={isCbm}
+                                                tabIndex={isCbm ? -1 : undefined}
+                                                title={isCbm ? "Calculated from L × H × W" : undefined}
+                                            />
+                                        </label>
+                                    );
+                                })}
                             </div>
                             <div className="idm-dim-actions">
                                 {dimSaved && <span className="idm-dim-saved">Saved</span>}

@@ -551,43 +551,38 @@ select.po-select-box:focus {
 }
 
 /* ── Table & Rows ───────────────────────────────────────── */
-/* Fit every PO column in the viewport — no clipped/hidden columns */
+/* Fit all PO columns in the viewport — no horizontal scrollbar */
 .db-table-wrap.po-table-wrap,
 .po-table-wrap {
-    overflow-x: auto !important;
+    overflow-x: hidden !important;
     overflow-y: visible;
     max-width: 100%;
     width: 100%;
     min-width: 0;
     display: block;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
+    scrollbar-width: none;
 }
 
-.db-table-wrap.po-table-wrap::-webkit-scrollbar {
-    height: 10px;
-}
-
-.db-table-wrap.po-table-wrap::-webkit-scrollbar-thumb {
-    background: var(--border-medium);
-    border-radius: 999px;
+.db-table-wrap.po-table-wrap::-webkit-scrollbar,
+.po-table-wrap::-webkit-scrollbar {
+    display: none;
+    height: 0;
 }
 
 .db-table.po-table,
 .po-table {
-    table-layout: auto;
-    width: max-content;
-    min-width: 100%;
-    max-width: none;
+    table-layout: fixed;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
     border-collapse: separate;
     border-spacing: 0;
 }
 
 .po-table th,
 .po-table td {
-    font-size: 0.78rem;
-    padding: 0.55rem 0.7rem;
+    font-size: 0.7rem;
+    padding: 0.3rem 0.28rem;
     vertical-align: middle;
     overflow: hidden;
     word-break: break-word;
@@ -597,48 +592,53 @@ select.po-select-box:focus {
 .po-table thead th {
     white-space: nowrap;
     vertical-align: middle;
-    line-height: 1.25;
-    font-size: 0.7rem;
-    padding: 0.55rem 0.7rem;
+    line-height: 1.2;
+    font-size: 0.6rem;
+    padding: 0.3rem 0.28rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .po-head-labels th {
     border-bottom: none;
-    padding-bottom: 0.2rem;
+    padding-bottom: 0.15rem;
 }
 
 .po-head-filters th {
-    padding-top: 0.15rem;
-    padding-bottom: 0.55rem;
+    padding-top: 0.1rem;
+    padding-bottom: 0.4rem;
     background: rgba(15, 23, 42, 0.35);
     border-bottom: 1px solid var(--border-medium);
     vertical-align: top;
 }
 
-/* Fixed min widths so columns are not crushed together */
-.po-col-expand { min-width: 2.5rem; width: 2.5rem; }
-.po-col-order { min-width: 7.75rem; }
-.po-col-vendor-id { min-width: 6.75rem; }
-.po-col-vendor-name { min-width: 11.5rem; }
-.po-col-origin { min-width: 8.75rem; }
-.po-col-status { min-width: 8.75rem; }
-.po-col-container { min-width: 9.5rem; }
-.po-col-date { min-width: 6.75rem; }
-.po-col-etd { min-width: 6.75rem; }
-.po-col-ship-out { min-width: 9.75rem; }
-.po-col-eta { min-width: 9.75rem; }
-.po-col-received { min-width: 9.75rem; }
-.po-col-remarks { min-width: 9.5rem; }
-.po-col-user-status { min-width: 8.75rem; }
-.po-col-amount { min-width: 7.25rem; text-align: right; }
+/* Percentage widths so the table fills the panel without overflow */
+.po-col-expand { width: 2.2%; min-width: 0; padding-left: 0.15rem !important; padding-right: 0.15rem !important; }
+.po-col-order { width: 6.5%; min-width: 0; }
+.po-col-vendor-id { width: 5.5%; min-width: 0; }
+.po-col-vendor-name { width: 10%; min-width: 0; }
+.po-col-origin { width: 6%; min-width: 0; }
+.po-col-status { width: 6%; min-width: 0; }
+.po-col-container { width: 8%; min-width: 0; }
+.po-col-date { width: 5.5%; min-width: 0; }
+.po-col-etd { width: 5.5%; min-width: 0; }
+.po-col-ship-out { width: 7%; min-width: 0; }
+.po-col-eta { width: 7%; min-width: 0; }
+.po-col-received { width: 7%; min-width: 0; }
+.po-col-remarks { width: 8%; min-width: 0; }
+.po-col-user-status { width: 7%; min-width: 0; }
+.po-col-amount { width: 6.5%; min-width: 0; text-align: right; }
 
 .po-th-label {
     display: block;
-    font-size: 0.7rem;
+    font-size: 0.58rem;
     font-weight: 800;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.02em;
     text-transform: uppercase;
     color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .po-inline-filter,
@@ -646,13 +646,13 @@ select.po-select-box:focus {
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
-    height: 30px;
-    padding: 0.25rem 0.45rem;
+    height: 26px;
+    padding: 0.2rem 0.3rem;
     border: 1px solid var(--border-medium);
     border-radius: 4px;
     background: var(--bg-main);
     color: var(--text-primary);
-    font-size: 0.72rem;
+    font-size: 0.65rem;
     font-weight: 500;
 }
 
@@ -666,15 +666,15 @@ select.po-select-box:focus {
 }
 
 .po-inline-filter-date .po-input-date-mdy {
-    height: 30px !important;
-    min-height: 30px !important;
-    font-size: 0.7rem !important;
-    padding: 0.25rem 1.5rem 0.25rem 0.4rem !important;
+    height: 26px !important;
+    min-height: 26px !important;
+    font-size: 0.65rem !important;
+    padding: 0.2rem 1.25rem 0.2rem 0.3rem !important;
 }
 
 .po-readonly-date {
     display: block;
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     font-weight: 500;
     color: var(--text-secondary);
     white-space: normal;
@@ -698,14 +698,14 @@ select.po-select-box:focus {
     min-width: 0;
     max-width: 100%;
     box-sizing: border-box;
-    font-size: 0.68rem !important;
-    padding: 0.35rem 0.4rem !important;
+    font-size: 0.65rem !important;
+    padding: 0.28rem 0.3rem !important;
     height: auto;
-    min-height: 30px;
+    min-height: 28px;
 }
 
 .po-table .po-date-mdy .po-input-date-mdy {
-    padding-right: 1.5rem !important;
+    padding-right: 1.35rem !important;
 }
 
 .po-table .po-date-picker-btn {
@@ -724,10 +724,14 @@ select.po-select-box:focus {
     width: 100%;
     min-width: 0;
     max-width: 100%;
-    font-size: 0.68rem !important;
-    padding: 0.35rem 1.4rem 0.35rem 0.35rem !important;
+    font-size: 0.65rem !important;
+    padding: 0.3rem 1.15rem 0.3rem 0.3rem !important;
     height: auto;
-    min-height: 30px;
+    min-height: 28px;
+}
+
+.po-origin-select {
+    text-overflow: ellipsis;
 }
 
 .po-table .db-badge {
@@ -741,16 +745,20 @@ select.po-select-box:focus {
 }
 
 .po-table .db-inv-id {
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     word-break: break-all;
-    white-space: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    display: inline-block;
 }
 
 .po-amount-cell {
     color: var(--text-primary);
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     font-weight: 800;
-    word-break: break-all;
+    white-space: nowrap;
 }
 
 /* Year-first date inputs (yyyy/mm/dd) */
@@ -1123,15 +1131,26 @@ input.po-select-box[type="date"] {
 
 .po-multi-entry-add {
     align-self: flex-start;
-    margin-top: 0.25rem;
+    margin-top: 0.15rem;
     border: none;
     background: transparent;
     color: var(--accent-primary, #2563eb);
-    font-size: 0.7rem;
+    font-size: 0.62rem;
     font-weight: 700;
     cursor: pointer;
-    padding: 0.15rem 0.1rem;
+    padding: 0.1rem 0;
     opacity: 0.85;
+}
+
+.po-table .po-date-picker-btn {
+    width: 1.05rem;
+    height: 1.05rem;
+    right: 0;
+}
+
+.po-table .po-date-mdy .po-input-date-mdy {
+    padding-right: 1.1rem !important;
+    font-size: 0.6rem !important;
 }
 
 .po-multi-entry-add:hover {
@@ -1310,21 +1329,23 @@ input.po-select-box[type="date"] {
 
 /* Acumatica-style ERP status dropdown */
 .po-erp-status-select {
-    min-width: 8.5rem;
-    max-width: 11rem;
-    height: 32px;
-    padding: 0 1.6rem 0 0.55rem;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    height: 28px;
+    padding: 0 1.25rem 0 0.35rem;
     border: 1px solid var(--border-medium);
     border-radius: 4px;
     background: var(--bg-main);
     color: var(--text-primary);
-    font-size: 0.78rem;
+    font-size: 0.68rem;
     font-weight: 700;
     cursor: pointer;
     appearance: none;
+    text-overflow: ellipsis;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%94a3b8' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
-    background-position: right 0.4rem center;
+    background-position: right 0.25rem center;
 }
 .po-erp-status-select:focus-visible {
     outline: 2px solid var(--accent-primary);
