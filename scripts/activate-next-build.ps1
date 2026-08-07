@@ -66,7 +66,30 @@ if (Test-Path -LiteralPath $LiveDir) {
     throw "Live directory $LiveDir still exists; refusing activate to avoid nesting"
 }
 
-Move-Item -LiteralPath $IncomingDir -Destination $LiveDir -Force
+$moved = $false
+for ($attempt = 1; $attempt -le 5; $attempt++) {
+    try {
+        Move-Item -LiteralPath $IncomingDir -Destination $LiveDir -Force
+        $moved = $true
+        break
+    } catch {
+        if ($attempt -eq 5) {
+            Write-Host "Move-Item failed ($attempt attempts): $($_.Exception.Message). Trying robocopy fallback..."
+            $null = New-Item -ItemType Directory -Force -Path $LiveDir
+            $rc = (robocopy $IncomingDir $LiveDir /E /NFL /NDL /NJH /NJS /NC /NS /NP)
+            if ($LASTEXITCODE -le 7) {
+                cmd /c "rmdir /s /q `"$IncomingDir`"" 2>&1 | Out-Null
+                $moved = $true
+            }
+        } else {
+            Write-Host "Move-Item attempt $attempt failed: $($_.Exception.Message). Retrying in 3 seconds..."
+            Start-Sleep -Seconds 3
+        }
+    }
+}
+if (-not $moved) {
+    throw "Failed to move $IncomingDir to $LiveDir after retries and robocopy fallback"
+}
 
 if (-not (Test-ValidBuild $LiveDir)) {
     throw "Activated build is incomplete under $LiveDir"
