@@ -201,10 +201,6 @@
     }
 }
 
-    color: var(--text-secondary);
-    border: 1px solid var(--border-medium);
-}
-
 .admin-table-wrap {
     overflow-x: auto;
     max-width: 100%;
