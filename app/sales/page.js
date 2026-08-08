@@ -220,7 +220,7 @@ export default function SalesPeriodicPage() {
     return (
         <div className="db-root">
             <main className="db-main">
-                <div className="db-page-title">
+                <div className="db-page-title" data-tour="page-title">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                         <div>
                             <h1>90-Day Sales Analysis</h1>
@@ -232,7 +232,7 @@ export default function SalesPeriodicPage() {
                     </div>
                 </div>
 
-                <div className="db-stats">
+                <div className="db-stats" data-tour="kpi-cards">
                     <div className="db-stat-card db-stat-blue">
                         <span className="db-stat-label">90-Day Total Volume</span>
                         <span className="db-stat-value">{allSalesData.length > 0 ? metrics.totalQtySold.toLocaleString() : "—"}</span>
@@ -255,7 +255,7 @@ export default function SalesPeriodicPage() {
                     </div>
                 </div>
 
-                <section className="db-toolbar sales-toolbar">
+                <section className="db-toolbar sales-toolbar" data-tour="toolbar">
                     <div className="db-toolbar-left" style={{ flexWrap: "wrap", gap: "1.5rem" }}>
                         <div className="sales-filter-group">
                             <label><CalendarIcon /> As of Date</label>
@@ -305,7 +305,7 @@ export default function SalesPeriodicPage() {
                     </div>
                 ) : (
                     <>
-                        <div className={`db-table-wrap ${refreshing ? "sales-table-loading" : ""}`}>
+                        <div className={`db-table-wrap ${refreshing ? "sales-table-loading" : ""}`} data-tour="main-table">
                             <table className="db-table db-table--fit">
                                 <thead>
                                     <tr>

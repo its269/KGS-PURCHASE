@@ -669,7 +669,7 @@ export default function ReplenishmentPage() {
     return (
         <div className="db-root">
             <main className="db-main repl-main">
-                <div className="db-page-title">
+                <div className="db-page-title" data-tour="page-title">
                     <h1>Replenishment</h1>
                     <p>
                         {isMain
@@ -685,7 +685,7 @@ export default function ReplenishmentPage() {
                     </div>
                 )}
 
-                <div className="db-stats">
+                <div className="db-stats" data-tour="kpi-cards">
                     <div className="db-stat-card repl-stat-urgent">
                         <span className="db-stat-label">Urgent</span>
                         <span className="db-stat-value">{loading && recs.length === 0 ? "..." : stats.urgent}</span>
@@ -703,7 +703,7 @@ export default function ReplenishmentPage() {
                     </div>
                 </div>
 
-                <div className="repl-filter-tabs">
+                <div className="repl-filter-tabs" data-tour="toolbar">
                     <button
                         type="button"
                         className={`repl-filter-tab ${priorityFilter === "all" ? "active" : ""}`}
@@ -849,7 +849,7 @@ export default function ReplenishmentPage() {
                     </div>
                 )}
 
-                <div className={`db-table-wrap ${backgroundLoading ? "is-bg-loading" : ""}`}>
+                <div className={`db-table-wrap ${backgroundLoading ? "is-bg-loading" : ""}`} data-tour="main-table">
                     <table className="db-table db-table--fit repl-table">
                         <thead>
                             <tr>

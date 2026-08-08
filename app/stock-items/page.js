@@ -202,7 +202,7 @@ export default function StockItemsPage() {
     return (
         <div className="db-root si-page">
             <main className="db-main si-main">
-                <header className="si-hero">
+                <header className="si-hero" data-tour="page-title">
                     <div className="si-hero-top">
                         <div className="si-hero-copy">
                             <p className="si-eyebrow">Product catalog</p>
@@ -230,7 +230,7 @@ export default function StockItemsPage() {
                         </div>
                     </div>
 
-                    <div className="si-metrics" role="group" aria-label="Catalog totals">
+                    <div className="si-metrics" role="group" aria-label="Catalog totals" data-tour="kpi-cards">
                         <div className="si-metric">
                             <span className="si-metric-label">Product types</span>
                             <span className="si-metric-value">
@@ -252,7 +252,7 @@ export default function StockItemsPage() {
                     </div>
                 </header>
 
-                <div className="si-toolbar">
+                <div className="si-toolbar" data-tour="toolbar">
                     <div className="si-search-wrap">
                         <IconSearch />
                         <input
@@ -383,7 +383,7 @@ export default function StockItemsPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="si-table-panel">
+                <div className="si-table-panel" data-tour="main-table">
                     <div className="si-table-scroll">
                         <table className="si-table">
                             <thead>

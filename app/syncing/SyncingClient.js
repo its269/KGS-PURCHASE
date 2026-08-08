@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import Link from "next/link";
 import { withBasePath } from "@/lib/base-path";
+import TourGuide from "@/components/TourGuide";
 import "@/styles/sync.css";
 
 const IconSync = () => (
@@ -261,6 +262,7 @@ export default function SyncingClient() {
 
     return (
         <div className="sync-root">
+            <TourGuide />
             <header className="sync-topbar">
                 <div className="sync-topbar-brand">
                     <img
@@ -285,7 +287,7 @@ export default function SyncingClient() {
 
             <main className="sync-shell">
                 {idle ? (
-                    <section className="sync-hero" aria-labelledby="sync-hero-title">
+                    <section className="sync-hero" aria-labelledby="sync-hero-title" data-tour="page-title">
                         <p className="sync-eyebrow">Data synchronization</p>
                         <h2 id="sync-hero-title" className="sync-hero-title">
                             Keep MySQL current with Acumatica
@@ -296,7 +298,7 @@ export default function SyncingClient() {
                             export when online Full Sync is unreliable.
                         </p>
 
-                        <div className="sync-mode-grid" role="group" aria-label="Sync modes">
+                        <div className="sync-mode-grid" role="group" aria-label="Sync modes" data-tour="sync-modes">
                             <button
                                 type="button"
                                 className="sync-mode-card is-quick"
@@ -536,7 +538,7 @@ export default function SyncingClient() {
                 )}
 
                 {!isSyncing && (
-                    <section className="sync-history" aria-labelledby="sync-history-title">
+                    <section className="sync-history" aria-labelledby="sync-history-title" data-tour="main-table">
                         <div className="sync-history-head">
                             <h2 id="sync-history-title">
                                 <IconSync /> Recent sync history

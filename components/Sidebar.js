@@ -7,6 +7,7 @@ import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { useTheme } from "./ThemeProvider";
 import SessionStatus from "./SessionStatus";
+import TourGuide from "./TourGuide";
 import { withBasePath } from "@/lib/base-path";
 import { APP_VERSION } from "@/lib/app-version";
 import "@/styles/sidebar.css";
@@ -190,14 +191,14 @@ export default function Sidebar() {
   }, [pathname]);
 
   const navItems = [
-    { name: "Inventory", href: "/dashboard", icon: <IconInventory /> },
-    { name: "Stock Items", href: "/stock-items", icon: <IconStock /> },
-    { name: "Purchase Orders", href: "/purchase-orders", icon: <IconPO /> },
+    { name: "Inventory", href: "/dashboard", icon: <IconInventory />, tourId: "nav-inventory" },
+    { name: "Stock Items", href: "/stock-items", icon: <IconStock />, tourId: "nav-stock" },
+    { name: "Purchase Orders", href: "/purchase-orders", icon: <IconPO />, tourId: "nav-po" },
     { name: "Incoming PO", href: "/incoming-po", icon: <IconPO /> },
     { name: "Suppliers", href: "/suppliers", icon: <IconTruck /> },
     { name: "Replenishment", href: "/replenishment", icon: <IconSparkles /> },
     { name: "Last 3 Months Sales", href: "/sales", icon: <IconSales /> },
-    { name: "Syncing Center", href: "/syncing", icon: <IconSync /> },
+    { name: "Syncing Center", href: "/syncing", icon: <IconSync />, tourId: "nav-sync" },
     ...(userRole === "admin"
       ? [{ name: "Admin", href: "/admin", icon: <IconAdmin /> }]
       : []),
@@ -297,6 +298,7 @@ export default function Sidebar() {
               href={item.href}
               className={`sidebar-item ${mounted && pathname === item.href ? "active" : ""}`}
               title={isCollapsed ? item.name : ""}
+              data-tour={item.tourId || undefined}
             >
               <span className="sidebar-item-icon">{item.icon}</span>
               {!isCollapsed && <span>{item.name}</span>}
@@ -344,6 +346,7 @@ export default function Sidebar() {
             href="/account"
             className={`sidebar-item sidebar-account ${pathname === "/account" ? "active" : ""}`}
             title={isCollapsed ? "Account" : ""}
+            data-tour="nav-account"
           >
             <span className="sidebar-item-icon">
               <IconAccount />
@@ -390,6 +393,7 @@ export default function Sidebar() {
           50%       { opacity: 0.5; transform: scale(1.4); }
         }
       `}</style>
+      <TourGuide />
     </>
   );
 }

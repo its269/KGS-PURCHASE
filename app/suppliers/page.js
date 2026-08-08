@@ -317,7 +317,7 @@ export default function SuppliersPage() {
     return (
         <div className="db-root">
             <main className="db-main">
-                <div className="db-page-title">
+                <div className="db-page-title" data-tour="page-title">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.5rem' }}>
                         <div style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-primary)', padding: '0.75rem', borderRadius: '12px' }}>
                             <IconTruck />
@@ -327,7 +327,7 @@ export default function SuppliersPage() {
                     <p>Manage your external suppliers and track average delivery lead times. Click a supplier row to view their purchase orders.</p>
                 </div>
 
-                <div className="db-stats" style={{ marginBottom: '2rem' }}>
+                <div className="db-stats" style={{ marginBottom: '2rem' }} data-tour="kpi-cards">
                     <div className="db-stat-card db-stat-blue">
                         <span className="db-stat-label">Total Suppliers</span>
                         <span className="db-stat-value">{loading && vendors.length === 0 ? "..." : vendors.length}</span>
@@ -340,7 +340,7 @@ export default function SuppliersPage() {
                     </div>
                 </div>
 
-                <div className="db-toolbar" style={{ borderRadius: '16px', padding: '1.25rem' }}>
+                <div className="db-toolbar" style={{ borderRadius: '16px', padding: '1.25rem' }} data-tour="toolbar">
                     <div className="db-toolbar-left" style={{ flex: 1 }}>
                         <div className="db-search-wrapper" style={{ width: '100%', maxWidth: '500px' }}>
                             <IconSearch />
@@ -368,7 +368,7 @@ export default function SuppliersPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap">
+                <div className="db-table-wrap" data-tour="main-table">
                     <table className="db-table db-table--fit">
                         <thead style={{ background: 'var(--bg-main)' }}>
                             <tr>

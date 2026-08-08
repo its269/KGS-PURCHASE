@@ -240,8 +240,69 @@ function normalizeAnnotationInputs(dbInputs) {
             if (f in next) next[f] = parseMultiValue(next[f]);
         }
         out[refId] = next;
+        // Also index under bare order # so MySQL rows (orderType always "Normal") still resolve
+        const nbr = orderNbrFromAnnotationRef(refId);
+        if (nbr && nbr !== refId) {
+            if (!out[nbr]) {
+                out[nbr] = { ...next };
+            } else {
+                const merged = { ...out[nbr] };
+                for (const [k, v] of Object.entries(next)) {
+                    if (v === "" || v == null) continue;
+                    if (Array.isArray(v) && !v.some(Boolean)) continue;
+                    if (!merged[k] || merged[k] === "" || (Array.isArray(merged[k]) && !merged[k].some(Boolean))) {
+                        merged[k] = v;
+                    }
+                }
+                out[nbr] = merged;
+            }
+        }
     }
     return out;
+}
+
+/** Stable annotation key — order number only (legacy keys were `${orderType}-${orderNbr}`). */
+function poAnnotationKey(orderNbr) {
+    return String(orderNbr || "").trim();
+}
+
+function orderNbrFromAnnotationRef(refId) {
+    const id = String(refId || "").trim();
+    if (!id) return "";
+    for (const prefix of ["Normal-", "RO-", "PO-", "RP-", "RN-"]) {
+        if (id.startsWith(prefix)) return id.slice(prefix.length);
+    }
+    const idx = id.indexOf("-");
+    if (idx > 0 && idx < id.length - 1) {
+        const left = id.slice(0, idx);
+        if (/^[A-Za-z]{1,12}$/.test(left)) return id.slice(idx + 1);
+    }
+    return id;
+}
+
+function getPoUserInputs(userInputs, orderNbr, orderType) {
+    const nbr = poAnnotationKey(orderNbr);
+    if (!nbr) return {};
+    if (userInputs[nbr]) return userInputs[nbr];
+    const typed = `${orderType || "Normal"}-${nbr}`;
+    if (userInputs[typed]) return userInputs[typed];
+    for (const [k, v] of Object.entries(userInputs || {})) {
+        if (k.endsWith(`-${nbr}`)) return v;
+    }
+    return {};
+}
+
+/** Order numbers that have the given userStatus annotation (for server-side filtering). */
+function collectOrderNbrsByUserStatus(userInputs, status) {
+    if (!status) return null;
+    const nbrs = new Set();
+    for (const [refId, fields] of Object.entries(userInputs || {})) {
+        if ((fields?.userStatus || "") === status) {
+            const nbr = orderNbrFromAnnotationRef(refId);
+            if (nbr) nbrs.add(nbr);
+        }
+    }
+    return [...nbrs];
 }
 
 const EMPTY_COLUMN_FILTERS = {
@@ -930,21 +991,39 @@ export default function PurchaseOrdersPage() {
             return;
         }
         setPage(1);
-    }, [debSearch, startDate, endDate, status, selectedBranch]);
+    }, [debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus]);
+
+    const userStatusOrderNbrs = useMemo(
+        () => collectOrderNbrsByUserStatus(userInputs, columnFilters.userStatus),
+        [userInputs, columnFilters.userStatus]
+    );
 
     const fetchOrders = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
+            if (columnFilters.userStatus && Array.isArray(userStatusOrderNbrs) && userStatusOrderNbrs.length === 0) {
+                setOrders([]);
+                setHasMore(false);
+                return;
+            }
+
             const params = new URLSearchParams({
                 page: String(page),
                 pageSize: String(PAGE_SIZE),
                 startDate: startDate,
                 endDate: endDate,
-                status: status
             });
+            // User Status filter looks up annotated order #s across all ERP statuses
+            // (default toolbar "Open" would hide Customs / Delayed / Cancelled matches)
+            if (!columnFilters.userStatus && status) {
+                params.set("status", status);
+            }
             if (debSearch) params.set("search", debSearch);
             if (selectedBranch) params.set("branch", selectedBranch);
+            if (columnFilters.userStatus && userStatusOrderNbrs?.length) {
+                params.set("orderNbrs", userStatusOrderNbrs.join(","));
+            }
 
             const res = await fetchWithAuth(`/api/po?${params}`); 
             if (!res.ok) {
@@ -960,7 +1039,7 @@ export default function PurchaseOrdersPage() {
         } finally {
             setLoading(false);
         }
-    }, [page, debSearch, startDate, endDate, status, selectedBranch]);
+    }, [page, debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus, userStatusOrderNbrs]);
 
     useEffect(() => {
         fetchOrders();
@@ -1005,7 +1084,7 @@ export default function PurchaseOrdersPage() {
     const summaryStats = useMemo(() => {
         const totalValue = orders.reduce((sum, o) => sum + (Number(o.totalAmount) || 0), 0);
         const pendingEtaCount = orders.filter(o => {
-            const ui = userInputs[`${o.orderType}-${o.orderNbr}`];
+            const ui = getPoUserInputs(userInputs, o.orderNbr, o.orderType);
             return !hasAnyMultiValue(ui?.eta);
         }).length;
         const openCount = orders.filter(o => o.status === 'Open').length;
@@ -1020,8 +1099,7 @@ export default function PurchaseOrdersPage() {
     const displayedOrders = useMemo(() => {
         const f = columnFilters;
         return orders.filter((o) => {
-            const key = `${o.orderType}-${o.orderNbr}`;
-            const ui = userInputs[key] || {};
+            const ui = getPoUserInputs(userInputs, o.orderNbr, o.orderType);
 
             if (!textIncludes(o.orderNbr, f.orderNbr)) return false;
             if (!textIncludes(o.vendorId, f.vendorId)) return false;
@@ -1037,6 +1115,7 @@ export default function PurchaseOrdersPage() {
             if (!multiDateMatches(ui.eta, f.eta)) return false;
             if (!multiDateMatches(ui.receivedDate, f.receivedDate, o.receiptDate)) return false;
             if (!textIncludes(ui.remarks, f.remarks)) return false;
+            // userStatus is applied server-side via orderNbrs; keep a client check for safety
             if (f.userStatus && (ui.userStatus || "") !== f.userStatus) return false;
             if (f.totalAmount && !textIncludes(String(o.totalAmount ?? ""), f.totalAmount)
                 && !textIncludes(fmt(o.totalAmount), f.totalAmount)) return false;
@@ -1047,7 +1126,7 @@ export default function PurchaseOrdersPage() {
     return (
         <div className="po-root">
             <main className="po-main">
-                <div className="db-page-title po-page-title-row">
+                <div className="db-page-title po-page-title-row" data-tour="page-title">
                     <div className="po-page-title-text">
                         <h1>Purchase Orders</h1>
                         <p>View and manage all purchase orders live from Acumatica ERP.</p>
@@ -1060,7 +1139,7 @@ export default function PurchaseOrdersPage() {
                     />
                 </div>
 
-                <aside className="po-summary-strip" aria-label="Purchase order summary">
+                <aside className="po-summary-strip" aria-label="Purchase order summary" data-tour="kpi-cards">
                     <div className="po-summary-card">
                         <h3 className="po-summary-title">
                             <IconActivity /> Analytics Summary
@@ -1125,7 +1204,7 @@ export default function PurchaseOrdersPage() {
                     </div>
                 )}
 
-                <div className="po-toolbar">
+                <div className="po-toolbar" data-tour="toolbar">
                     <div className="po-filter-group">
                         <span className="po-filter-label">From:</span>
                         <PoDateInput
@@ -1220,7 +1299,7 @@ export default function PurchaseOrdersPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap po-table-wrap">
+                <div className="db-table-wrap po-table-wrap" data-tour="main-table">
                     <table className="db-table po-table">
                         <thead>
                             <tr className="po-head-labels">
@@ -1355,14 +1434,16 @@ export default function PurchaseOrdersPage() {
                                 </td></tr>
                             ) : displayedOrders.length === 0 ? (
                                 <tr><td colSpan={15} className="si-empty-cell" style={{ padding: '4rem 0' }}>
-                                    {activeColumnFilterChips.length > 0
-                                        ? "No purchase orders match the current column filters on this page."
+                                    {columnFilters.userStatus
+                                        ? `No orders currently set to User Status “${columnFilters.userStatus}”. Pick that status on a row first, then filter again — or choose All.`
+                                        : activeColumnFilterChips.length > 0
+                                        ? "No purchase orders match the current column filters."
                                         : "No purchase orders found."}
                                 </td></tr>
                             ) : displayedOrders.map(po => {
-                                const key = `${po.orderType}-${po.orderNbr}`;
+                                const key = poAnnotationKey(po.orderNbr);
                                 const isOpen = !!expanded[key];
-                                const ui = userInputs[key] || {};
+                                const ui = getPoUserInputs(userInputs, po.orderNbr, po.orderType);
                                 const etdValue = po.promisedDate || ui.etd;
                                 const logistics = getLogisticsEntries(ui, po.receiptDate);
                                 const onLogisticsAdd = () => handleLogisticsAdd(key, po.receiptDate);

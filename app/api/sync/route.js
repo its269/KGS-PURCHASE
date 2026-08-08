@@ -1,5 +1,5 @@
 import { AcumaticaService, extractStockItemCatalog, extractWarehouseLevels } from "@/services/acumatica";
-import { MySqlService } from "@/services/mysql";
+import { MySqlService, INVENTORY_SYNC_TABLE } from "@/services/mysql";
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getSessionIdFromRequest, getCompanyCredential, getSessionCookies } from "@/lib/session-store";
 import { COMPANIES, getAcumaticaCompanyName, splitLevelsByCompany } from "@/lib/companies";
@@ -92,7 +92,7 @@ export async function POST(request) {
         await conn.query(`CREATE DATABASE IF NOT EXISTS \`${inventoryDb}\``);
         await conn.query(`CREATE DATABASE IF NOT EXISTS \`${purchaseDb}\``);
 
-        // Ensure inventory_items table exists
+        // Ensure inventory_items exists (VIEW / read-only legacy table — do not sync into this)
         await conn.query(`
             CREATE TABLE IF NOT EXISTS \`${inventoryDb}\`.\`inventory_items\` (
                 \`inventory_id\` VARCHAR(100) NOT NULL,
@@ -100,6 +100,10 @@ export async function POST(request) {
                 PRIMARY KEY (\`inventory_id\`, \`default_warehouse\`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+
+        // Ensure product_inventory_items exists (SYNC / write destination)
+        await MySqlService.ensureProductInventoryItemsTable();
+        console.log(`>>> [Sync API] Inventory sync target: ${INVENTORY_SYNC_TABLE}; view source: inventory_items`);
 
         // Ensure product_periodic_sales table exists
         await conn.query(`
@@ -768,15 +772,15 @@ export async function POST(request) {
                         }
 
                         if (!isDelta && !signal.aborted && totalLevelsSynced > 0) {
-                            // Verify rows were actually written before pruning old site rows
-                            const writtenMain = await MySqlService.countWarehouseRows("main");
-                            const writtenEcom = await MySqlService.countWarehouseRows("ecommerce");
+                            // Verify rows were written to the sync table before pruning stale rows
+                            const writtenMain = await MySqlService.countWarehouseRows("main", INVENTORY_SYNC_TABLE);
+                            const writtenEcom = await MySqlService.countWarehouseRows("ecommerce", INVENTORY_SYNC_TABLE);
                             if (writtenMain + writtenEcom > 0) {
                                 const removedMain = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "main");
                                 const removedEcom = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "ecommerce");
-                                console.log(`>>> [Sync API] Removed stale stock rows: main=${removedMain}, ecommerce=${removedEcom}`);
+                                console.log(`>>> [Sync API] Removed stale stock rows from ${INVENTORY_SYNC_TABLE}: main=${removedMain}, ecommerce=${removedEcom}`);
                             } else {
-                                console.warn(">>> [Sync API] Skipping stale cleanup — warehouse rows not found after upsert.");
+                                console.warn(`>>> [Sync API] Skipping stale cleanup — no warehouse rows in ${INVENTORY_SYNC_TABLE} after upsert.`);
                             }
                         } else if (!isDelta && totalLevelsSynced === 0) {
                             console.warn(">>> [Sync API] Skipping stale row cleanup — no warehouse levels were synced.");

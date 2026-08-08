@@ -147,12 +147,12 @@ export default function IncomingPOPage() {
     return (
         <div className="po-root">
             <main className="po-main">
-                <div className="db-page-title">
+                <div className="db-page-title" data-tour="page-title">
                     <h1>Incoming Purchase Orders</h1>
                     <p>Track and manage open purchase orders live from Acumatica ERP.</p>
                 </div>
 
-                <div className="po-toolbar">
+                <div className="po-toolbar" data-tour="toolbar">
                     <div className="po-filter-group">
                         <span className="po-filter-label">From:</span>
                         <input
@@ -222,7 +222,7 @@ export default function IncomingPOPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className="db-table-wrap">
+                <div className="db-table-wrap" data-tour="main-table">
                     <table className="db-table db-table--fit">
                         <thead>
                             <tr>

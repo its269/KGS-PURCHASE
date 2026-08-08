@@ -70,6 +70,13 @@ function instrumentPool(p, label) {
 instrumentPool(pool, "inventory");
 instrumentPool(purchasePool, "purchase");
 
+/**
+ * inventory_items — view/read only (UI + API queries).
+ * product_inventory_items — sync/write destination (Acumatica inventory sync).
+ */
+export const INVENTORY_VIEW_TABLE = "inventory_items";
+export const INVENTORY_SYNC_TABLE = "product_inventory_items";
+
 function isTransientMysqlError(err) {
     const code = String(err?.code || "");
     const msg = String(err?.message || "");
@@ -95,10 +102,10 @@ async function withMysqlRetry(label, fn, retries = 3) {
     throw lastErr;
 }
 
-async function countWarehouseRows(companyId = "main") {
-    return getCached(`wh-count:${companyId}`, 60_000, async () => {
+async function countWarehouseRows(companyId = "main", table = INVENTORY_VIEW_TABLE) {
+    return getCached(`wh-count:${table}:${companyId}`, 60_000, async () => {
         const [[row]] = await pool.query(
-            `SELECT COUNT(*) AS c FROM inventory_items
+            `SELECT COUNT(*) AS c FROM \`${table}\`
              WHERE company_id = ? AND default_warehouse != '__catalog__'`,
             [companyId]
         );
@@ -106,10 +113,10 @@ async function countWarehouseRows(companyId = "main") {
     });
 }
 
-async function countCatalogRows(companyId = "main") {
-    return getCached(`cat-count:${companyId}`, 60_000, async () => {
+async function countCatalogRows(companyId = "main", table = INVENTORY_VIEW_TABLE) {
+    return getCached(`cat-count:${table}:${companyId}`, 60_000, async () => {
         const [[row]] = await pool.query(
-            `SELECT COUNT(*) AS c FROM inventory_items
+            `SELECT COUNT(*) AS c FROM \`${table}\`
              WHERE company_id = ? AND default_warehouse = '__catalog__'`,
             [companyId]
         );
@@ -250,8 +257,9 @@ export const MySqlService = {
      */
     async getLastInventorySyncTime() {
         try {
+            // Watermark from sync destination (not the view-only legacy table)
             const [[res]] = await pool.query(
-                `SELECT MAX(last_sync) as lastSync FROM inventory_items`
+                `SELECT MAX(last_sync) as lastSync FROM \`${INVENTORY_SYNC_TABLE}\``
             );
             return res.lastSync || null;
         } catch (err) {
@@ -308,17 +316,21 @@ export const MySqlService = {
      * Fetch purchase orders from MySQL (for Purchase Orders module).
      * No TTL cache — lists must stay live after sync / receipt updates.
      */
-    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main" } = {}) {
-        return this._getPurchaseOrdersImpl({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId });
+    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main", orderNbrs = null } = {}) {
+        return this._getPurchaseOrdersImpl({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId, orderNbrs });
     },
 
-    async _getPurchaseOrdersImpl({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main" } = {}) {
+    async _getPurchaseOrdersImpl({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main", orderNbrs = null } = {}) {
         const offset = (page - 1) * pageSize;
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
         const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
 
         try {
+            if (Array.isArray(orderNbrs) && orderNbrs.length === 0) {
+                return { orders: [], totalCount: 0, hasMore: false };
+            }
+
             let whereClauses = [];
             let params = [];
 
@@ -346,6 +358,15 @@ export const MySqlService = {
             if (vendorId) {
                 whereClauses.push("h.vendor_id = ?");
                 params.push(vendorId);
+            }
+
+            if (Array.isArray(orderNbrs) && orderNbrs.length > 0) {
+                const ids = [...new Set(orderNbrs.map((n) => String(n || "").trim()).filter(Boolean))].slice(0, 500);
+                if (!ids.length) {
+                    return { orders: [], totalCount: 0, hasMore: false };
+                }
+                whereClauses.push(`h.order_nbr IN (${ids.map(() => "?").join(",")})`);
+                params.push(...ids);
             }
 
             if (branch) {
@@ -2425,12 +2446,12 @@ export const MySqlService = {
         }
     },
 
-    /** Move ecommerce branch rows from main company into ecommerce company bucket. */
+    /** Move ecommerce branch rows from main company into ecommerce company bucket (sync table). */
     async cleanupMisclassifiedEcomBranches() {
         try {
             const branches = [...ECOM_BRANCH_ALIASES];
             const [result] = await pool.query(
-                `UPDATE inventory_items SET company_id = 'ecommerce'
+                `UPDATE \`${INVENTORY_SYNC_TABLE}\` SET company_id = 'ecommerce'
                  WHERE company_id = 'main'
                    AND default_warehouse != '__catalog__'
                    AND UPPER(TRIM(branch_id)) IN (${branches.map(() => "?").join(", ")})`,
@@ -2767,6 +2788,82 @@ export const MySqlService = {
         }
     },
 
+    /**
+     * Ensure product_inventory_items exists (sync destination).
+     * View path continues to use inventory_items.
+     */
+    async ensureProductInventoryItemsTable() {
+        const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+        try {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS \`${INVENTORY_SYNC_TABLE}\` (
+                    \`id\` INT NOT NULL AUTO_INCREMENT,
+                    \`inventory_id\` VARCHAR(100) NOT NULL,
+                    \`default_warehouse\` VARCHAR(100) NOT NULL DEFAULT '__catalog__',
+                    \`inventory_name\` VARCHAR(255) NULL,
+                    \`item_class\` VARCHAR(100) NULL,
+                    \`default_price\` DECIMAL(18,4) DEFAULT 0,
+                    \`item_status\` VARCHAR(50) DEFAULT 'active',
+                    \`base_unit\` VARCHAR(50) NULL DEFAULT '',
+                    \`type\` VARCHAR(50) NULL,
+                    \`posting_class\` VARCHAR(100) NULL DEFAULT '',
+                    \`branch_id\` VARCHAR(100) NULL,
+                    \`site_id\` VARCHAR(100) NULL,
+                    \`on_hand\` DECIMAL(18,4) DEFAULT 0,
+                    \`available\` DECIMAL(18,4) DEFAULT 0,
+                    \`last_sync\` DATETIME NULL,
+                    \`company_id\` VARCHAR(50) NOT NULL DEFAULT 'main',
+                    \`vendor_id\` VARCHAR(100) NULL,
+                    \`lead_time_days\` INT NULL,
+                    \`safety_stock\` DECIMAL(18,4) NULL,
+                    \`moq\` DECIMAL(18,4) NULL,
+                    PRIMARY KEY (\`inventory_id\`, \`default_warehouse\`, \`company_id\`),
+                    UNIQUE KEY \`uq_inv_warehouse\` (\`inventory_id\`, \`default_warehouse\`, \`company_id\`),
+                    KEY \`idx_inventory_row_id\` (\`id\`),
+                    KEY \`idx_inv_company_wh\` (\`company_id\`, \`default_warehouse\`, \`branch_id\`, \`on_hand\`),
+                    KEY \`idx_inv_company_branch\` (\`company_id\`, \`branch_id\`, \`default_warehouse\`),
+                    KEY \`idx_inv_status\` (\`item_status\`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+
+            const cols = [
+                { name: "on_hand", def: "DECIMAL(18, 4) DEFAULT 0" },
+                { name: "available", def: "DECIMAL(18, 4) DEFAULT 0" },
+                { name: "branch_id", def: "VARCHAR(100) NULL" },
+                { name: "site_id", def: "VARCHAR(100) NULL" },
+                { name: "last_sync", def: "DATETIME NULL" },
+                { name: "type", def: "VARCHAR(50) NULL" },
+                { name: "posting_class", def: "VARCHAR(100) NULL DEFAULT ''" },
+                { name: "base_unit", def: "VARCHAR(50) NULL DEFAULT ''" },
+                { name: "item_class", def: "VARCHAR(100) NULL" },
+                { name: "default_price", def: "DECIMAL(18, 4) DEFAULT 0" },
+                { name: "inventory_name", def: "VARCHAR(255) NULL" },
+                { name: "item_status", def: "VARCHAR(50) DEFAULT 'active'" },
+                { name: "company_id", def: "VARCHAR(50) NOT NULL DEFAULT 'main'" },
+                { name: "vendor_id", def: "VARCHAR(100) NULL" },
+                { name: "lead_time_days", def: "INT NULL" },
+                { name: "safety_stock", def: "DECIMAL(18,4) NULL" },
+                { name: "moq", def: "DECIMAL(18,4) NULL" },
+            ];
+            for (const c of cols) {
+                const [[row]] = await pool.query(
+                    `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?`,
+                    [inventoryDb, INVENTORY_SYNC_TABLE, c.name]
+                );
+                if (row.cnt === 0) {
+                    await pool.query(
+                        `ALTER TABLE \`${INVENTORY_SYNC_TABLE}\` ADD COLUMN \`${c.name}\` ${c.def}`
+                    );
+                }
+            }
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureProductInventoryItemsTable Error]", err);
+            return false;
+        }
+    },
+
     async ensureInventoryPlanningColumns() {
         if (MySqlService._planningColsReady) return true;
 
@@ -2778,14 +2875,17 @@ export const MySqlService = {
             { name: "moq", def: "DECIMAL(18,4) NULL" },
         ];
         try {
+            await this.ensureProductInventoryItemsTable();
             for (const c of cols) {
                 const [[row]] = await pool.query(
                     `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
-                     WHERE TABLE_SCHEMA=? AND TABLE_NAME='inventory_items' AND COLUMN_NAME=?`,
-                    [inventoryDb, c.name]
+                     WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?`,
+                    [inventoryDb, INVENTORY_SYNC_TABLE, c.name]
                 );
                 if (row.cnt === 0) {
-                    await pool.query(`ALTER TABLE inventory_items ADD COLUMN \`${c.name}\` ${c.def}`);
+                    await pool.query(
+                        `ALTER TABLE \`${INVENTORY_SYNC_TABLE}\` ADD COLUMN \`${c.name}\` ${c.def}`
+                    );
                 }
             }
             MySqlService._planningColsReady = true;
@@ -2798,7 +2898,7 @@ export const MySqlService = {
     _planningColsReady: false,
 
     /**
-     * Bulk-update catalog fields on existing inventory_items rows.
+     * Bulk-update catalog fields on product_inventory_items (sync destination).
      */
     async upsertInventoryItems(items, companyId = "main") {
         if (!items.length) return;
@@ -2830,7 +2930,7 @@ export const MySqlService = {
                     now,
                 ]);
                 await connection.query(
-                    `INSERT INTO inventory_items
+                    `INSERT INTO \`${INVENTORY_SYNC_TABLE}\`
                         (inventory_id, company_id, default_warehouse, inventory_name, item_class,
                         default_price, item_status, base_unit, type, posting_class,
                         vendor_id, lead_time_days, safety_stock, moq, last_sync)
@@ -2865,10 +2965,10 @@ export const MySqlService = {
     async sanitizeCatalogStockFields(companyId = null) {
         try {
             const sql = companyId
-                ? `UPDATE inventory_items
+                ? `UPDATE \`${INVENTORY_SYNC_TABLE}\`
                    SET branch_id = NULL, site_id = NULL, on_hand = 0, available = 0
                    WHERE company_id = ? AND default_warehouse = '__catalog__'`
-                : `UPDATE inventory_items
+                : `UPDATE \`${INVENTORY_SYNC_TABLE}\`
                    SET branch_id = NULL, site_id = NULL, on_hand = 0, available = 0
                    WHERE default_warehouse = '__catalog__'`;
             const params = companyId ? [companyId] : [];
@@ -2885,7 +2985,7 @@ export const MySqlService = {
         const lim = Math.min(500, Math.max(1, parseInt(limit, 10) || 120));
         const [rows] = await pool.query(
             `SELECT DISTINCT TRIM(inventory_id) AS inventory_id
-             FROM inventory_items
+             FROM \`${INVENTORY_VIEW_TABLE}\`
              WHERE company_id = ?
                AND default_warehouse != '__catalog__'
                AND UPPER(TRIM(COALESCE(default_warehouse, ''))) NOT LIKE '%DAMAGE%'
@@ -2901,10 +3001,11 @@ export const MySqlService = {
     },
 
     /**
-     * Bulk upsert inventory levels.
+     * Bulk upsert inventory levels into product_inventory_items (sync destination).
      */
     async upsertInventoryLevels(levels, companyId = "main") {
         if (!levels.length) return;
+        await this.ensureProductInventoryItemsTable();
         const CHUNK = 200;
         const now = new Date();
         const safeNum = (v) => { const n = Number(v); return (isNaN(n) ? null : n); };
@@ -2932,7 +3033,7 @@ export const MySqlService = {
                     now,
                 ]);
                 await connection.query(
-                    `INSERT INTO inventory_items
+                    `INSERT INTO \`${INVENTORY_SYNC_TABLE}\`
                         (inventory_id, company_id, default_warehouse, inventory_name, item_class,
                         default_price, item_status, base_unit, type, posting_class,
                         branch_id, site_id, on_hand, available, last_sync)
@@ -2958,8 +3059,8 @@ export const MySqlService = {
             invalidateCache("global-stats-v5:");
             invalidateCache("global-stats-v4:");
             invalidateCache("global-stats-v3:");
-            invalidateCache("wh-count:");
-            invalidateCache("cat-count:");
+            invalidateCache(`wh-count:${INVENTORY_SYNC_TABLE}:`);
+            invalidateCache(`cat-count:${INVENTORY_SYNC_TABLE}:`);
         } catch (err) {
             await connection.rollback();
             console.error('[MySQL upsertInventoryLevels Error]', err);
@@ -2969,13 +3070,13 @@ export const MySqlService = {
         }
     },
 
-    /** Remove stock rows not refreshed during the current sync run. */
+    /** Remove stock rows not refreshed during the current sync run (sync table). */
     async deleteStaleInventoryLevels(syncStartedAt, companyId = "main") {
         try {
             // 2-minute buffer so freshly upserted rows are never removed due to clock skew
             const cutoff = new Date(new Date(syncStartedAt).getTime() - 2 * 60 * 1000);
             const [result] = await pool.query(
-                `DELETE FROM inventory_items
+                `DELETE FROM \`${INVENTORY_SYNC_TABLE}\`
                  WHERE company_id = ?
                    AND default_warehouse != '__catalog__'
                    AND (last_sync IS NULL OR last_sync < ?)`,
@@ -2988,8 +3089,8 @@ export const MySqlService = {
         }
     },
 
-    async countWarehouseRows(companyId = "main") {
-        return countWarehouseRows(companyId);
+    async countWarehouseRows(companyId = "main", table = INVENTORY_VIEW_TABLE) {
+        return countWarehouseRows(companyId, table);
     },
 
     async resolveInventoryLayout(companyId = "main") {
@@ -3000,8 +3101,8 @@ export const MySqlService = {
     async purgeInventoryLevels(companyId = null) {
         try {
             const sql = companyId
-                ? `DELETE FROM inventory_items WHERE default_warehouse != '__catalog__' AND company_id = ?`
-                : `DELETE FROM inventory_items WHERE default_warehouse != '__catalog__'`;
+                ? `DELETE FROM \`${INVENTORY_SYNC_TABLE}\` WHERE default_warehouse != '__catalog__' AND company_id = ?`
+                : `DELETE FROM \`${INVENTORY_SYNC_TABLE}\` WHERE default_warehouse != '__catalog__'`;
             const params = companyId ? [companyId] : [];
             const [result] = await pool.query(sql, params);
             return result.affectedRows || 0;
@@ -3011,14 +3112,14 @@ export const MySqlService = {
         }
     },
 
-    /** Remove stock rows for specific items before re-importing from Acumatica. */
+    /** Remove stock rows for specific items before re-importing from Acumatica (sync table). */
     async deleteInventoryLevelsForItems(itemIds, companyId = "main") {
         const ids = [...new Set(itemIds.map((id) => String(id || "").trim()).filter(Boolean))];
         if (!ids.length) return 0;
         try {
             const placeholders = ids.map(() => "?").join(",");
             const [result] = await pool.query(
-                `DELETE FROM inventory_items
+                `DELETE FROM \`${INVENTORY_SYNC_TABLE}\`
                  WHERE company_id = ?
                    AND default_warehouse != '__catalog__'
                    AND TRIM(inventory_id) IN (${placeholders})`,

@@ -194,7 +194,7 @@ export default function AdminPage() {
 
     return (
         <div className="admin-root">
-            <header className="admin-header">
+            <header className="admin-header" data-tour="page-title">
                 <div>
                     <h1>Admin — User Accounts</h1>
                     <p>Create and manage local logins for KGS Purchasing. ERP data still uses system Acumatica credentials.</p>
@@ -243,7 +243,7 @@ export default function AdminPage() {
                 </form>
             </section>
 
-            <section className="admin-card">
+            <section className="admin-card" data-tour="toolbar">
                 <div className="admin-card-head">
                     <h2>{editingId ? "Edit user" : "Create user"}</h2>
                     {editingId && (
@@ -313,7 +313,7 @@ export default function AdminPage() {
                 </form>
             </section>
 
-            <section className="admin-card">
+            <section className="admin-card" data-tour="main-table">
                 <h2>All users ({users.length})</h2>
                 <div className="admin-table-wrap">
                     <table className="admin-table">

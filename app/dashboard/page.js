@@ -475,7 +475,7 @@ export default function DashboardPage() {
     return (
         <div className="db-root">
             <main className="db-main">
-                <div className="db-page-title">
+                <div className="db-page-title" data-tour="page-title">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <h1>Inventory</h1>
                         <span className="db-company-badge">{companyLabel}</span>
@@ -499,7 +499,7 @@ export default function DashboardPage() {
                     )}
                 </div>
 
-                <div className="db-stats">
+                <div className="db-stats" data-tour="kpi-cards">
                 <div className="db-stat-card">
                     <span className="db-stat-label">Total Stocks</span>
                     <span className="db-stat-value">{statsLoading ? "..." : (globalStats.totalStock || 0).toLocaleString()}</span>
@@ -549,7 +549,7 @@ export default function DashboardPage() {
 
                 <div className="db-toolbar db-toolbar--flat">
                     <div className="db-toolbar-left">
-                        <div className="db-select-wrapper">
+                        <div className="db-select-wrapper" data-tour="branch-filter">
                             <IconFilter />
                             <select className="db-select" value={selectedBranch} onChange={(e) => handleBranchChange(e.target.value)} aria-label="Branch filter">
                                 <option value="">All Branches</option>
@@ -575,7 +575,7 @@ export default function DashboardPage() {
                     </div>
                 </div>
 
-                <div className="db-table-section">
+                <div className="db-table-section" data-tour="inventory-table">
                     <div className="db-table-section-header">
                         <h2>Inventory</h2>
                         <p>Stock records by inventory ID, branch, and quantity on hand.</p>

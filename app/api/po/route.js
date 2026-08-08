@@ -110,12 +110,16 @@ export async function GET(request) {
         const status = searchParams.get("status") || "";
         const branch = (searchParams.get("branch") || "").trim();
         const vendorId = (searchParams.get("vendorId") || "").trim();
+        const orderNbrsParam = searchParams.get("orderNbrs");
+        const orderNbrs = orderNbrsParam == null
+            ? null
+            : orderNbrsParam.split(",").map((s) => s.trim()).filter(Boolean);
         const source = searchParams.get("source") || "mysql";
         const userCred = getSessionFromRequest(request);
         const poCred = await resolvePoCredential(request);
         const companyId = getActiveCompanyFromRequest(request) || "main";
 
-        const fetchParams = { page, pageSize, search, startDate, endDate, status, branch, vendorId, companyId };
+        const fetchParams = { page, pageSize, search, startDate, endDate, status, branch, vendorId, companyId, orderNbrs };
 
         if (source === "mysql") {
             try {

@@ -157,6 +157,50 @@
 
 .admin-btn--ghost {
     background: transparent;
+    border: 1px solid var(--border-medium);
+    color: var(--text-primary);
+}
+
+.tour-replay-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+}
+
+.tour-replay-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-main);
+}
+
+.tour-replay-row strong {
+    display: block;
+    font-size: 0.92rem;
+    color: var(--text-primary);
+}
+
+.tour-replay-status {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+@media (max-width: 640px) {
+    .tour-replay-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}
+
     color: var(--text-secondary);
     border: 1px solid var(--border-medium);
 }
