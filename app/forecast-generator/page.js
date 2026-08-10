@@ -104,8 +104,8 @@ export default function ForecastGeneratorPage() {
             setMounted(true);
             try {
                 const b = localStorage.getItem("fg_branch");
-                const l3f = localStorage.getItem("fg_last3_from");
-                const l3t = localStorage.getItem("fg_last3_to");
+                const l3f = localStorage.getItem("fg_v3_last3_from");
+                const l3t = localStorage.getItem("fg_v3_last3_to");
                 const lyf = localStorage.getItem("fg_ly_from");
                 const lyt = localStorage.getItem("fg_ly_to");
                 if (b != null) setSelectedBranch(b);
@@ -121,8 +121,8 @@ export default function ForecastGeneratorPage() {
         if (!mounted) return;
         try {
             localStorage.setItem("fg_branch", selectedBranch);
-            localStorage.setItem("fg_last3_from", last3From);
-            localStorage.setItem("fg_last3_to", last3To);
+            localStorage.setItem("fg_v3_last3_from", last3From);
+            localStorage.setItem("fg_v3_last3_to", last3To);
             localStorage.setItem("fg_ly_from", lyFrom);
             localStorage.setItem("fg_ly_to", lyTo);
         } catch { /* ignore */ }
@@ -339,7 +339,7 @@ export default function ForecastGeneratorPage() {
                                 aria-label="Last 3 months end"
                             />
                         </div>
-                        <span className="fg-period-hint">{periods.last3Label || "May – Jul 2026"}</span>
+                        <span className="fg-period-hint">{periods.last3Label || "May – Aug 2026"}</span>
                     </div>
                     <div className="fg-period-group">
                         <label htmlFor="fg-ly-from">Last Year Same Quarter</label>

@@ -5150,23 +5150,22 @@ export const MySqlService = {
             const ecomSalesEx = sqlExcludeEcomSalesBranches("branch_name", "s");
             salesWhere.push(ecomSalesEx.clause);
             salesParams.push(...ecomSalesEx.params);
-        } else if (effectiveCompanyId === "ecommerce" || (branch && isEcomBranchAlias(branch))) {
+        } else if (effectiveCompanyId === "ecommerce" && !branch) {
             const ecomOnly = sqlOnlyEcomSalesBranches("branch_name", "s");
             salesWhere.push(ecomOnly.clause);
             salesParams.push(...ecomOnly.params);
         } else if (branch) {
-            const salesIds = [...new Set([String(branch).trim().toUpperCase(), ...destinations])].filter(Boolean);
-            salesWhere.push(`(
-                UPPER(TRIM(s.branch_name)) IN (${salesIds.map(() => "?").join(",")})
-                OR UPPER(REPLACE(TRIM(s.branch_name), ' ', '')) LIKE ?
-            )`);
-            salesParams.push(...salesIds, `%${normalizeInvKey(branch)}%`);
+            const branchNames = await this.resolveSalesBranchNames(branch);
+            if (branchNames.length) {
+                salesWhere.push(`s.branch_name IN (${branchNames.map(() => "?").join(",")})`);
+                salesParams.push(...branchNames);
+            }
         }
 
         const [salesRows] = await purchasePool.query(
             `SELECT UPPER(REPLACE(TRIM(s.inventory_id), ' ', '')) AS invKey,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS last3,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS lastYear
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS last3,
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS lastYear
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}
              GROUP BY UPPER(REPLACE(TRIM(s.inventory_id), ' ', ''))`,
@@ -5386,18 +5385,21 @@ export const MySqlService = {
             const ecomSalesEx = sqlExcludeEcomSalesBranches("branch_name", "s");
             salesWhere.push(ecomSalesEx.clause);
             salesParams.push(...ecomSalesEx.params);
-        } else if (effectiveCompanyId === "ecommerce" || (branch && isEcomBranchAlias(branch))) {
+        } else if (effectiveCompanyId === "ecommerce" && !branch) {
             const ecomOnly = sqlOnlyEcomSalesBranches("branch_name", "s");
             salesWhere.push(ecomOnly.clause);
             salesParams.push(...ecomOnly.params);
         } else if (branch) {
-            salesWhere.push("TRIM(UPPER(s.branch_name)) = TRIM(UPPER(?))");
-            salesParams.push(branch);
+            const branchNames = await this.resolveSalesBranchNames(branch);
+            if (branchNames.length) {
+                salesWhere.push(`s.branch_name IN (${branchNames.map(() => "?").join(",")})`);
+                salesParams.push(...branchNames);
+            }
         }
         const [[salesMetrics]] = await purchasePool.query(
             `SELECT
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS last3,
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS lastYear
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS last3,
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS lastYear
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}`,
             [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
