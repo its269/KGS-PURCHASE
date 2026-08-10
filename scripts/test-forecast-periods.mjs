@@ -10,7 +10,6 @@ import {
     poLineOpenQty,
     sqlMatchOpenPoForBranch,
     sqlPoLineOpenQty,
-    sqlPoLineOrderQty,
 } from "../lib/open-po-match.js";
 
 test("last 3 months covers the same 90-day span as Last 3 Months Sales (Aug 2026 → May–Aug)", () => {
@@ -70,14 +69,13 @@ test("Coming PO branch match includes PO-number prefix even when warehouse is fi
     assert.equal(sqlPoLineOpenQty("d").includes("line_completed"), false);
 });
 
-test("Forecast Coming PO includes On Hold and uses Acumatica Order Qty", () => {
-    const replenish = openPoHeaderStatuses();
-    assert.ok(replenish.includes("Open"));
-    assert.equal(replenish.includes("On Hold"), false);
-    const forecast = openPoHeaderStatuses({ includeOnHold: true });
-    assert.ok(forecast.includes("On Hold"));
-    assert.ok(forecast.includes("HOLD"));
-    assert.equal(sqlPoLineOrderQty("d"), "COALESCE(d.qty, 0)");
+test("Forecast Coming PO matches Replenishment: Open only, remaining qty", () => {
+    const forecast = openPoHeaderStatuses();
+    assert.ok(forecast.includes("Open"));
+    assert.equal(forecast.includes("On Hold"), false);
+    assert.equal(forecast.includes("HOLD"), false);
+    assert.equal(sqlPoLineOpenQty("d").includes("received_qty"), true);
+    assert.equal(sqlPoLineOpenQty("d").includes("line_completed"), false);
 });
 
 test("Forecast PO refresh filters Open and On Hold without OR", () => {

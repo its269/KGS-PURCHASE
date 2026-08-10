@@ -985,8 +985,8 @@ export const MySqlService = {
     /**
      * Open purchase order quantities by inventory ID for a destination warehouse
      * (or retail branch stock-warehouse group, e.g. MANILA + MNL-MRILAO).
-     * Forecast passes includeOnHold + useOrderQty to match OPEN P.O FOR FORECAST.
-     * Replenishment keeps remaining qty and excludes On Hold.
+     * Forecast and Replenishment both use remaining qty (Order Qty − QtyOnReceipts)
+     * and exclude On Hold / Hold.
      */
     async getOpenPoQtyByItem({ warehouseId = "MAIN", includeOnHold = false, useOrderQty = false } = {}) {
         const destKey = String(warehouseId || "MAIN").trim().toUpperCase() || "MAIN";
@@ -5215,8 +5215,8 @@ export const MySqlService = {
         ]));
 
         const comingPoRaw = branch
-            ? await this.getOpenPoQtyByItem({ warehouseId: branch, includeOnHold: true, useOrderQty: true })
-            : await this._getOpenPoQtyAllUncached(effectiveCompanyId, { includeOnHold: true, useOrderQty: true });
+            ? await this.getOpenPoQtyByItem({ warehouseId: branch })
+            : await this._getOpenPoQtyAllUncached(effectiveCompanyId);
         const comingPoMap = new Map();
         for (const [id, qty] of comingPoRaw.entries()) {
             const key = normalizeInvKey(id);
@@ -5467,8 +5467,8 @@ export const MySqlService = {
         let comingPo = comingPoTotal;
         if (comingPo == null) {
             const map = branch
-                ? await this.getOpenPoQtyByItem({ warehouseId: branch, includeOnHold: true, useOrderQty: true })
-                : await this._getOpenPoQtyAllUncached(effectiveCompanyId, { includeOnHold: true, useOrderQty: true });
+                ? await this.getOpenPoQtyByItem({ warehouseId: branch })
+                : await this._getOpenPoQtyAllUncached(effectiveCompanyId);
             comingPo = [...map.values()].reduce((sum, n) => sum + (Number(n) || 0), 0);
         }
 

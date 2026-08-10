@@ -573,6 +573,7 @@ export default function ForecastGeneratorPage() {
 
                 <p className="fg-footer">
                     Target Sales defaults to Estimate + Buffer and can be typed in. For P.O = Target − Inventory.
+                    Coming PO = Open POs only (excludes On Hold), same as Replenishment.
                     Net P.O = For P.O − Coming PO. Estimated Sales Amount = Target Sales × SRP.
                 </p>
             </main>
