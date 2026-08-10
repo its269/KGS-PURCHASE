@@ -17,6 +17,7 @@ import {
     rangeFromMonthInputs,
 } from "@/lib/forecast-generator";
 import { logUserActivity, summarizeActivityDetail } from "@/lib/activity-log";
+import { refreshForecastComingPos, withTimeout } from "@/lib/refresh-forecast-pos";
 
 export const dynamic = "force-dynamic";
 
@@ -97,6 +98,20 @@ export async function GET(request) {
         const search = searchParams.get("search") || "";
         const itemClass = searchParams.get("itemClass") || "";
         const companyId = getActiveCompanyFromRequest(request) || "main";
+
+        try {
+            const refresh = await withTimeout(refreshForecastComingPos({ branch }), 20_000);
+            if (!refresh?.skipped) {
+                console.log("[Forecast Generator] Coming PO refresh", {
+                    branch: branch || "ALL",
+                    ok: refresh?.ok,
+                    reason: refresh?.reason || null,
+                    orders: refresh?.orders || 0,
+                });
+            }
+        } catch (refreshErr) {
+            console.warn("[Forecast Generator] Coming PO refresh skipped:", refreshErr.message);
+        }
 
         const result = await MySqlService.getForecastGenerator({
             companyId,

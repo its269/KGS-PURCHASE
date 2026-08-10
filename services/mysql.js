@@ -18,7 +18,13 @@ import {
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
 import { getCached, invalidateCache } from "@/lib/server-cache";
-import { FORECAST_ALL_BRANCH, forecastBranchKey, normalizeInvKey } from "@/lib/forecast-generator.js";
+import { FORECAST_ALL_BRANCH, forecastBranchKey, forecastSoldQty, normalizeInvKey } from "@/lib/forecast-generator.js";
+import {
+    openPoHeaderStatuses,
+    sqlMatchOpenPoForBranch,
+    sqlPoLineOpenQty,
+    sqlPoLineOrderQty,
+} from "@/lib/open-po-match.js";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -568,9 +574,30 @@ export const MySqlService = {
                     `ALTER TABLE purchase_order_details ADD COLUMN received_qty DECIMAL(18,4) DEFAULT 0 AFTER qty`
                 );
             }
+            await this.ensurePoLineCompletedColumn();
             return true;
         } catch (err) {
             console.error("[MySQL ensureReceivedQtyColumn Error]", err);
+            return false;
+        }
+    },
+
+    async ensurePoLineCompletedColumn() {
+        try {
+            const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+            const [[row]] = await purchasePool.query(
+                `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA=? AND TABLE_NAME='purchase_order_details' AND COLUMN_NAME='line_completed'`,
+                [purchaseDb]
+            );
+            if (Number(row?.cnt) === 0) {
+                await purchasePool.query(
+                    `ALTER TABLE purchase_order_details ADD COLUMN line_completed TINYINT(1) NOT NULL DEFAULT 0 AFTER received_qty`
+                );
+            }
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensurePoLineCompletedColumn Error]", err);
             return false;
         }
     },
@@ -665,13 +692,14 @@ export const MySqlService = {
         try {
             const sql = `
                 INSERT INTO purchase_order_details
-                (order_nbr, line_nbr, inventory_id, description, qty, received_qty, uom, warehouse_id, branch_id, ext_cost, last_sync)
+                (order_nbr, line_nbr, inventory_id, description, qty, received_qty, line_completed, uom, warehouse_id, branch_id, ext_cost, last_sync)
                 VALUES ?
                 ON DUPLICATE KEY UPDATE
                 inventory_id = VALUES(inventory_id),
                 description = VALUES(description),
                 qty = VALUES(qty),
                 received_qty = VALUES(received_qty),
+                line_completed = VALUES(line_completed),
                 uom = VALUES(uom),
                 warehouse_id = COALESCE(NULLIF(VALUES(warehouse_id), ''), warehouse_id),
                 branch_id = COALESCE(NULLIF(VALUES(branch_id), ''), branch_id),
@@ -685,6 +713,7 @@ export const MySqlService = {
                 r.description,
                 r.qty,
                 r.received_qty ?? 0,
+                r.line_completed ? 1 : 0,
                 r.uom,
                 r.warehouse_id || r.branch_id || null,
                 r.branch_id || r.warehouse_id || null,
@@ -956,48 +985,52 @@ export const MySqlService = {
     /**
      * Open purchase order quantities by inventory ID for a destination warehouse
      * (or retail branch stock-warehouse group, e.g. MANILA + MNL-MRILAO).
-     * Excludes On Hold / Hold — those orders are not treated as incoming supply yet.
+     * Forecast passes includeOnHold + useOrderQty to match OPEN P.O FOR FORECAST.
+     * Replenishment keeps remaining qty and excludes On Hold.
      */
-    async getOpenPoQtyByItem({ warehouseId = "MAIN" } = {}) {
+    async getOpenPoQtyByItem({ warehouseId = "MAIN", includeOnHold = false, useOrderQty = false } = {}) {
         const destKey = String(warehouseId || "MAIN").trim().toUpperCase() || "MAIN";
-        return getCached(`openPo:${destKey}`, 60_000, () => this._getOpenPoQtyByItemUncached(destKey));
+        const cacheKey = `openPo:v5:${destKey}:h${includeOnHold ? 1 : 0}:o${useOrderQty ? 1 : 0}`;
+        return getCached(cacheKey, 60_000, () =>
+            this._getOpenPoQtyByItemUncached(destKey, { includeOnHold, useOrderQty })
+        );
     },
 
-    async _getOpenPoQtyByItemUncached(warehouseId = "MAIN") {
+    async _getOpenPoQtyByItemUncached(warehouseId = "MAIN", { includeOnHold = false, useOrderQty = false } = {}) {
         try {
             await this.ensureReceivedQtyColumn();
             await this.ensurePoWarehouseColumns();
             const destinations = getStockWarehouseIdsForBranch(warehouseId);
             if (!destinations.length) return new Map();
 
-            // Exact status values (avoids UPPER(TRIM(status)) so idx_ph_status_date can be used)
-            const openStatuses = [
-                "Open", "OPEN", "open",
-                "Balanced", "BALANCED", "balanced",
-                "Pending Approval", "PENDING APPROVAL",
-                "Pending Printing", "PENDING PRINTING",
-                "Pending Email", "PENDING EMAIL",
-            ];
+            const openStatuses = openPoHeaderStatuses({ includeOnHold });
+            const branchMatch = sqlMatchOpenPoForBranch({
+                detailsAlias: "d",
+                headerAlias: "h",
+                destinations,
+            });
+            const qtyExpr = useOrderQty ? sqlPoLineOrderQty("d") : sqlPoLineOpenQty("d");
 
             const [rows] = await purchasePool.query(
                 `
                 SELECT
-                    UPPER(TRIM(d.inventory_id)) as inventoryId,
-                    COALESCE(SUM(GREATEST(d.qty - COALESCE(d.received_qty, 0), 0)), 0) as openQty
+                    UPPER(REPLACE(TRIM(d.inventory_id), ' ', '')) as inventoryId,
+                    COALESCE(SUM(${qtyExpr}), 0) as openQty
                 FROM purchase_order_details d
                 INNER JOIN purchase_history h
                     ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
                 WHERE h.status IN (${openStatuses.map(() => "?").join(", ")})
-                  AND UPPER(TRIM(d.warehouse_id)) IN (${destinations.map(() => "?").join(", ")})
                   AND d.inventory_id IS NOT NULL
                   AND d.inventory_id != ''
-                GROUP BY UPPER(TRIM(d.inventory_id))
+                  AND (${qtyExpr}) > 0
+                  AND ${branchMatch.clause}
+                GROUP BY UPPER(REPLACE(TRIM(d.inventory_id), ' ', ''))
                 `,
-                [...openStatuses, ...destinations]
+                [...openStatuses, ...branchMatch.params]
             );
             const map = new Map();
             for (const row of rows) {
-                const key = String(row.inventoryId || "").toUpperCase().trim();
+                const key = normalizeInvKey(row.inventoryId);
                 if (key) map.set(key, Number(row.openQty) || 0);
             }
             return map;
@@ -5164,21 +5197,26 @@ export const MySqlService = {
 
         const [salesRows] = await purchasePool.query(
             `SELECT UPPER(REPLACE(TRIM(s.inventory_id), ' ', '')) AS invKey,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS last3,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS lastYear
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS last3Gross,
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END) AS last3Abs,
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS lastYearGross,
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END) AS lastYearAbs
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}
              GROUP BY UPPER(REPLACE(TRIM(s.inventory_id), ' ', ''))`,
-            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
+            [last3Start, last3End, last3Start, last3End, lastYearStart, lastYearEnd, lastYearStart, lastYearEnd, ...salesParams]
         );
         const salesMap = new Map(salesRows.map((r) => [
             r.invKey,
-            { last3: netQtySold(r.last3), lastYear: netQtySold(r.lastYear) },
+            {
+                last3: forecastSoldQty(r.last3Gross, r.last3Abs),
+                lastYear: forecastSoldQty(r.lastYearGross, r.lastYearAbs),
+            },
         ]));
 
         const comingPoRaw = branch
-            ? await this.getOpenPoQtyByItem({ warehouseId: branch })
-            : await this._getOpenPoQtyAllUncached(effectiveCompanyId);
+            ? await this.getOpenPoQtyByItem({ warehouseId: branch, includeOnHold: true, useOrderQty: true })
+            : await this._getOpenPoQtyAllUncached(effectiveCompanyId, { includeOnHold: true, useOrderQty: true });
         const comingPoMap = new Map();
         for (const [id, qty] of comingPoRaw.entries()) {
             const key = normalizeInvKey(id);
@@ -5265,6 +5303,29 @@ export const MySqlService = {
             }
         }
 
+        for (const [key, qty] of comingPoMap.entries()) {
+            if (seen.has(key)) continue;
+            if ((Number(qty) || 0) <= 0) continue;
+            if (searchUpper && !key.includes(searchUpper.replace(/\s+/g, ""))) continue;
+            if (classUpper) continue;
+            seen.add(key);
+            const sales = salesMap.get(key) || { last3: 0, lastYear: 0 };
+            const input = inputMap.get(key);
+            merged.push({
+                inventoryId: key,
+                itemClass: "",
+                itemName: "—",
+                srp: 0,
+                inventoryQty: 0,
+                comingPo: Number(qty) || 0,
+                last3MonthsQty: sales.last3,
+                lastYearQty: sales.lastYear,
+                estimateSales: input?.estimate_sales == null ? null : Number(input.estimate_sales),
+                bufferInventory: input?.buffer_inventory == null ? null : Number(input.buffer_inventory),
+                targetSales: input?.target_sales == null ? null : Number(input.target_sales),
+            });
+        }
+
         merged.sort((a, z) => {
             const aAct = (a.last3MonthsQty || 0) + (a.lastYearQty || 0);
             const zAct = (z.last3MonthsQty || 0) + (z.lastYearQty || 0);
@@ -5299,35 +5360,31 @@ export const MySqlService = {
         return { rows: pageRows, totalItems, itemClasses, metrics };
     },
 
-    async _getOpenPoQtyAllUncached(companyId = "main") {
+    async _getOpenPoQtyAllUncached(companyId = "main", { includeOnHold = false, useOrderQty = false } = {}) {
         try {
             await this.ensureReceivedQtyColumn();
             await this.ensurePoWarehouseColumns();
-            const openStatuses = [
-                "Open", "OPEN", "open",
-                "Balanced", "BALANCED", "balanced",
-                "Pending Approval", "PENDING APPROVAL",
-                "Pending Printing", "PENDING PRINTING",
-                "Pending Email", "PENDING EMAIL",
-            ];
+            const openStatuses = openPoHeaderStatuses({ includeOnHold });
+            const qtyExpr = useOrderQty ? sqlPoLineOrderQty("d") : sqlPoLineOpenQty("d");
             const [rows] = await purchasePool.query(
                 `
                 SELECT
-                    UPPER(TRIM(d.inventory_id)) as inventoryId,
-                    COALESCE(SUM(GREATEST(d.qty - COALESCE(d.received_qty, 0), 0)), 0) as openQty
+                    UPPER(REPLACE(TRIM(d.inventory_id), ' ', '')) as inventoryId,
+                    COALESCE(SUM(${qtyExpr}), 0) as openQty
                 FROM purchase_order_details d
                 INNER JOIN purchase_history h
                     ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
                 WHERE h.status IN (${openStatuses.map(() => "?").join(", ")})
                   AND d.inventory_id IS NOT NULL
                   AND d.inventory_id != ''
-                GROUP BY UPPER(TRIM(d.inventory_id))
+                  AND (${qtyExpr}) > 0
+                GROUP BY UPPER(REPLACE(TRIM(d.inventory_id), ' ', ''))
                 `,
                 openStatuses
             );
             const map = new Map();
             for (const row of rows) {
-                const key = String(row.inventoryId || "").toUpperCase().trim();
+                const key = normalizeInvKey(row.inventoryId);
                 if (key) map.set(key, Number(row.openQty) || 0);
             }
             return map;
@@ -5398,26 +5455,28 @@ export const MySqlService = {
         }
         const [[salesMetrics]] = await purchasePool.query(
             `SELECT
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS last3,
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS lastYear
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS last3Gross,
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END), 0) AS last3Abs,
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS lastYearGross,
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END), 0) AS lastYearAbs
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}`,
-            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
+            [last3Start, last3End, last3Start, last3End, lastYearStart, lastYearEnd, lastYearStart, lastYearEnd, ...salesParams]
         );
 
         let comingPo = comingPoTotal;
         if (comingPo == null) {
             const map = branch
-                ? await this.getOpenPoQtyByItem({ warehouseId: branch })
-                : await this._getOpenPoQtyAllUncached(effectiveCompanyId);
+                ? await this.getOpenPoQtyByItem({ warehouseId: branch, includeOnHold: true, useOrderQty: true })
+                : await this._getOpenPoQtyAllUncached(effectiveCompanyId, { includeOnHold: true, useOrderQty: true });
             comingPo = [...map.values()].reduce((sum, n) => sum + (Number(n) || 0), 0);
         }
 
         return {
             productCount,
             inventoryQty: Number(inventoryQty) || 0,
-            last3MonthsQty: netQtySold(salesMetrics?.last3),
-            lastYearQty: netQtySold(salesMetrics?.lastYear),
+            last3MonthsQty: forecastSoldQty(salesMetrics?.last3Gross, salesMetrics?.last3Abs),
+            lastYearQty: forecastSoldQty(salesMetrics?.lastYearGross, salesMetrics?.lastYearAbs),
             comingPo: Number(comingPo) || 0,
             needPoCount: 0,
             estimatedSalesAmount: 0,

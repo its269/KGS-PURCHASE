@@ -208,11 +208,16 @@
 .fg-table th:nth-child(1),
 .fg-table td:nth-child(1) { width: 7%; }
 .fg-table th:nth-child(2),
-.fg-table td:nth-child(2) { width: 8%; }
+.fg-table td:nth-child(2) { width: 7.5%; }
 .fg-table th:nth-child(3),
-.fg-table td:nth-child(3) { width: 8%; }
+.fg-table td:nth-child(3) { width: 7.5%; }
 .fg-table th:nth-child(4),
-.fg-table td:nth-child(4) { width: 12%; }
+.fg-table td:nth-child(4) {
+    width: 16%;
+    overflow: visible;
+    white-space: normal;
+    text-align: left !important;
+}
 .fg-table th:nth-child(5),
 .fg-table td:nth-child(5) { width: 6.5%; }
 .fg-table th:nth-child(6),
@@ -260,12 +265,16 @@
 }
 
 .fg-table .db-desc {
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    overflow: hidden;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-wrap: pretty;
     display: block;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
+    line-height: 1.3;
 }
 
 .fg-table td.fg-col-text:first-child {

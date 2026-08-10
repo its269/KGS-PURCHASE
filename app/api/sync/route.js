@@ -11,6 +11,7 @@ import {
     hasSystemAcumaticaCredentials,
 } from "@/lib/sync-acumatica-auth";
 import mysql from "mysql2/promise";
+import { isPoLineCompleted } from "@/lib/open-po-match.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -193,6 +194,7 @@ export async function POST(request) {
                 \`description\` VARCHAR(255),
                 \`qty\` DECIMAL(18,4),
                 \`received_qty\` DECIMAL(18,4) DEFAULT 0,
+                \`line_completed\` TINYINT(1) NOT NULL DEFAULT 0,
                 \`uom\` VARCHAR(50),
                 \`warehouse_id\` VARCHAR(100) NULL,
                 \`branch_id\` VARCHAR(100) NULL,
@@ -993,7 +995,14 @@ export async function POST(request) {
 
                                 for (const d of details) {
                                     const orderQty = parseFloat(getAny(d, "OrderQty", "Qty") || 0);
-                                    const receivedQty = parseFloat(getAny(d, "ReceivedQty", "QtyReceived", "ReceivedQuantity") || 0);
+                                    const receivedQty = parseFloat(getAny(
+                                        d,
+                                        "QtyOnReceipts",
+                                        "ReceivedQty",
+                                        "QtyReceived",
+                                        "ReceivedQuantity"
+                                    ) || 0);
+                                    const lineCompleted = isPoLineCompleted(getAny(d, "Completed", "LineCompleted"));
                                     // Destination warehouse from the PO line only — never the document header
                                     // branch (often MAIN), or branch POs get mis-counted as MAIN Coming PO.
                                     const warehouseId = String(
@@ -1008,6 +1017,7 @@ export async function POST(request) {
                                         description: getAny(d, "LineDescription", "Description"),
                                         qty: orderQty,
                                         received_qty: receivedQty,
+                                        line_completed: lineCompleted,
                                         uom: getF(d, "UOM"),
                                         warehouse_id: warehouseId || null,
                                         branch_id: warehouseId || null,
