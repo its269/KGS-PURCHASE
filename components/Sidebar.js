@@ -48,6 +48,12 @@ const IconSparkles = () => (
   </svg>
 );
 
+const IconForecast = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" />
+  </svg>
+);
+
 const IconSync = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
@@ -197,6 +203,7 @@ export default function Sidebar() {
     { name: "Incoming PO", href: "/incoming-po", icon: <IconPO /> },
     { name: "Suppliers", href: "/suppliers", icon: <IconTruck /> },
     { name: "Replenishment", href: "/replenishment", icon: <IconSparkles /> },
+    { name: "Forecast Generator", href: "/forecast-generator", icon: <IconForecast /> },
     { name: "Last 3 Months Sales", href: "/sales", icon: <IconSales /> },
     { name: "Syncing Center", href: "/syncing", icon: <IconSync />, tourId: "nav-sync" },
     ...(userRole === "admin"

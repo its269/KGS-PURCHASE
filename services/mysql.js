@@ -14,9 +14,11 @@ import {
     sqlExcludeEcomSalesBranches,
     sqlOnlyEcomSalesBranches,
     getStockWarehouseIdsForBranch,
+    EXCLUDED_BRANCH_KEYWORDS,
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
 import { getCached, invalidateCache } from "@/lib/server-cache";
+import { FORECAST_ALL_BRANCH, forecastBranchKey, normalizeInvKey } from "@/lib/forecast-generator.js";
 
 const pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
@@ -191,6 +193,31 @@ function sqlMatchBranchWarehouses(alias, destinations) {
     return {
         clause: `(UPPER(TRIM(${alias}.branch_id)) IN (${ph}) OR UPPER(TRIM(${alias}.default_warehouse)) IN (${ph}))`,
         params: [...sites, ...sites],
+    };
+}
+
+function sqlMatchForecastWarehouses(alias, destinations, warehouseCol = "warehouse_id") {
+    const sites = (destinations || []).map((d) => String(d || "").trim().toUpperCase()).filter(Boolean);
+    if (!sites.length) return { clause: "1=1", params: [] };
+    const ph = sites.map(() => "?").join(", ");
+    return {
+        clause: `(UPPER(TRIM(COALESCE(${alias}.branch_id,''))) IN (${ph})
+              OR UPPER(TRIM(COALESCE(${alias}.${warehouseCol},''))) IN (${ph})
+              OR UPPER(TRIM(COALESCE(${alias}.site_id,''))) IN (${ph}))`,
+        params: [...sites, ...sites, ...sites],
+    };
+}
+
+function sqlExcludeForecastDamage(alias, warehouseCol = "warehouse_id") {
+    const cols = [
+        `UPPER(TRIM(COALESCE(${alias}.branch_id,'')))`,
+        `UPPER(TRIM(COALESCE(${alias}.site_id,'')))`,
+        `UPPER(TRIM(COALESCE(${alias}.${warehouseCol},'')))`,
+    ];
+    const likes = EXCLUDED_BRANCH_KEYWORDS.flatMap(() => cols.map((c) => `${c} NOT LIKE ?`));
+    return {
+        clause: `(${likes.join(" AND ")})`,
+        params: EXCLUDED_BRANCH_KEYWORDS.flatMap((kw) => [`%${kw}%`, `%${kw}%`, `%${kw}%`]),
     };
 }
 
@@ -3182,6 +3209,19 @@ export const MySqlService = {
                 );
             }
             await connection.commit();
+            await this.upsertForecastItemStockRows(
+                items.map((item) => ({
+                    inventory_id: item.inventory_id,
+                    warehouse_id: "__catalog__",
+                    item_name: item.description,
+                    item_class: item.item_class,
+                    default_price: item.default_price,
+                    on_hand: 0,
+                    available: 0,
+                    item_status: item.item_status,
+                })),
+                companyId
+            );
         } catch (err) {
             await connection.rollback();
             console.error('[MySQL upsertInventoryItems Error]', err);
@@ -3291,6 +3331,21 @@ export const MySqlService = {
             invalidateCache("global-stats-v3:");
             invalidateCache(`wh-count:${INVENTORY_SYNC_TABLE}:`);
             invalidateCache(`cat-count:${INVENTORY_SYNC_TABLE}:`);
+            await this.upsertForecastItemStockRows(
+                levels.map((l) => ({
+                    inventory_id: l.inventory_id,
+                    warehouse_id: l.warehouse_id || l.branch_id || "",
+                    branch_id: l.branch_id || "",
+                    site_id: l.site_id || "",
+                    item_name: l.description,
+                    item_class: l.item_class,
+                    default_price: l.default_price,
+                    on_hand: l.on_hand,
+                    available: l.available,
+                    item_status: l.item_status,
+                })),
+                companyId
+            );
         } catch (err) {
             await connection.rollback();
             console.error('[MySQL upsertInventoryLevels Error]', err);
@@ -4752,5 +4807,574 @@ export const MySqlService = {
             pageSize: 100000,
             slim: true,
         });
+    },
+
+    // ── Forecast Generator ─────────────────────────────────────
+
+    async ensureForecastInputsTable() {
+        if (MySqlService._forecastInputsReady) return true;
+        try {
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS forecast_generator_inputs (
+                  company_id VARCHAR(64) NOT NULL DEFAULT 'main',
+                  branch_id VARCHAR(100) NOT NULL,
+                  inventory_id VARCHAR(100) NOT NULL,
+                  estimate_sales DECIMAL(18,4) NULL,
+                  buffer_inventory DECIMAL(18,4) NULL,
+                  updated_by INT UNSIGNED NULL,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (company_id, branch_id, inventory_id),
+                  KEY idx_fgi_branch (branch_id),
+                  KEY idx_fgi_item (inventory_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            MySqlService._forecastInputsReady = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureForecastInputsTable]", err.message);
+            return false;
+        }
+    },
+
+    async ensureForecastItemStockTable() {
+        if (MySqlService._forecastStockReady) return true;
+        try {
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS forecast_item_stock (
+                  company_id VARCHAR(64) NOT NULL DEFAULT 'main',
+                  inventory_id VARCHAR(100) NOT NULL,
+                  warehouse_id VARCHAR(100) NOT NULL,
+                  branch_id VARCHAR(100) NULL,
+                  site_id VARCHAR(100) NULL,
+                  item_name VARCHAR(255) NULL,
+                  item_class VARCHAR(100) NULL,
+                  default_price DECIMAL(18,4) DEFAULT 0,
+                  on_hand DECIMAL(18,4) DEFAULT 0,
+                  available DECIMAL(18,4) DEFAULT 0,
+                  item_status VARCHAR(50) NULL,
+                  last_sync DATETIME NULL,
+                  PRIMARY KEY (company_id, inventory_id, warehouse_id),
+                  KEY idx_fis_branch (company_id, branch_id),
+                  KEY idx_fis_site (company_id, site_id),
+                  KEY idx_fis_class (item_class),
+                  KEY idx_fis_name (inventory_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            MySqlService._forecastStockReady = true;
+            await this.backfillForecastItemStock();
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureForecastItemStockTable]", err.message);
+            return false;
+        }
+    },
+
+    async backfillForecastItemStock() {
+        if (MySqlService._forecastStockBackfilled) return true;
+        try {
+            const [[cnt]] = await purchasePool.query(`SELECT COUNT(*) AS n FROM forecast_item_stock`);
+            if (Number(cnt?.n) > 0) {
+                MySqlService._forecastStockBackfilled = true;
+                return true;
+            }
+            const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+            const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+            for (const table of ["product_inventory_items", "inventory_items"]) {
+                try {
+                    const [result] = await purchasePool.query(
+                        `INSERT INTO \`${purchaseDb}\`.forecast_item_stock (
+                            company_id, inventory_id, warehouse_id, branch_id, site_id,
+                            item_name, item_class, default_price, on_hand, available, item_status, last_sync
+                        )
+                        SELECT
+                            COALESCE(NULLIF(TRIM(company_id), ''), 'main'),
+                            TRIM(inventory_id),
+                            COALESCE(NULLIF(TRIM(default_warehouse), ''), '__catalog__'),
+                            NULLIF(TRIM(branch_id), ''),
+                            NULLIF(TRIM(site_id), ''),
+                            inventory_name,
+                            item_class,
+                            COALESCE(default_price, 0),
+                            COALESCE(on_hand, 0),
+                            COALESCE(available, on_hand, 0),
+                            item_status,
+                            last_sync
+                        FROM \`${inventoryDb}\`.\`${table}\`
+                        WHERE inventory_id IS NOT NULL AND TRIM(inventory_id) != ''
+                        ON DUPLICATE KEY UPDATE
+                            branch_id = COALESCE(VALUES(branch_id), branch_id),
+                            site_id = COALESCE(VALUES(site_id), site_id),
+                            item_name = COALESCE(VALUES(item_name), item_name),
+                            item_class = COALESCE(VALUES(item_class), item_class),
+                            default_price = COALESCE(VALUES(default_price), default_price),
+                            on_hand = VALUES(on_hand),
+                            available = VALUES(available),
+                            item_status = COALESCE(VALUES(item_status), item_status),
+                            last_sync = VALUES(last_sync)`
+                    );
+                    console.log(`[Forecast stock] backfill from ${table}: ${result?.affectedRows || 0} rows`);
+                    break;
+                } catch (err) {
+                    console.warn(`[Forecast stock] backfill ${table} skipped:`, err.message);
+                }
+            }
+            MySqlService._forecastStockBackfilled = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL backfillForecastItemStock]", err.message);
+            return false;
+        }
+    },
+
+    async upsertForecastItemStockRows(rows = [], companyId = "main") {
+        const list = (rows || []).filter((r) => String(r?.inventory_id || "").trim());
+        if (!list.length) return 0;
+        try {
+            await this.ensureForecastItemStockTable();
+            const company = String(companyId || "main").trim() || "main";
+            const CHUNK = 200;
+            const now = new Date();
+            let written = 0;
+            for (let i = 0; i < list.length; i += CHUNK) {
+                const chunk = list.slice(i, i + CHUNK);
+                const placeholders = chunk.map(() => "(?,?,?,?,?,?,?,?,?,?,?,?)").join(",");
+                const values = chunk.flatMap((r) => [
+                    company,
+                    String(r.inventory_id || "").trim(),
+                    String(r.warehouse_id || r.default_warehouse || "__catalog__").trim() || "__catalog__",
+                    String(r.branch_id || "").trim() || null,
+                    String(r.site_id || "").trim() || null,
+                    r.item_name || r.description || null,
+                    r.item_class ?? null,
+                    Number(r.default_price) || 0,
+                    Number(r.on_hand) || 0,
+                    Number(r.available ?? r.on_hand) || 0,
+                    r.item_status || null,
+                    now,
+                ]);
+                await purchasePool.query(
+                    `INSERT INTO forecast_item_stock (
+                        company_id, inventory_id, warehouse_id, branch_id, site_id,
+                        item_name, item_class, default_price, on_hand, available, item_status, last_sync
+                    ) VALUES ${placeholders}
+                    ON DUPLICATE KEY UPDATE
+                        branch_id = COALESCE(VALUES(branch_id), branch_id),
+                        site_id = COALESCE(VALUES(site_id), site_id),
+                        item_name = COALESCE(VALUES(item_name), item_name),
+                        item_class = COALESCE(VALUES(item_class), item_class),
+                        default_price = COALESCE(VALUES(default_price), default_price),
+                        on_hand = VALUES(on_hand),
+                        available = VALUES(available),
+                        item_status = COALESCE(VALUES(item_status), item_status),
+                        last_sync = VALUES(last_sync)`,
+                    values
+                );
+                written += chunk.length;
+            }
+            invalidateCache("forecastGen:");
+            return written;
+        } catch (err) {
+            console.warn("[MySQL upsertForecastItemStockRows]", err.message);
+            return 0;
+        }
+    },
+
+    async upsertForecastGeneratorInput({
+        companyId = "main",
+        branchId = FORECAST_ALL_BRANCH,
+        inventoryId,
+        estimateSales = null,
+        bufferInventory = null,
+        updatedBy = null,
+    } = {}) {
+        const id = String(inventoryId || "").trim();
+        if (!id) return false;
+        await this.ensureForecastInputsTable();
+        const company = String(companyId || "main").trim() || "main";
+        const branch = forecastBranchKey(branchId);
+        try {
+            await purchasePool.query(
+                `INSERT INTO forecast_generator_inputs
+                    (company_id, branch_id, inventory_id, estimate_sales, buffer_inventory, updated_by)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                    estimate_sales = VALUES(estimate_sales),
+                    buffer_inventory = VALUES(buffer_inventory),
+                    updated_by = VALUES(updated_by),
+                    updated_at = CURRENT_TIMESTAMP`,
+                [company, branch, id, estimateSales, bufferInventory, updatedBy]
+            );
+            invalidateCache(`forecastGen:${company}:${branch}`);
+            return true;
+        } catch (err) {
+            console.error("[MySQL upsertForecastGeneratorInput]", err.message);
+            return false;
+        }
+    },
+
+    async _forecastStockSource() {
+        await this.ensureForecastItemStockTable();
+        const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";
+        const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+        try {
+            const [[row]] = await purchasePool.query(`SELECT COUNT(*) AS n FROM forecast_item_stock`);
+            if (Number(row?.n) > 0) {
+                return {
+                    qualified: `\`${purchaseDb}\`.forecast_item_stock`,
+                    warehouseCol: "warehouse_id",
+                    nameCol: "item_name",
+                };
+            }
+        } catch { /* fall through */ }
+        return {
+            qualified: `\`${inventoryDb}\`.inventory_items`,
+            warehouseCol: "default_warehouse",
+            nameCol: "inventory_name",
+        };
+    },
+
+    async getForecastGenerator({
+        companyId = "main",
+        branch = "",
+        search = "",
+        itemClass = "",
+        last3Start,
+        last3End,
+        lastYearStart,
+        lastYearEnd,
+        page = 1,
+        pageSize = 10,
+    } = {}) {
+        await this.ensureForecastInputsTable();
+        const src = await this._forecastStockSource();
+        const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
+        const searchTerm = normalizeInventorySearch(search);
+        const classFilter = String(itemClass || "").trim();
+        const branchKey = forecastBranchKey(branch);
+        const destinations = branch ? getStockWarehouseIdsForBranch(branch) : [];
+        const limitInt = Math.max(1, parseInt(pageSize, 10) || 10);
+        const pageInt = Math.max(1, parseInt(page, 10) || 1);
+        const offsetInt = (pageInt - 1) * limitInt;
+        const whCol = src.warehouseCol;
+        const nameCol = src.nameCol;
+        const stockMatch = sqlMatchForecastWarehouses("f", destinations, whCol);
+        const damageEx = sqlExcludeForecastDamage("f", whCol);
+
+        const stockWhere = ["f.company_id = ?", damageEx.clause];
+        const stockParams = [effectiveCompanyId, ...damageEx.params];
+        if (effectiveCompanyId === "main" && !branch) {
+            const ecomEx = sqlExcludeEcomBranches("f");
+            stockWhere.push(ecomEx.clause);
+            stockParams.push(...ecomEx.params);
+        } else if (effectiveCompanyId === "ecommerce" || (branch && isEcomBranchAlias(branch))) {
+            const ecomOnly = sqlOnlyEcomBranches("f");
+            stockWhere.push(ecomOnly.clause);
+            stockParams.push(...ecomOnly.params);
+        }
+
+        const qtyCase = destinations.length
+            ? `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN COALESCE(f.available, f.on_hand, 0) ELSE 0 END)`
+            : `SUM(CASE WHEN f.${whCol} != '__catalog__' THEN COALESCE(f.available, f.on_hand, 0) ELSE 0 END)`;
+        const qtyParams = destinations.length ? stockMatch.params : [];
+
+        const atBranchCase = destinations.length
+            ? `MAX(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN 1 ELSE 0 END)`
+            : "1";
+        const atBranchParams = destinations.length ? stockMatch.params : [];
+
+        const [stockRows] = await purchasePool.query(
+            `SELECT
+                UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) AS invKey,
+                MAX(TRIM(f.inventory_id)) AS inventoryId,
+                MAX(CASE WHEN f.${whCol} = '__catalog__' THEN f.${nameCol} END) AS catName,
+                MAX(CASE WHEN f.${whCol} = '__catalog__' THEN f.item_class END) AS catClass,
+                MAX(CASE WHEN f.${whCol} = '__catalog__' THEN f.default_price END) AS catSrp,
+                MAX(f.${nameCol}) AS anyName,
+                MAX(f.item_class) AS anyClass,
+                MAX(f.default_price) AS anySrp,
+                ${qtyCase} AS inventoryQty,
+                ${atBranchCase} AS atBranch
+             FROM ${src.qualified} f
+             WHERE ${stockWhere.join(" AND ")}
+             GROUP BY UPPER(REPLACE(TRIM(f.inventory_id), ' ', ''))`,
+            [...qtyParams, ...atBranchParams, ...stockParams]
+        );
+
+        const overallStart = last3Start < lastYearStart ? last3Start : lastYearStart;
+        const overallEnd = last3End > lastYearEnd ? last3End : lastYearEnd;
+        const salesWhere = ["s.document_date >= ?", "s.document_date <= ?"];
+        const salesParams = [overallStart, overallEnd];
+        const salesEx = sqlExcludeSalesBranches("branch_name", "s");
+        salesWhere.push(salesEx.clause);
+        salesParams.push(...salesEx.params);
+        if (effectiveCompanyId === "main" && !branch) {
+            const ecomSalesEx = sqlExcludeEcomSalesBranches("branch_name", "s");
+            salesWhere.push(ecomSalesEx.clause);
+            salesParams.push(...ecomSalesEx.params);
+        } else if (effectiveCompanyId === "ecommerce" || (branch && isEcomBranchAlias(branch))) {
+            const ecomOnly = sqlOnlyEcomSalesBranches("branch_name", "s");
+            salesWhere.push(ecomOnly.clause);
+            salesParams.push(...ecomOnly.params);
+        } else if (branch) {
+            const salesIds = [...new Set([String(branch).trim().toUpperCase(), ...destinations])].filter(Boolean);
+            salesWhere.push(`(
+                UPPER(TRIM(s.branch_name)) IN (${salesIds.map(() => "?").join(",")})
+                OR UPPER(REPLACE(TRIM(s.branch_name), ' ', '')) LIKE ?
+            )`);
+            salesParams.push(...salesIds, `%${normalizeInvKey(branch)}%`);
+        }
+
+        const [salesRows] = await purchasePool.query(
+            `SELECT UPPER(REPLACE(TRIM(s.inventory_id), ' ', '')) AS invKey,
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS last3,
+                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS lastYear
+             FROM product_periodic_sales s
+             WHERE ${salesWhere.join(" AND ")}
+             GROUP BY UPPER(REPLACE(TRIM(s.inventory_id), ' ', ''))`,
+            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
+        );
+        const salesMap = new Map(salesRows.map((r) => [
+            r.invKey,
+            { last3: netQtySold(r.last3), lastYear: netQtySold(r.lastYear) },
+        ]));
+
+        const comingPoRaw = branch
+            ? await this.getOpenPoQtyByItem({ warehouseId: branch })
+            : await this._getOpenPoQtyAllUncached(effectiveCompanyId);
+        const comingPoMap = new Map();
+        for (const [id, qty] of comingPoRaw.entries()) {
+            const key = normalizeInvKey(id);
+            comingPoMap.set(key, (comingPoMap.get(key) || 0) + (Number(qty) || 0));
+        }
+
+        const [inputRows] = await purchasePool.query(
+            `SELECT inventory_id, estimate_sales, buffer_inventory
+             FROM forecast_generator_inputs
+             WHERE company_id = ? AND branch_id = ?`,
+            [effectiveCompanyId, branchKey]
+        );
+        const inputMap = new Map();
+        for (const r of inputRows) {
+            inputMap.set(normalizeInvKey(r.inventory_id), r);
+        }
+
+        const [classRows] = await purchasePool.query(
+            `SELECT DISTINCT TRIM(f.item_class) AS itemClass
+             FROM ${src.qualified} f
+             WHERE f.company_id = ?
+               AND f.item_class IS NOT NULL
+               AND TRIM(f.item_class) != ''
+             ORDER BY itemClass ASC`,
+            [effectiveCompanyId]
+        );
+        const itemClasses = classRows.map((r) => r.itemClass).filter(Boolean);
+
+        const searchUpper = searchTerm.toUpperCase();
+        const classUpper = classFilter.toUpperCase();
+        const merged = [];
+        const seen = new Set();
+
+        for (const r of stockRows) {
+            const key = r.invKey || normalizeInvKey(r.inventoryId);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            const sales = salesMap.get(key) || { last3: 0, lastYear: 0 };
+            const itemName = r.catName || r.anyName || "—";
+            const itemClassName = r.catClass || r.anyClass || "";
+            if (searchUpper && !String(r.inventoryId || "").toUpperCase().includes(searchUpper) && !String(itemName).toUpperCase().includes(searchUpper)) {
+                continue;
+            }
+            if (classUpper && String(itemClassName).toUpperCase().trim() !== classUpper) continue;
+            const inventoryQty = Number(r.inventoryQty) || 0;
+            const comingPo = comingPoMap.get(key) || 0;
+            const atBranch = Number(r.atBranch) || 0;
+            if (branch && !atBranch && sales.last3 <= 0 && sales.lastYear <= 0 && comingPo <= 0) continue;
+            const input = inputMap.get(key);
+            merged.push({
+                inventoryId: r.inventoryId,
+                itemClass: itemClassName,
+                itemName,
+                srp: Number(r.catSrp ?? r.anySrp) || 0,
+                inventoryQty,
+                comingPo,
+                last3MonthsQty: sales.last3,
+                lastYearQty: sales.lastYear,
+                estimateSales: input?.estimate_sales == null ? null : Number(input.estimate_sales),
+                bufferInventory: input?.buffer_inventory == null ? null : Number(input.buffer_inventory),
+            });
+        }
+
+        if (!branch) {
+            for (const [key, sales] of salesMap.entries()) {
+                if (seen.has(key)) continue;
+                if (searchUpper && !key.includes(searchUpper.replace(/\s+/g, ""))) continue;
+                seen.add(key);
+                const input = inputMap.get(key);
+                merged.push({
+                    inventoryId: key,
+                    itemClass: "",
+                    itemName: "—",
+                    srp: 0,
+                    inventoryQty: 0,
+                    comingPo: comingPoMap.get(key) || 0,
+                    last3MonthsQty: sales.last3,
+                    lastYearQty: sales.lastYear,
+                    estimateSales: input?.estimate_sales == null ? null : Number(input.estimate_sales),
+                    bufferInventory: input?.buffer_inventory == null ? null : Number(input.buffer_inventory),
+                });
+            }
+        }
+
+        merged.sort((a, z) => {
+            const aAct = (a.last3MonthsQty || 0) + (a.lastYearQty || 0);
+            const zAct = (z.last3MonthsQty || 0) + (z.lastYearQty || 0);
+            if (zAct !== aAct) return zAct - aAct;
+            if ((z.inventoryQty || 0) !== (a.inventoryQty || 0)) return (z.inventoryQty || 0) - (a.inventoryQty || 0);
+            if ((z.comingPo || 0) !== (a.comingPo || 0)) return (z.comingPo || 0) - (a.comingPo || 0);
+            return String(a.inventoryId).localeCompare(String(z.inventoryId));
+        });
+
+        const totalItems = merged.length;
+        const pageRows = merged.slice(offsetInt, offsetInt + limitInt);
+        const metrics = {
+            productCount: totalItems,
+            inventoryQty: merged.reduce((s, r) => s + (Number(r.inventoryQty) || 0), 0),
+            last3MonthsQty: merged.reduce((s, r) => s + (Number(r.last3MonthsQty) || 0), 0),
+            lastYearQty: merged.reduce((s, r) => s + (Number(r.lastYearQty) || 0), 0),
+            comingPo: merged.reduce((s, r) => s + (Number(r.comingPo) || 0), 0),
+            needPoCount: merged.filter((r) => {
+                const est = r.estimateSales == null ? Math.max(r.last3MonthsQty, r.lastYearQty) : r.estimateSales;
+                const target = (Number(est) || 0) + (Number(r.bufferInventory) || 0);
+                return target - (r.inventoryQty || 0) - (r.comingPo || 0) > 0;
+            }).length,
+            estimatedSalesAmount: merged.reduce((s, r) => {
+                const est = r.estimateSales == null ? Math.max(r.last3MonthsQty, r.lastYearQty) : r.estimateSales;
+                return s + (Number(est) || 0) * (Number(r.srp) || 0);
+            }, 0),
+        };
+
+        return { rows: pageRows, totalItems, itemClasses, metrics };
+    },
+
+    async _getOpenPoQtyAllUncached(companyId = "main") {
+        try {
+            await this.ensureReceivedQtyColumn();
+            await this.ensurePoWarehouseColumns();
+            const openStatuses = [
+                "Open", "OPEN", "open",
+                "Balanced", "BALANCED", "balanced",
+                "Pending Approval", "PENDING APPROVAL",
+                "Pending Printing", "PENDING PRINTING",
+                "Pending Email", "PENDING EMAIL",
+            ];
+            const [rows] = await purchasePool.query(
+                `
+                SELECT
+                    UPPER(TRIM(d.inventory_id)) as inventoryId,
+                    COALESCE(SUM(GREATEST(d.qty - COALESCE(d.received_qty, 0), 0)), 0) as openQty
+                FROM purchase_order_details d
+                INNER JOIN purchase_history h
+                    ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
+                WHERE h.status IN (${openStatuses.map(() => "?").join(", ")})
+                  AND d.inventory_id IS NOT NULL
+                  AND d.inventory_id != ''
+                GROUP BY UPPER(TRIM(d.inventory_id))
+                `,
+                openStatuses
+            );
+            const map = new Map();
+            for (const row of rows) {
+                const key = String(row.inventoryId || "").toUpperCase().trim();
+                if (key) map.set(key, Number(row.openQty) || 0);
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL _getOpenPoQtyAllUncached]", err.message);
+            return new Map();
+        }
+    },
+
+    async _forecastMetrics({
+        effectiveCompanyId,
+        branch,
+        destinations,
+        last3Start,
+        last3End,
+        lastYearStart,
+        lastYearEnd,
+        productCount = 0,
+        comingPoTotal = null,
+    } = {}) {
+        const stockWhere = ["w.company_id = ?", "w.default_warehouse != '__catalog__'"];
+        const stockParams = [effectiveCompanyId];
+        const branchEx = sqlExcludeBranches("w");
+        stockWhere.push(branchEx.clause);
+        stockParams.push(...branchEx.params);
+        if (effectiveCompanyId === "main" && !branch) {
+            const ecomEx = sqlExcludeEcomBranches("w");
+            stockWhere.push(ecomEx.clause);
+            stockParams.push(...ecomEx.params);
+        } else if (effectiveCompanyId === "ecommerce" || (branch && isEcomBranchAlias(branch))) {
+            const ecomOnly = sqlOnlyEcomBranches("w");
+            stockWhere.push(ecomOnly.clause);
+            stockParams.push(...ecomOnly.params);
+        }
+        if (destinations?.length) {
+            const stockMatch = sqlMatchBranchWarehouses("w", destinations);
+            stockWhere.push(stockMatch.clause);
+            stockParams.push(...stockMatch.params);
+        }
+        const [[{ inventoryQty }]] = await pool.query(
+            `SELECT COALESCE(SUM(COALESCE(w.available, w.on_hand, 0)), 0) AS inventoryQty
+             FROM inventory_items w
+             WHERE ${stockWhere.join(" AND ")}`,
+            stockParams
+        );
+
+        const overallStart = last3Start < lastYearStart ? last3Start : lastYearStart;
+        const overallEnd = last3End > lastYearEnd ? last3End : lastYearEnd;
+        const salesWhere = ["s.document_date >= ?", "s.document_date <= ?"];
+        const salesParams = [overallStart, overallEnd];
+        const salesEx = sqlExcludeSalesBranches("branch_name", "s");
+        salesWhere.push(salesEx.clause);
+        salesParams.push(...salesEx.params);
+        if (effectiveCompanyId === "main" && !branch) {
+            const ecomSalesEx = sqlExcludeEcomSalesBranches("branch_name", "s");
+            salesWhere.push(ecomSalesEx.clause);
+            salesParams.push(...ecomSalesEx.params);
+        } else if (effectiveCompanyId === "ecommerce" || (branch && isEcomBranchAlias(branch))) {
+            const ecomOnly = sqlOnlyEcomSalesBranches("branch_name", "s");
+            salesWhere.push(ecomOnly.clause);
+            salesParams.push(...ecomOnly.params);
+        } else if (branch) {
+            salesWhere.push("TRIM(UPPER(s.branch_name)) = TRIM(UPPER(?))");
+            salesParams.push(branch);
+        }
+        const [[salesMetrics]] = await purchasePool.query(
+            `SELECT
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS last3,
+                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS lastYear
+             FROM product_periodic_sales s
+             WHERE ${salesWhere.join(" AND ")}`,
+            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
+        );
+
+        let comingPo = comingPoTotal;
+        if (comingPo == null) {
+            const map = branch
+                ? await this.getOpenPoQtyByItem({ warehouseId: branch })
+                : await this._getOpenPoQtyAllUncached(effectiveCompanyId);
+            comingPo = [...map.values()].reduce((sum, n) => sum + (Number(n) || 0), 0);
+        }
+
+        return {
+            productCount,
+            inventoryQty: Number(inventoryQty) || 0,
+            last3MonthsQty: netQtySold(salesMetrics?.last3),
+            lastYearQty: netQtySold(salesMetrics?.lastYear),
+            comingPo: Number(comingPo) || 0,
+            needPoCount: 0,
+            estimatedSalesAmount: 0,
+        };
     },
 };

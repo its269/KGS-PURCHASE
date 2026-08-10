@@ -56,7 +56,7 @@ export async function POST(request) {
             effectiveCookie = fresh;
         } else if (isSecretValid && !cookie) {
             console.log(">>> [Sync API] Secret valid. Performing system login to Acumatica...");
-            effectiveCookie = await systemLoginForCompany(process.env.ACUMATICA_COMPANY);
+            effectiveCookie = await systemLoginForCompany(getAcumaticaCompanyName("main"));
             console.log(">>> [Sync API] System login successful. Captured cookies.");
         }
     } catch (loginErr) {
@@ -67,7 +67,10 @@ export async function POST(request) {
         }
     }
 
-    if (effectiveCookie === "__bypass__" && !isSecretValid && !hasSystemAcumaticaCredentials()) {
+    // Local app login without ERP cookies cannot call Acumatica.
+    if (effectiveCookie === "__bypass__") effectiveCookie = null;
+
+    if (!effectiveCookie && !isSecretValid && !hasSystemAcumaticaCredentials()) {
         syncInProgress = false;
         return NextResponse.json({
             message:
@@ -201,6 +204,30 @@ export async function POST(request) {
 
         await MySqlService.ensureReceivedQtyColumn();
         await MySqlService.ensurePoWarehouseColumns();
+
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`forecast_item_stock\` (
+                \`company_id\` VARCHAR(64) NOT NULL DEFAULT 'main',
+                \`inventory_id\` VARCHAR(100) NOT NULL,
+                \`warehouse_id\` VARCHAR(100) NOT NULL,
+                \`branch_id\` VARCHAR(100) NULL,
+                \`site_id\` VARCHAR(100) NULL,
+                \`item_name\` VARCHAR(255) NULL,
+                \`item_class\` VARCHAR(100) NULL,
+                \`default_price\` DECIMAL(18,4) DEFAULT 0,
+                \`on_hand\` DECIMAL(18,4) DEFAULT 0,
+                \`available\` DECIMAL(18,4) DEFAULT 0,
+                \`item_status\` VARCHAR(50) NULL,
+                \`last_sync\` DATETIME NULL,
+                PRIMARY KEY (\`company_id\`, \`inventory_id\`, \`warehouse_id\`),
+                KEY \`idx_fis_branch\` (\`company_id\`, \`branch_id\`),
+                KEY \`idx_fis_site\` (\`company_id\`, \`site_id\`),
+                KEY \`idx_fis_class\` (\`item_class\`),
+                KEY \`idx_fis_name\` (\`inventory_id\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        await MySqlService.ensureForecastItemStockTable();
 
         await conn.query(`
             CREATE TABLE IF NOT EXISTS \`${purchaseDb}\`.\`replenishment_cache\` (
@@ -625,7 +652,9 @@ export async function POST(request) {
                             progress: Math.max(10, Math.min(95, Math.floor((totalSynced || 0) / 30))),
                             count: totalSynced || 0,
                         });
-                        invCookie = await systemLoginForCompany(getAcumaticaCompanyName("main"));
+                        invCookie = await systemLoginForCompany(getAcumaticaCompanyName("main"), {
+                            forceRefresh: true,
+                        });
                         effectiveCookie = invCookie;
                         console.log(">>> [Sync API] Re-authenticated after Unauthorized");
                         return invCookie;
@@ -848,7 +877,9 @@ export async function POST(request) {
                                 details: "Acumatica session expired — signing in again and retrying sales…",
                                 progress: 12,
                             });
-                            effectiveCookie = await systemLoginForCompany(getAcumaticaCompanyName("main"));
+                            effectiveCookie = await systemLoginForCompany(getAcumaticaCompanyName("main"), {
+                                forceRefresh: true,
+                            });
                             salesRows = await runSales(effectiveCookie);
                         }
 

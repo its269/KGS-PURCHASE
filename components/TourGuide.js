@@ -34,7 +34,6 @@ export default function TourGuide() {
     const [index, setIndex] = useState(0);
     const [showLauncher, setShowLauncher] = useState(false);
     const [layoutTick, setLayoutTick] = useState(0);
-    const [launcherPos, setLauncherPos] = useState(null);
 
     const activeModule = getModuleById(activeModuleId) || tourModule;
     const activeSteps = activeModule?.steps || [];
@@ -152,43 +151,6 @@ export default function TourGuide() {
         };
     }, [active]);
 
-    // Sit in the gap just above pagination (next/last buttons), not over the table.
-    useEffect(() => {
-        if (!showLauncher || active) {
-            setLauncherPos(null);
-            return undefined;
-        }
-
-        const place = () => {
-            const pager = document.querySelector(".db-pagination, .si-pagination");
-            if (!pager) {
-                setLauncherPos(null);
-                return;
-            }
-            const rect = pager.getBoundingClientRect();
-            const btn = document.querySelector(".tour-launcher");
-            const bh = btn?.offsetHeight || 46;
-            const gap = 8;
-            setLauncherPos({
-                top: Math.max(8, Math.round(rect.top - bh - gap)),
-                right: Math.max(8, Math.round(window.innerWidth - rect.right)),
-            });
-        };
-
-        place();
-        const raf = requestAnimationFrame(place);
-        window.addEventListener("resize", place);
-        window.addEventListener("scroll", place, true);
-        const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(place) : null;
-        const pager = document.querySelector(".db-pagination, .si-pagination");
-        if (ro && pager) ro.observe(pager);
-        return () => {
-            cancelAnimationFrame(raf);
-            window.removeEventListener("resize", place);
-            window.removeEventListener("scroll", place, true);
-            ro?.disconnect();
-        };
-    }, [showLauncher, active, pathname]);
 
     useEffect(() => {
         if (!active || !step) return undefined;
@@ -275,25 +237,20 @@ export default function TourGuide() {
 
     return (
         <>
-            {showLauncher && !active && moduleId && (
+            {showLauncher && !active && moduleId ? (
                 <button
                     type="button"
-                    className={`tour-launcher${launcherPos ? " tour-launcher--anchored" : ""}`}
-                    style={
-                        launcherPos
-                            ? { top: launcherPos.top, right: launcherPos.right, left: "auto", bottom: "auto" }
-                            : undefined
-                    }
+                    className="tour-launcher"
                     onClick={replayCurrent}
                     aria-label={`Replay ${tourModule?.label || "module"} tour guide`}
-                    title={`Replay ${tourModule?.label || ""} Tour`}
+                    title="Tour Guide"
                 >
                     <span className="tour-launcher-icon" aria-hidden="true">
                         ?
                     </span>
                     <span className="tour-launcher-label">Tour Guide</span>
                 </button>
-            )}
+            ) : null}
 
             {active && geometry && step && (
                 <div className="tour-root">
