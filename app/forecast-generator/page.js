@@ -462,20 +462,20 @@ export default function ForecastGeneratorPage() {
                     <table className="db-table db-table--fit fg-table">
                         <thead>
                             <tr>
-                                <th className="fg-th-stock">Item Class</th>
-                                <th className="fg-th-stock">Inventory ID</th>
-                                <th className="fg-th-stock" style={{ textAlign: "right" }}>SRP</th>
-                                <th className="fg-th-stock">Item Name</th>
-                                <th className="fg-th-stock" style={{ textAlign: "right" }}>Inventory<br />(as of Today)</th>
-                                <th className="fg-th-stock" style={{ textAlign: "right" }}>Coming PO<br />(as of today)</th>
-                                <th className="fg-th-stock" style={{ textAlign: "right" }}>Last 3 Months</th>
-                                <th className="fg-th-stock" style={{ textAlign: "right" }}>Last Year<br />Same Quarter</th>
-                                <th className="fg-th-plan" style={{ textAlign: "right" }}>Estimate Sales</th>
-                                <th className="fg-th-plan" style={{ textAlign: "right" }}>Buffer Inventory</th>
-                                <th className="fg-th-plan" style={{ textAlign: "right" }}>Target Sales</th>
-                                <th className="fg-th-plan" style={{ textAlign: "right" }}>For P.O</th>
-                                <th className="fg-th-plan" style={{ textAlign: "right" }}>Estimated Sales Amount</th>
-                                <th className="fg-th-plan" style={{ textAlign: "right" }}>Net P.O</th>
+                                <th className="fg-th-stock fg-col-text">Item Class</th>
+                                <th className="fg-th-stock fg-col-text">Inventory ID</th>
+                                <th className="fg-th-stock fg-col-num">SRP</th>
+                                <th className="fg-th-stock fg-col-text">Item Name</th>
+                                <th className="fg-th-stock fg-col-num">Inventory<br />(as of Today)</th>
+                                <th className="fg-th-stock fg-col-num">Coming PO<br />(as of today)</th>
+                                <th className="fg-th-stock fg-col-num">Last 3 Months</th>
+                                <th className="fg-th-stock fg-col-num">Last Year<br />Same Quarter</th>
+                                <th className="fg-th-plan fg-col-num">Estimate Sales</th>
+                                <th className="fg-th-plan fg-col-num">Buffer Inventory</th>
+                                <th className="fg-th-plan fg-col-num">Target Sales</th>
+                                <th className="fg-th-plan fg-col-num">For P.O</th>
+                                <th className="fg-th-plan fg-col-num">Estimated Sales Amount</th>
+                                <th className="fg-th-plan fg-col-num">Net P.O</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -506,15 +506,15 @@ export default function ForecastGeneratorPage() {
                                     : (row.targetIsOverride ? String(row.targetSales) : String(calc.suggestedTarget));
                                 return (
                                     <tr key={row.inventoryId}>
-                                        <td className="fg-td-stock">{row.itemClass || "—"}</td>
-                                        <td className="fg-td-stock"><span className="db-inv-id">{row.inventoryId}</span></td>
-                                        <td className="fg-td-stock db-num">{fmtMoney(row.srp)}</td>
-                                        <td className="fg-td-stock"><span className="db-desc" title={row.itemName}>{row.itemName}</span></td>
-                                        <td className="fg-td-stock db-num">{fmtQty(row.inventoryQty)}</td>
-                                        <td className="fg-td-stock db-num">{fmtQty(row.comingPo)}</td>
-                                        <td className="fg-td-stock db-num">{fmtQty(row.last3MonthsQty)}</td>
-                                        <td className="fg-td-stock db-num">{fmtQty(row.lastYearQty)}</td>
-                                        <td className="fg-td-plan db-num">
+                                        <td className="fg-td-stock fg-col-text">{row.itemClass || "—"}</td>
+                                        <td className="fg-td-stock fg-col-text"><span className="db-inv-id">{row.inventoryId}</span></td>
+                                        <td className="fg-td-stock fg-col-num">{fmtMoney(row.srp)}</td>
+                                        <td className="fg-td-stock fg-col-text"><span className="db-desc" title={row.itemName}>{row.itemName}</span></td>
+                                        <td className="fg-td-stock fg-col-num">{fmtQty(row.inventoryQty)}</td>
+                                        <td className="fg-td-stock fg-col-num">{fmtQty(row.comingPo)}</td>
+                                        <td className="fg-td-stock fg-col-num">{fmtQty(row.last3MonthsQty)}</td>
+                                        <td className="fg-td-stock fg-col-num">{fmtQty(row.lastYearQty)}</td>
+                                        <td className="fg-td-plan fg-col-num fg-col-input">
                                             <input
                                                 className="fg-input"
                                                 type="number"
@@ -526,7 +526,7 @@ export default function ForecastGeneratorPage() {
                                             />
                                             <span className="fg-suggested">Suggested {fmtQty(calc.suggestedEstimate)}</span>
                                         </td>
-                                        <td className="fg-td-plan db-num">
+                                        <td className="fg-td-plan fg-col-num fg-col-input">
                                             <input
                                                 className="fg-input"
                                                 type="number"
@@ -537,7 +537,7 @@ export default function ForecastGeneratorPage() {
                                                 aria-label={`Buffer inventory for ${row.inventoryId}`}
                                             />
                                         </td>
-                                        <td className="fg-td-plan db-num">
+                                        <td className="fg-td-plan fg-col-num fg-col-input">
                                             <input
                                                 className="fg-input"
                                                 type="number"
@@ -549,9 +549,9 @@ export default function ForecastGeneratorPage() {
                                             />
                                             <span className="fg-suggested">Suggested {fmtQty(calc.suggestedTarget)}</span>
                                         </td>
-                                        <td className="fg-td-plan db-num">{fmtQty(calc.forPo)}</td>
-                                        <td className="fg-td-plan db-num">{fmtMoney(calc.estimatedSalesAmount)}</td>
-                                        <td className={`fg-td-plan db-num ${calc.netPo > 0 ? "fg-net-need" : "fg-net-ok"}`}>
+                                        <td className="fg-td-plan fg-col-num">{fmtQty(calc.forPo)}</td>
+                                        <td className="fg-td-plan fg-col-num">{fmtMoney(calc.estimatedSalesAmount)}</td>
+                                        <td className={`fg-td-plan fg-col-num ${calc.netPo > 0 ? "fg-net-need" : "fg-net-ok"}`}>
                                             {fmtQty(calc.netPo)}
                                         </td>
                                     </tr>
@@ -573,7 +573,7 @@ export default function ForecastGeneratorPage() {
 
                 <p className="fg-footer">
                     Target Sales defaults to Estimate + Buffer and can be typed in. For P.O = Target − Inventory.
-                    Net P.O = For P.O − Coming PO. Estimated Sales Amount = Estimate × SRP.
+                    Net P.O = For P.O − Coming PO. Estimated Sales Amount = Target Sales × SRP.
                 </p>
             </main>
         </div>

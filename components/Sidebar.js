@@ -10,6 +10,8 @@ import SessionStatus from "./SessionStatus";
 import TourGuide from "./TourGuide";
 import { withBasePath } from "@/lib/base-path";
 import { APP_VERSION } from "@/lib/app-version";
+import { storeAllowedModules } from "@/lib/user-access-client";
+import { FORECAST_MODULE, userCanAccessModule } from "@/lib/module-access";
 import "@/styles/sidebar.css";
 /* ── SVG Icons ─────────────────────────────────────────── */
 const IconInventory = () => (
@@ -93,11 +95,9 @@ export default function Sidebar() {
   const [mounted, setMounted] = useState(false);
   const [userName, setUserName] = useState("Admin User");
   const [userRole, setUserRole] = useState("");
+  const [allowedModules, setAllowedModules] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [companies, setCompanies] = useState([]);
-  const [activeCompanyId, setActiveCompanyId] = useState("main");
-  const [switchingCompany, setSwitchingCompany] = useState(false);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -107,6 +107,10 @@ export default function Sidebar() {
       if (storedUser) setUserName(storedUser);
       const storedRole = localStorage.getItem("userRole");
       if (storedRole) setUserRole(storedRole);
+      try {
+        const storedMods = JSON.parse(localStorage.getItem("userModules") || "[]");
+        if (Array.isArray(storedMods)) setAllowedModules(storedMods);
+      } catch { /* ignore */ }
 
       const savedCollapse = localStorage.getItem("sidebar_collapsed") === "true";
       if (savedCollapse) setIsCollapsed(true);
@@ -128,51 +132,12 @@ export default function Sidebar() {
           setUserRole(data.user.role);
           localStorage.setItem("userRole", data.user.role);
         }
+        const modules = Array.isArray(data.user.allowedModules) ? data.user.allowedModules : [];
+        setAllowedModules(modules);
+        storeAllowedModules(modules);
       })
       .catch(() => {});
   }, [mounted]);
-
-  useEffect(() => {
-    if (!mounted) return;
-    fetchWithAuth("/api/company")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!data) return;
-        setCompanies(data.companies || []);
-        setActiveCompanyId(data.activeCompanyId || "main");
-        localStorage.setItem("activeCompanyId", data.activeCompanyId || "main");
-      })
-      .catch(() => {});
-  }, [mounted]);
-
-  const handleCompanyChange = async (e) => {
-    const nextId = e.target.value;
-    if (!nextId || nextId === activeCompanyId) return;
-    setSwitchingCompany(true);
-    try {
-      const res = await fetchWithAuth("/api/company", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: nextId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const hint = data.acumaticaCompany
-          ? `\n\nTried Acumatica company: "${data.acumaticaCompany}"`
-          : "";
-        throw new Error((data.message || "Failed to switch company") + hint);
-      }
-      setActiveCompanyId(data.activeCompanyId);
-      localStorage.setItem("activeCompanyId", data.activeCompanyId);
-      DataCache.clear();
-      window.dispatchEvent(new CustomEvent("company-changed", { detail: { companyId: data.activeCompanyId } }));
-    } catch (err) {
-      console.error("[Sidebar] Company switch failed:", err.message);
-      alert(err.message || "Could not switch company.");
-    } finally {
-      setSwitchingCompany(false);
-    }
-  };
 
   // Sync collapsed state with body class
   useEffect(() => {
@@ -196,20 +161,21 @@ export default function Sidebar() {
     setIsOpen(false);
   }, [pathname]);
 
+  const accessUser = { role: userRole, allowedModules };
   const navItems = [
-    { name: "Inventory", href: "/dashboard", icon: <IconInventory />, tourId: "nav-inventory" },
-    { name: "Stock Items", href: "/stock-items", icon: <IconStock />, tourId: "nav-stock" },
-    { name: "Purchase Orders", href: "/purchase-orders", icon: <IconPO />, tourId: "nav-po" },
-    { name: "Incoming PO", href: "/incoming-po", icon: <IconPO /> },
-    { name: "Suppliers", href: "/suppliers", icon: <IconTruck /> },
-    { name: "Replenishment", href: "/replenishment", icon: <IconSparkles /> },
-    { name: "Forecast Generator", href: "/forecast-generator", icon: <IconForecast /> },
-    { name: "Last 3 Months Sales", href: "/sales", icon: <IconSales /> },
-    { name: "Syncing Center", href: "/syncing", icon: <IconSync />, tourId: "nav-sync" },
+    { name: "Inventory", href: "/dashboard", icon: <IconInventory />, tourId: "nav-inventory", moduleId: "inventory" },
+    { name: "Stock Items", href: "/stock-items", icon: <IconStock />, tourId: "nav-stock", moduleId: "stock-items" },
+    { name: "Purchase Orders", href: "/purchase-orders", icon: <IconPO />, tourId: "nav-po", moduleId: "purchase-orders" },
+    { name: "Incoming PO", href: "/incoming-po", icon: <IconPO />, moduleId: "incoming-po" },
+    { name: "Suppliers", href: "/suppliers", icon: <IconTruck />, moduleId: "suppliers" },
+    { name: "Replenishment", href: "/replenishment", icon: <IconSparkles />, moduleId: "replenishment" },
+    { name: "Forecast Generator", href: "/forecast-generator", icon: <IconForecast />, moduleId: FORECAST_MODULE },
+    { name: "Last 3 Months Sales", href: "/sales", icon: <IconSales />, moduleId: "sales" },
+    { name: "Syncing Center", href: "/syncing", icon: <IconSync />, tourId: "nav-sync", moduleId: "syncing" },
     ...(userRole === "admin"
-      ? [{ name: "Admin", href: "/admin", icon: <IconAdmin /> }]
+      ? [{ name: "Admin", href: "/admin", icon: <IconAdmin />, moduleId: "admin" }]
       : []),
-  ];
+  ].filter((item) => userRole === "admin" || userCanAccessModule(accessUser, item.moduleId));
 
   return (
     <>
@@ -276,26 +242,6 @@ export default function Sidebar() {
           <div className="sidebar-session-wrap">
             <SessionStatus collapsed={isCollapsed} userName={userName} isAdmin={userRole === "admin"} />
           </div>
-
-          {companies.length >= 2 && (
-            <div className="sidebar-company-field">
-              {!isCollapsed && <label className="sidebar-company-label" htmlFor="sidebar-company">Company</label>}
-              <select
-                id="sidebar-company"
-                className="sidebar-company-select"
-                value={activeCompanyId}
-                onChange={handleCompanyChange}
-                disabled={switchingCompany}
-                title={isCollapsed ? "Switch company" : undefined}
-              >
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id} disabled={c.connected === false}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
         </div>
 
         <nav className="sidebar-nav">

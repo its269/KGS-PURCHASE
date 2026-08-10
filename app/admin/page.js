@@ -14,6 +14,7 @@ const EMPTY_FORM = {
     role: "user",
     active: true,
     branchIds: [],
+    moduleAccess: "all",
 };
 
 export default function AdminPage() {
@@ -152,6 +153,9 @@ export default function AdminPage() {
             role: user.role || "user",
             active: user.active !== false,
             branchIds: Array.isArray(user.branchIds) ? user.branchIds : [],
+            moduleAccess: Array.isArray(user.allowedModules) && user.allowedModules.includes("forecast-generator")
+                ? "forecast-generator"
+                : "all",
         });
         setBranchMenuOpen(false);
         setBranchQuery("");
@@ -175,6 +179,7 @@ export default function AdminPage() {
                 role: form.role,
                 active: form.active,
                 branchIds: form.role === "admin" ? [] : form.branchIds,
+                moduleAccess: form.role === "admin" ? "all" : form.moduleAccess,
             };
             if (form.password) payload.password = form.password;
 
@@ -368,7 +373,11 @@ export default function AdminPage() {
                                 value={form.role}
                                 onChange={(e) => {
                                     const role = e.target.value;
-                                    setForm((f) => ({ ...f, role }));
+                                    setForm((f) => ({
+                                        ...f,
+                                        role,
+                                        moduleAccess: role === "admin" ? "all" : f.moduleAccess,
+                                    }));
                                     if (role === "admin") {
                                         setBranchMenuOpen(false);
                                         setBranchQuery("");
@@ -377,6 +386,17 @@ export default function AdminPage() {
                             >
                                 <option value="user">User</option>
                                 <option value="admin">Admin</option>
+                            </select>
+                        </label>
+                        <label>
+                            Module access
+                            <select
+                                value={form.role === "admin" ? "all" : form.moduleAccess}
+                                disabled={form.role === "admin"}
+                                onChange={(e) => setForm((f) => ({ ...f, moduleAccess: e.target.value }))}
+                            >
+                                <option value="all">All modules</option>
+                                <option value="forecast-generator">Forecast Generator only</option>
                             </select>
                         </label>
                         <label className="admin-check">
@@ -411,9 +431,12 @@ export default function AdminPage() {
                             )}
                         </div>
                         {form.role === "admin" ? (
-                            <p className="admin-header-hint">Admins can view all branches. Limits apply to User accounts only.</p>
+                            <p className="admin-header-hint">Admins can view all branches and modules. Limits apply to User accounts only.</p>
                         ) : (
                             <>
+                                {form.moduleAccess === "forecast-generator" && (
+                                    <p className="admin-header-hint">This account can open Forecast Generator only. Choose the branches they may plan for.</p>
+                                )}
                                 <button
                                     type="button"
                                     className={`admin-branch-trigger${branchMenuOpen ? " is-open" : ""}`}
@@ -499,6 +522,7 @@ export default function AdminPage() {
                                 <th>Name</th>
                                 <th>Email</th>
                                 <th>Role</th>
+                                <th>Modules</th>
                                 <th>Branches</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -507,7 +531,7 @@ export default function AdminPage() {
                         <tbody>
                             {users.length === 0 ? (
                                 <tr>
-                                    <td colSpan={7} className="admin-empty">No users yet.</td>
+                                    <td colSpan={8} className="admin-empty">No users yet.</td>
                                 </tr>
                             ) : (
                                 users.map((u) => {
@@ -522,6 +546,13 @@ export default function AdminPage() {
                                         <td>{u.email || "—"}</td>
                                         <td>
                                             <span className={`admin-badge admin-badge--${u.role}`}>{u.role}</span>
+                                        </td>
+                                        <td>
+                                            {u.role === "admin" || !(u.allowedModules || []).length ? (
+                                                <span>All modules</span>
+                                            ) : (
+                                                <span className="admin-badge admin-badge--forecast">Forecast Generator</span>
+                                            )}
                                         </td>
                                         <td className="admin-branches-cell">
                                             {u.role === "admin" || u.allBranches

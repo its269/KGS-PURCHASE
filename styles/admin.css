@@ -414,6 +414,11 @@
     color: var(--text-secondary);
 }
 
+.admin-badge--forecast {
+    background: rgba(245, 158, 11, 0.18);
+    color: #d97706;
+}
+
 .admin-actions {
     display: flex;
     gap: 0.75rem;

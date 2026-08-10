@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionMeta } from "@/lib/session-store";
 import { buildAppRedirectUrl, getBasePath, clearAllCookies } from "@/lib/base-path";
 import { hydrateSessionFromDb } from "@/lib/persist-session";
+import { homePathForUser, pathAllowedForUser } from "@/lib/module-access";
 
 const PUBLIC_PATHS = [
     "/signin",
@@ -75,8 +76,10 @@ export async function proxy(request) {
             console.log("[Middleware] Stale session cookie on /signin — clearing cookie");
             return clearSessionCookie(request, NextResponse.next());
         }
-        console.log(`[Middleware] Already authenticated — redirecting /signin → /dashboard`);
-        return redirectTo(request, "/dashboard");
+        const signedInUser = getSessionMeta(sessionId)?.localUser;
+        const home = homePathForUser(signedInUser);
+        console.log(`[Middleware] Already authenticated — redirecting /signin → ${home}`);
+        return redirectTo(request, home);
     }
 
     const isAuthApi = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
@@ -100,6 +103,20 @@ export async function proxy(request) {
             );
         }
         return clearSessionCookie(request, redirectTo(request, "/signin"));
+    }
+
+    const localUser = getSessionMeta(sessionId)?.localUser;
+    if (localUser && !pathAllowedForUser(localUser, pathname)) {
+        if (pathname.startsWith("/api/")) {
+            console.log(`[Middleware] Module blocked for user — ${pathname}`);
+            return NextResponse.json(
+                { message: "This account does not have access to that module." },
+                { status: 403 }
+            );
+        }
+        const home = homePathForUser(localUser);
+        console.log(`[Middleware] Module blocked — redirecting ${pathname} → ${home}`);
+        return redirectTo(request, home);
     }
 
     console.log(`[Middleware] Session valid — allowing ${pathname}`);

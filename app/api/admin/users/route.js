@@ -9,6 +9,7 @@ import {
     validatePassword,
 } from "@/lib/app-users";
 import { normalizeBranchIds } from "@/lib/branch-access";
+import { normalizeModuleAccessInput, serializeAllowedModules } from "@/lib/module-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,6 +56,10 @@ export async function POST(request) {
             );
         }
 
+        const allowedModules = role === "admin"
+            ? null
+            : serializeAllowedModules(normalizeModuleAccessInput(body.moduleAccess || body.allowedModules));
+
         const id = await MySqlService.createAppUser({
             username,
             passwordHash: hashPassword(password),
@@ -62,6 +67,7 @@ export async function POST(request) {
             email,
             role,
             active,
+            allowedModules,
         });
         await MySqlService.setAppUserBranches(id, role === "admin" ? [] : branchIds);
         const created = await MySqlService.getAppUserById(id);

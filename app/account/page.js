@@ -10,6 +10,7 @@ import {
   isTourGloballySkipped,
   syncTourPrefsFromServer,
 } from "@/lib/tour-guide";
+import { clientCanAccessModule } from "@/lib/user-access-client";
 import "@/styles/admin.css";
 
 const EMPTY = {
@@ -133,7 +134,7 @@ export default function AccountPage() {
           ) : null}
         </p>
         <ul className="tour-replay-list">
-          {TOUR_MODULES.map((m) => {
+          {TOUR_MODULES.filter((m) => m.id === "account" || clientCanAccessModule(m.id)).map((m) => {
             const done = !!tourDoneMap[m.id];
             return (
               <li key={m.id} className="tour-replay-row">

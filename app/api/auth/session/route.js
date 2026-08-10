@@ -38,6 +38,7 @@ function localUserPayload(localUser) {
         active: true,
         branchIds: role === "admin" ? [] : (Array.isArray(localUser.branchIds) ? localUser.branchIds : []),
         allBranches: role === "admin" || localUser.allBranches === true,
+        allowedModules: role === "admin" ? [] : (Array.isArray(localUser.allowedModules) ? localUser.allowedModules : []),
     };
 }
 
@@ -81,9 +82,20 @@ export async function GET(request) {
                 await removePersistedAppSession(sessionId);
                 return expired({ reason: "local_user_inactive" });
             }
-            setLocalUserSession(sessionId, await sanitizeUserWithBranches(row));
+            const freshUser = await sanitizeUserWithBranches(row);
+            setLocalUserSession(sessionId, freshUser);
             meta = getSessionMeta(sessionId);
             MySqlService.touchAppSession(sessionId).catch(() => {});
+            return NextResponse.json({
+                authenticated: true,
+                sessionId,
+                activeCompanyId,
+                isBypass: cred === "__bypass__" || !!companyEntry?.isBypass,
+                source: "local",
+                authType: "local",
+                user: localUserPayload(freshUser),
+                degraded: cred === "__bypass__" || !!companyEntry?.isBypass,
+            });
         } catch (err) {
             console.warn("[Auth Session] Local user check failed:", err.message);
         }

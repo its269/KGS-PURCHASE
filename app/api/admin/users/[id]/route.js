@@ -8,6 +8,7 @@ import {
     validatePassword,
 } from "@/lib/app-users";
 import { normalizeBranchIds } from "@/lib/branch-access";
+import { normalizeModuleAccessInput, serializeAllowedModules } from "@/lib/module-access";
 import { setLocalUserSession, getSessionIdFromRequest } from "@/lib/session-store";
 
 export const runtime = "nodejs";
@@ -79,6 +80,13 @@ export async function PATCH(request, { params }) {
         }
 
         const nextRole = fields.role || (existing.role === "admin" ? "admin" : "user");
+        if (nextRole === "admin") {
+            fields.allowedModules = null;
+        } else if (body.moduleAccess !== undefined || body.allowedModules !== undefined) {
+            fields.allowedModules = serializeAllowedModules(
+                normalizeModuleAccessInput(body.moduleAccess || body.allowedModules)
+            );
+        }
         const branchIds = body.branchIds !== undefined ? normalizeBranchIds(body.branchIds) : null;
         if (nextRole === "user" && branchIds && !branchIds.length) {
             return NextResponse.json(

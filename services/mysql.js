@@ -2541,6 +2541,7 @@ export const MySqlService = {
                   full_name VARCHAR(160) NULL,
                   email VARCHAR(160) NULL,
                   role ENUM('admin', 'user') NOT NULL DEFAULT 'user',
+                  allowed_modules VARCHAR(255) NULL,
                   active TINYINT(1) NOT NULL DEFAULT 1,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -2550,6 +2551,21 @@ export const MySqlService = {
                   KEY idx_app_users_active (active)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             `);
+            try {
+                const [[col]] = await purchasePool.query(
+                    `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_users' AND COLUMN_NAME = 'allowed_modules'`
+                );
+                if (!Number(col?.cnt)) {
+                    await purchasePool.query(
+                        `ALTER TABLE app_users ADD COLUMN allowed_modules VARCHAR(255) NULL AFTER role`
+                    );
+                }
+            } catch (alterErr) {
+                if (!/duplicate column/i.test(alterErr.message)) {
+                    console.warn("[MySQL app_users allowed_modules]", alterErr.message);
+                }
+            }
             MySqlService._appUsersReady = true;
             await this.ensureAppUserBranchesTable();
             return true;
@@ -2669,7 +2685,7 @@ export const MySqlService = {
     async getAppUserByUsername(username) {
         await this.ensureAppUsersTable();
         const [rows] = await purchasePool.execute(
-            `SELECT id, username, password_hash, full_name, email, role, active, created_at, updated_at
+            `SELECT id, username, password_hash, full_name, email, role, allowed_modules, active, created_at, updated_at
              FROM app_users WHERE username = ? LIMIT 1`,
             [String(username || "").trim()]
         );
@@ -2679,7 +2695,7 @@ export const MySqlService = {
     async getAppUserById(id) {
         await this.ensureAppUsersTable();
         const [rows] = await purchasePool.execute(
-            `SELECT id, username, password_hash, full_name, email, role, active, created_at, updated_at
+            `SELECT id, username, password_hash, full_name, email, role, allowed_modules, active, created_at, updated_at
              FROM app_users WHERE id = ? LIMIT 1`,
             [Number(id)]
         );
@@ -2689,7 +2705,7 @@ export const MySqlService = {
     async listAppUsers() {
         await this.ensureAppUsersTable();
         const [rows] = await purchasePool.execute(
-            `SELECT id, username, full_name, email, role, active, created_at, updated_at
+            `SELECT id, username, full_name, email, role, allowed_modules, active, created_at, updated_at
              FROM app_users
              ORDER BY role ASC, username ASC`
         );
@@ -2700,17 +2716,18 @@ export const MySqlService = {
         }));
     },
 
-    async createAppUser({ username, passwordHash, fullName = "", email = "", role = "user", active = true }) {
+    async createAppUser({ username, passwordHash, fullName = "", email = "", role = "user", active = true, allowedModules = null }) {
         await this.ensureAppUsersTable();
         const [result] = await purchasePool.execute(
-            `INSERT INTO app_users (username, password_hash, full_name, email, role, active)
-             VALUES (?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO app_users (username, password_hash, full_name, email, role, allowed_modules, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
             [
                 String(username).trim(),
                 passwordHash,
                 String(fullName || "").trim() || null,
                 String(email || "").trim() || null,
                 role === "admin" ? "admin" : "user",
+                role === "admin" ? null : allowedModules,
                 active ? 1 : 0,
             ]
         );
@@ -2740,6 +2757,10 @@ export const MySqlService = {
         if (fields.role !== undefined) {
             sets.push("role = ?");
             params.push(fields.role === "admin" ? "admin" : "user");
+        }
+        if (fields.allowedModules !== undefined) {
+            sets.push("allowed_modules = ?");
+            params.push(fields.role === "admin" ? null : fields.allowedModules);
         }
         if (fields.active !== undefined) {
             sets.push("active = ?");
@@ -5270,7 +5291,9 @@ export const MySqlService = {
             }).length,
             estimatedSalesAmount: merged.reduce((s, r) => {
                 const est = r.estimateSales == null ? Math.max(r.last3MonthsQty, r.lastYearQty) : r.estimateSales;
-                return s + (Number(est) || 0) * (Number(r.srp) || 0);
+                const suggestedTarget = (Number(est) || 0) + (Number(r.bufferInventory) || 0);
+                const target = r.targetSales == null ? suggestedTarget : Number(r.targetSales);
+                return s + (Number(target) || 0) * (Number(r.srp) || 0);
             }, 0),
         };
 

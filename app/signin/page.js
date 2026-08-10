@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import "@/styles/signin.css";
 import { withBasePath } from "@/lib/base-path";
+import { homePathForUser } from "@/lib/module-access";
 
 const LOGIN_API = withBasePath("/api/auth/login");
 
@@ -103,11 +104,11 @@ function SignInContent() {
             localStorage.setItem("userName", displayName);
             localStorage.setItem("userRole", user?.role || "user");
             localStorage.setItem("authType", "local");
+            localStorage.setItem("userModules", JSON.stringify(Array.isArray(user?.allowedModules) ? user.allowedModules : []));
             localStorage.removeItem("userFirstName");
             localStorage.removeItem("userLastName");
 
-            // Direct reload to ensure all components pick up the new session
-            window.location.href = withBasePath("/dashboard");
+            window.location.href = withBasePath(homePathForUser(user));
         } catch (err) {
             setError("Unable to connect to the server. Please try again.");
         } finally {
