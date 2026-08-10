@@ -40,6 +40,7 @@ function mapRow(raw) {
         srp: raw.srp,
         estimateSales: raw.estimateSales,
         bufferInventory: raw.bufferInventory,
+        targetSales: raw.targetSales,
     });
     return {
         inventoryId: raw.inventoryId,
@@ -167,12 +168,18 @@ export async function POST(request) {
         const bufferInventory = body.bufferInventory === "" || body.bufferInventory == null
             ? null
             : Number(body.bufferInventory);
+        const targetSales = body.targetSales === "" || body.targetSales == null
+            ? null
+            : Number(body.targetSales);
 
         if (estimateSales != null && (!Number.isFinite(estimateSales) || estimateSales < 0)) {
             return NextResponse.json({ message: "Estimate Sales must be a positive number" }, { status: 400 });
         }
         if (bufferInventory != null && (!Number.isFinite(bufferInventory) || bufferInventory < 0)) {
             return NextResponse.json({ message: "Buffer Inventory must be a positive number" }, { status: 400 });
+        }
+        if (targetSales != null && (!Number.isFinite(targetSales) || targetSales < 0)) {
+            return NextResponse.json({ message: "Target Sales must be a positive number" }, { status: 400 });
         }
 
         const saved = await MySqlService.upsertForecastGeneratorInput({
@@ -181,6 +188,7 @@ export async function POST(request) {
             inventoryId,
             estimateSales,
             bufferInventory,
+            targetSales,
             updatedBy: access?.user?.id || null,
         });
 
@@ -192,10 +200,11 @@ export async function POST(request) {
             action: "forecast_input_save",
             moduleName: "forecast-generator",
             refId: `${branchKey}|${inventoryId}`,
-            fieldKey: estimateSales != null ? "estimateSales" : "bufferInventory",
+            fieldKey: targetSales != null ? "targetSales" : (estimateSales != null ? "estimateSales" : "bufferInventory"),
             detail: summarizeActivityDetail({
                 estimateSales,
                 bufferInventory,
+                targetSales,
             }),
         });
 
@@ -205,6 +214,7 @@ export async function POST(request) {
             branchId: branchKey,
             estimateSales,
             bufferInventory,
+            targetSales,
         }, NO_STORE);
     } catch (err) {
         console.error("[Forecast Generator POST]", err);

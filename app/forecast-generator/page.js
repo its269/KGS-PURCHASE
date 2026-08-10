@@ -65,6 +65,9 @@ function displayRow(row, draft) {
         bufferInventory: draft?.bufferInventory !== undefined
             ? (draft.bufferInventory === "" ? 0 : draft.bufferInventory)
             : row.bufferInventory,
+        targetSales: draft?.targetSales !== undefined
+            ? (draft.targetSales === "" ? null : draft.targetSales)
+            : (row.targetIsOverride ? row.targetSales : null),
     });
 }
 
@@ -204,12 +207,15 @@ export default function ForecastGeneratorPage() {
 
     const persistInput = useCallback((inventoryId, nextDraft, baseRow) => {
         const computed = displayRow(baseRow, nextDraft);
-        const estimateToSave = nextDraft.estimateSales === "" || nextDraft.estimateSales == null
-            ? null
-            : Number(nextDraft.estimateSales);
-        const bufferToSave = nextDraft.bufferInventory === "" || nextDraft.bufferInventory == null
-            ? 0
-            : Number(nextDraft.bufferInventory);
+        const estimateToSave = nextDraft.estimateSales !== undefined
+            ? (nextDraft.estimateSales === "" || nextDraft.estimateSales == null ? null : Number(nextDraft.estimateSales))
+            : (baseRow.estimateIsOverride ? Number(baseRow.estimateSales) : null);
+        const bufferToSave = nextDraft.bufferInventory !== undefined
+            ? (nextDraft.bufferInventory === "" || nextDraft.bufferInventory == null ? 0 : Number(nextDraft.bufferInventory))
+            : Number(baseRow.bufferInventory ?? 0);
+        const targetToSave = nextDraft.targetSales !== undefined
+            ? (nextDraft.targetSales === "" || nextDraft.targetSales == null ? null : Number(nextDraft.targetSales))
+            : (baseRow.targetIsOverride ? Number(baseRow.targetSales) : null);
         if (saveTimers.current[inventoryId]) clearTimeout(saveTimers.current[inventoryId]);
         saveTimers.current[inventoryId] = setTimeout(async () => {
             try {
@@ -221,6 +227,7 @@ export default function ForecastGeneratorPage() {
                         inventoryId,
                         estimateSales: estimateToSave,
                         bufferInventory: bufferToSave,
+                        targetSales: targetToSave,
                     }),
                 });
                 setRows((prev) => prev.map((r) => (
@@ -230,6 +237,8 @@ export default function ForecastGeneratorPage() {
                             ...computed,
                             estimateIsOverride: estimateToSave != null,
                             bufferInventory: bufferToSave,
+                            targetIsOverride: targetToSave != null,
+                            targetSales: computed.targetSales,
                         }
                         : r
                 )));
@@ -444,7 +453,7 @@ export default function ForecastGeneratorPage() {
 
                 <div className="fg-legend">
                     <span><i className="fg-legend-swatch fg-legend-stock" /> From stock items / sales</span>
-                    <span><i className="fg-legend-swatch fg-legend-plan" /> Manual planning (Estimate + Buffer)</span>
+                    <span><i className="fg-legend-swatch fg-legend-plan" /> Manual planning (Estimate + Buffer + Target)</span>
                 </div>
 
                 {error && <div className="fg-error">{error}</div>}
@@ -492,6 +501,9 @@ export default function ForecastGeneratorPage() {
                                 const bufferValue = draft?.bufferInventory !== undefined
                                     ? draft.bufferInventory
                                     : String(row.bufferInventory ?? 0);
+                                const targetValue = draft?.targetSales !== undefined
+                                    ? draft.targetSales
+                                    : (row.targetIsOverride ? String(row.targetSales) : String(calc.suggestedTarget));
                                 return (
                                     <tr key={row.inventoryId}>
                                         <td className="fg-td-stock">{row.itemClass || "—"}</td>
@@ -525,7 +537,18 @@ export default function ForecastGeneratorPage() {
                                                 aria-label={`Buffer inventory for ${row.inventoryId}`}
                                             />
                                         </td>
-                                        <td className="fg-td-plan db-num">{fmtQty(calc.targetSales)}</td>
+                                        <td className="fg-td-plan db-num">
+                                            <input
+                                                className="fg-input"
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                value={targetValue}
+                                                onChange={(e) => updateDraft(row, "targetSales", e.target.value)}
+                                                aria-label={`Target sales for ${row.inventoryId}`}
+                                            />
+                                            <span className="fg-suggested">Suggested {fmtQty(calc.suggestedTarget)}</span>
+                                        </td>
                                         <td className="fg-td-plan db-num">{fmtQty(calc.forPo)}</td>
                                         <td className="fg-td-plan db-num">{fmtMoney(calc.estimatedSalesAmount)}</td>
                                         <td className={`fg-td-plan db-num ${calc.netPo > 0 ? "fg-net-need" : "fg-net-ok"}`}>
@@ -549,7 +572,7 @@ export default function ForecastGeneratorPage() {
                 )}
 
                 <p className="fg-footer">
-                    Target Sales = Estimate Sales + Buffer Inventory. For P.O = Target − Inventory.
+                    Target Sales defaults to Estimate + Buffer and can be typed in. For P.O = Target − Inventory.
                     Net P.O = For P.O − Coming PO. Estimated Sales Amount = Estimate × SRP.
                 </p>
             </main>

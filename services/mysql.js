@@ -4821,6 +4821,7 @@ export const MySqlService = {
                   inventory_id VARCHAR(100) NOT NULL,
                   estimate_sales DECIMAL(18,4) NULL,
                   buffer_inventory DECIMAL(18,4) NULL,
+                  target_sales DECIMAL(18,4) NULL,
                   updated_by INT UNSIGNED NULL,
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                   PRIMARY KEY (company_id, branch_id, inventory_id),
@@ -4828,6 +4829,21 @@ export const MySqlService = {
                   KEY idx_fgi_item (inventory_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             `);
+            try {
+                const [[col]] = await purchasePool.query(
+                    `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'forecast_generator_inputs' AND COLUMN_NAME = 'target_sales'`
+                );
+                if (!Number(col?.cnt)) {
+                    await purchasePool.query(
+                        `ALTER TABLE forecast_generator_inputs ADD COLUMN target_sales DECIMAL(18,4) NULL AFTER buffer_inventory`
+                    );
+                }
+            } catch (alterErr) {
+                if (!/duplicate column/i.test(alterErr.message)) {
+                    console.warn("[MySQL forecast target_sales]", alterErr.message);
+                }
+            }
             MySqlService._forecastInputsReady = true;
             return true;
         } catch (err) {
@@ -4985,6 +5001,7 @@ export const MySqlService = {
         inventoryId,
         estimateSales = null,
         bufferInventory = null,
+        targetSales = null,
         updatedBy = null,
     } = {}) {
         const id = String(inventoryId || "").trim();
@@ -4995,14 +5012,15 @@ export const MySqlService = {
         try {
             await purchasePool.query(
                 `INSERT INTO forecast_generator_inputs
-                    (company_id, branch_id, inventory_id, estimate_sales, buffer_inventory, updated_by)
-                 VALUES (?, ?, ?, ?, ?, ?)
+                    (company_id, branch_id, inventory_id, estimate_sales, buffer_inventory, target_sales, updated_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON DUPLICATE KEY UPDATE
                     estimate_sales = VALUES(estimate_sales),
                     buffer_inventory = VALUES(buffer_inventory),
+                    target_sales = VALUES(target_sales),
                     updated_by = VALUES(updated_by),
                     updated_at = CURRENT_TIMESTAMP`,
-                [company, branch, id, estimateSales, bufferInventory, updatedBy]
+                [company, branch, id, estimateSales, bufferInventory, targetSales, updatedBy]
             );
             invalidateCache(`forecastGen:${company}:${branch}`);
             return true;
@@ -5148,7 +5166,7 @@ export const MySqlService = {
         }
 
         const [inputRows] = await purchasePool.query(
-            `SELECT inventory_id, estimate_sales, buffer_inventory
+            `SELECT inventory_id, estimate_sales, buffer_inventory, target_sales
              FROM forecast_generator_inputs
              WHERE company_id = ? AND branch_id = ?`,
             [effectiveCompanyId, branchKey]
@@ -5201,6 +5219,7 @@ export const MySqlService = {
                 lastYearQty: sales.lastYear,
                 estimateSales: input?.estimate_sales == null ? null : Number(input.estimate_sales),
                 bufferInventory: input?.buffer_inventory == null ? null : Number(input.buffer_inventory),
+                targetSales: input?.target_sales == null ? null : Number(input.target_sales),
             });
         }
 
@@ -5221,6 +5240,7 @@ export const MySqlService = {
                     lastYearQty: sales.lastYear,
                     estimateSales: input?.estimate_sales == null ? null : Number(input.estimate_sales),
                     bufferInventory: input?.buffer_inventory == null ? null : Number(input.buffer_inventory),
+                    targetSales: input?.target_sales == null ? null : Number(input.target_sales),
                 });
             }
         }
@@ -5244,7 +5264,8 @@ export const MySqlService = {
             comingPo: merged.reduce((s, r) => s + (Number(r.comingPo) || 0), 0),
             needPoCount: merged.filter((r) => {
                 const est = r.estimateSales == null ? Math.max(r.last3MonthsQty, r.lastYearQty) : r.estimateSales;
-                const target = (Number(est) || 0) + (Number(r.bufferInventory) || 0);
+                const suggestedTarget = (Number(est) || 0) + (Number(r.bufferInventory) || 0);
+                const target = r.targetSales == null ? suggestedTarget : Number(r.targetSales);
                 return target - (r.inventoryQty || 0) - (r.comingPo || 0) > 0;
             }).length,
             estimatedSalesAmount: merged.reduce((s, r) => {
