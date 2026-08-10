@@ -16,6 +16,11 @@ const IconSearch = () => (
         <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
     </svg>
 );
+const IconFilter = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+);
 const IconChevronRight = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="9 18 15 12 9 6" />
@@ -513,7 +518,7 @@ export default function ReplenishmentPage() {
 
         (async () => {
             try {
-                const res = await fetchWithAuth("/api/branches?for=replenishment");
+                const res = await fetchWithAuth("/api/branches");
                 if (res.ok && active) {
                     const list = await res.json();
                     setBranches(list);
@@ -766,24 +771,23 @@ export default function ReplenishmentPage() {
                         </div>
 
                         {viewMode === "branch" && (
-                            <div className="repl-branch-field">
-                                <label htmlFor="repl-branch">Branch</label>
-                                <div className="db-select-wrapper">
-                                    <select
-                                        id="repl-branch"
-                                        className="db-select"
-                                        value={selectedBranch}
-                                        onChange={(e) => setSelectedBranch(e.target.value)}
-                                        disabled={retailBranches.length === 0}
-                                    >
-                                        {retailBranches.length === 0 ? (
-                                            <option value="">No branches</option>
-                                        ) : retailBranches.map((b) => (
-                                            <option key={b.SiteID} value={b.SiteID}>{b.SiteID}</option>
-                                        ))}
-                                    </select>
-                                    <IconChevron />
-                                </div>
+                            <div className="db-select-wrapper repl-branch-select" data-tour="branch-filter">
+                                <IconFilter />
+                                <select
+                                    id="repl-branch"
+                                    className="db-select"
+                                    value={selectedBranch}
+                                    onChange={(e) => setSelectedBranch(e.target.value)}
+                                    disabled={retailBranches.length === 0}
+                                    aria-label="Branch filter"
+                                >
+                                    {retailBranches.length === 0 ? (
+                                        <option value="">No branches</option>
+                                    ) : retailBranches.map((b) => (
+                                        <option key={b.SiteID} value={b.SiteID}>{b.SiteID}</option>
+                                    ))}
+                                </select>
+                                <IconChevron />
                             </div>
                         )}
 

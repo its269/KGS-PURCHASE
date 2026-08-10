@@ -58,7 +58,6 @@
     color: var(--status-warning);
 }
 
-.repl-branch-field,
 .repl-priority-field,
 .repl-view-field {
     display: flex;
@@ -66,7 +65,6 @@
     gap: 0.3rem;
 }
 
-.repl-branch-field label,
 .repl-priority-field label,
 .repl-view-field label {
     font-size: 0.72rem;
@@ -161,7 +159,10 @@
     background: rgba(255, 255, 255, 0.22);
 }
 
-.repl-branch-field .db-select,
+.repl-branch-select {
+    align-self: flex-end;
+}
+
 .repl-priority-field .db-select,
 .repl-item-class-field .db-select {
     min-width: 0;
