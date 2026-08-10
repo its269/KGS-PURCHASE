@@ -2524,10 +2524,95 @@ export const MySqlService = {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             `);
             MySqlService._appUsersReady = true;
+            await this.ensureAppUserBranchesTable();
             return true;
         } catch (err) {
             console.error("[MySQL ensureAppUsersTable]", err.message);
             return false;
+        }
+    },
+
+    async ensureAppUserBranchesTable() {
+        if (MySqlService._appUserBranchesReady) return true;
+        try {
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS app_user_branches (
+                  user_id INT UNSIGNED NOT NULL,
+                  branch_id VARCHAR(100) NOT NULL,
+                  PRIMARY KEY (user_id, branch_id),
+                  KEY idx_aub_branch (branch_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            MySqlService._appUserBranchesReady = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureAppUserBranchesTable]", err.message);
+            return false;
+        }
+    },
+
+    async getAppUserBranchIds(userId) {
+        const uid = Number(userId);
+        if (!uid) return [];
+        await this.ensureAppUserBranchesTable();
+        const [rows] = await purchasePool.execute(
+            `SELECT branch_id FROM app_user_branches WHERE user_id = ? ORDER BY branch_id ASC`,
+            [uid]
+        );
+        return rows.map((r) => String(r.branch_id || "").trim()).filter(Boolean);
+    },
+
+    async getAppUserBranchesMap(userIds = []) {
+        const ids = [...new Set((userIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+        const map = new Map();
+        if (!ids.length) return map;
+        await this.ensureAppUserBranchesTable();
+        const ph = ids.map(() => "?").join(",");
+        const [rows] = await purchasePool.execute(
+            `SELECT user_id, branch_id FROM app_user_branches WHERE user_id IN (${ph}) ORDER BY branch_id ASC`,
+            ids
+        );
+        for (const row of rows) {
+            const uid = Number(row.user_id);
+            const bid = String(row.branch_id || "").trim();
+            if (!uid || !bid) continue;
+            if (!map.has(uid)) map.set(uid, []);
+            map.get(uid).push(bid);
+        }
+        return map;
+    },
+
+    async setAppUserBranches(userId, branchIds = []) {
+        const uid = Number(userId);
+        if (!uid) return false;
+        await this.ensureAppUserBranchesTable();
+        const unique = [];
+        const seen = new Set();
+        for (const raw of Array.isArray(branchIds) ? branchIds : []) {
+            const id = String(raw || "").trim().toUpperCase();
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            unique.push(id);
+        }
+        const conn = await purchasePool.getConnection();
+        try {
+            await conn.beginTransaction();
+            await conn.execute(`DELETE FROM app_user_branches WHERE user_id = ?`, [uid]);
+            if (unique.length) {
+                const values = unique.map((b) => [uid, b]);
+                await conn.query(
+                    `INSERT INTO app_user_branches (user_id, branch_id) VALUES ?`,
+                    [values]
+                );
+            }
+            await conn.commit();
+            return true;
+        } catch (err) {
+            await conn.rollback();
+            console.error("[MySQL setAppUserBranches]", err.message);
+            return false;
+        } finally {
+            conn.release();
         }
     },
 
@@ -2581,7 +2666,11 @@ export const MySqlService = {
              FROM app_users
              ORDER BY role ASC, username ASC`
         );
-        return rows;
+        const map = await this.getAppUserBranchesMap(rows.map((r) => r.id));
+        return rows.map((r) => ({
+            ...r,
+            branchIds: map.get(Number(r.id)) || [],
+        }));
     },
 
     async createAppUser({ username, passwordHash, fullName = "", email = "", role = "user", active = true }) {
@@ -2640,9 +2729,12 @@ export const MySqlService = {
 
     async deleteAppUser(id) {
         await this.ensureAppUsersTable();
+        await this.ensureAppUserBranchesTable();
+        const uid = Number(id);
+        await purchasePool.execute(`DELETE FROM app_user_branches WHERE user_id = ?`, [uid]);
         const [result] = await purchasePool.execute(
             `DELETE FROM app_users WHERE id = ?`,
-            [Number(id)]
+            [uid]
         );
         return result.affectedRows > 0;
     },
@@ -2720,6 +2812,144 @@ export const MySqlService = {
             [String(sessionId || "")]
         );
         return result.affectedRows > 0;
+    },
+
+    async ensureAppUserActionLogsTable() {
+        if (MySqlService._appUserActionLogsReady) return true;
+        try {
+            await this.ensureAppUsersTable();
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS app_user_action_logs (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                  user_id INT UNSIGNED NOT NULL,
+                  action VARCHAR(64) NOT NULL,
+                  module VARCHAR(50) NULL,
+                  ref_id VARCHAR(100) NULL,
+                  field_key VARCHAR(50) NULL,
+                  detail TEXT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (id),
+                  KEY idx_ual_user_created (user_id, created_at),
+                  KEY idx_ual_action (action)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            MySqlService._appUserActionLogsReady = true;
+            return true;
+        } catch (err) {
+            console.error("[MySQL ensureAppUserActionLogsTable]", err.message);
+            return false;
+        }
+    },
+
+    /**
+     * Record a user action for admin activity review (annotations, login, etc.).
+     */
+    async logAppUserAction({
+        userId,
+        action,
+        moduleName = null,
+        refId = null,
+        fieldKey = null,
+        detail = null,
+    } = {}) {
+        const uid = Number(userId);
+        if (!uid || !action) return false;
+        try {
+            await this.ensureAppUserActionLogsTable();
+            await purchasePool.execute(
+                `INSERT INTO app_user_action_logs
+                    (user_id, action, module, ref_id, field_key, detail)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                    uid,
+                    String(action).slice(0, 64),
+                    moduleName != null ? String(moduleName).slice(0, 50) : null,
+                    refId != null ? String(refId).slice(0, 100) : null,
+                    fieldKey != null ? String(fieldKey).slice(0, 50) : null,
+                    detail != null ? String(detail).slice(0, 2000) : null,
+                ]
+            );
+            return true;
+        } catch (err) {
+            console.error("[MySQL logAppUserAction]", err.message);
+            return false;
+        }
+    },
+
+    async listAppUserActionLogs(userId, { limit = 100 } = {}) {
+        const uid = Number(userId);
+        if (!uid) return [];
+        await this.ensureAppUserActionLogsTable();
+        const lim = Math.min(300, Math.max(1, parseInt(limit, 10) || 100));
+        const [rows] = await purchasePool.execute(
+            `SELECT id, user_id, action, module, ref_id, field_key, detail, created_at
+             FROM app_user_action_logs
+             WHERE user_id = ?
+             ORDER BY created_at DESC
+             LIMIT ${lim}`,
+            [uid]
+        );
+        return rows;
+    },
+
+    async getLatestAppSessionForUser(userId) {
+        const uid = Number(userId);
+        if (!uid) return null;
+        await this.ensureAppSessionsTable();
+        const [rows] = await purchasePool.execute(
+            `SELECT session_id, user_id, active_company_id, created_at, last_seen_at
+             FROM app_sessions
+             WHERE user_id = ?
+             ORDER BY last_seen_at DESC
+             LIMIT 1`,
+            [uid]
+        );
+        return rows[0] || null;
+    },
+
+    /**
+     * Users with a session heartbeated within the last N minutes (one row per user).
+     */
+    async listOnlineUsers({ withinMinutes = 3 } = {}) {
+        const all = await this.listUserPresence();
+        const mins = Math.min(15, Math.max(1, parseInt(withinMinutes, 10) || 3));
+        const cutoff = Date.now() - mins * 60 * 1000;
+        return all.filter((row) => {
+            if (!row.last_seen_at) return false;
+            const t = new Date(row.last_seen_at).getTime();
+            return Number.isFinite(t) && t >= cutoff;
+        });
+    },
+
+    /**
+     * Active app users with their latest session (online or offline).
+     */
+    async listUserPresence() {
+        await this.ensureAppSessionsTable();
+        await this.ensureAppUsersTable();
+        const [rows] = await purchasePool.execute(
+            `SELECT
+                u.id,
+                u.username,
+                u.full_name,
+                u.role,
+                latest.active_company_id,
+                latest.last_seen_at
+             FROM app_users u
+             LEFT JOIN (
+                SELECT s.user_id, s.active_company_id, s.last_seen_at
+                FROM app_sessions s
+                INNER JOIN (
+                    SELECT user_id, MAX(last_seen_at) AS last_seen_at
+                    FROM app_sessions
+                    GROUP BY user_id
+                ) m ON m.user_id = s.user_id AND m.last_seen_at = s.last_seen_at
+             ) latest ON latest.user_id = u.id
+             WHERE u.active = 1
+             GROUP BY u.id, u.username, u.full_name, u.role, latest.active_company_id, latest.last_seen_at
+             ORDER BY (latest.last_seen_at IS NULL) ASC, latest.last_seen_at DESC`
+        );
+        return rows;
     },
 
     /**

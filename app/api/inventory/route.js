@@ -1,6 +1,12 @@
 import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
+import {
+    constrainBranchParam,
+    emptyRestrictedPayload,
+    getRequestBranchAccess,
+    hasNoBranchAccess,
+} from "@/lib/branch-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,7 +56,14 @@ export async function GET(request) {
         const page = parseInt(searchParams.get("page") || "1");
         const pageSize = parseInt(searchParams.get("pageSize") || "10");
         const search = searchParams.get("search") || "";
-        const branch = searchParams.get("branch") || "";
+        const access = await getRequestBranchAccess(request);
+        if (hasNoBranchAccess(access)) {
+            return Response.json(emptyRestrictedPayload({
+                globalStats: { totalStock: 0, totalValue: 0, lowStock: 0, totalLowStock: 0, outOfStock: 0 },
+                companyId: getActiveCompanyFromRequest(request) || "main",
+            }), NO_STORE);
+        }
+        const branch = constrainBranchParam(access, searchParams.get("branch") || "");
         const stats = searchParams.get("stats") === "true";
         const statsOnly = searchParams.get("statsOnly") === "true";
         const count = searchParams.get("count") === "true";

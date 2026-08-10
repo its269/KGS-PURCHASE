@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
 import { buildReplenishmentInsight, TARGET_DAYS_OF_COVER } from "@/lib/replenishment-insights";
 import PaginationBar from "@/components/PaginationBar";
+import { isLocalAdminUser } from "@/lib/user-access-client";
 import "@/styles/dashboard.css";
 import "@/styles/inventory-detail.css";
 import "@/styles/replenishment.css";
@@ -399,6 +400,10 @@ export default function ReplenishmentPage() {
         }),
         [branches]
     );
+    const canAccessMain = useMemo(() => {
+        if (isLocalAdminUser()) return true;
+        return branches.some((b) => String(b.SiteID || b.branch_id || "").toUpperCase() === "MAIN");
+    }, [branches]);
 
     const activeBranch = viewMode === "main" ? "MAIN" : selectedBranch;
     const isMain = viewMode === "main";
@@ -512,6 +517,12 @@ export default function ReplenishmentPage() {
                 if (res.ok && active) {
                     const list = await res.json();
                     setBranches(list);
+                    const hasMain = (list || []).some(
+                        (b) => String(b.SiteID || b.branch_id || "").toUpperCase() === "MAIN"
+                    );
+                    if (!isLocalAdminUser() && !hasMain) {
+                        setViewMode("branch");
+                    }
                 }
             } catch (err) {
                 console.error("Failed to load branches", err);
@@ -735,13 +746,15 @@ export default function ReplenishmentPage() {
                         <div className="repl-view-field">
                             <label>View</label>
                             <div className="repl-view-switch">
-                                <button
-                                    type="button"
-                                    className={`repl-view-btn ${viewMode === "main" ? "active" : ""}`}
-                                    onClick={() => setViewMode("main")}
-                                >
-                                    MAIN Warehouse
-                                </button>
+                                {canAccessMain ? (
+                                    <button
+                                        type="button"
+                                        className={`repl-view-btn ${viewMode === "main" ? "active" : ""}`}
+                                        onClick={() => setViewMode("main")}
+                                    >
+                                        MAIN Warehouse
+                                    </button>
+                                ) : null}
                                 <button
                                     type="button"
                                     className={`repl-view-btn ${viewMode === "branch" ? "active" : ""}`}

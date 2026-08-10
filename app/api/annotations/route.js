@@ -1,6 +1,6 @@
 import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
-import { getSessionFromRequest } from "@/lib/session-store";
+import { logUserActivity, summarizeActivityDetail } from "@/lib/activity-log";
 
 /**
  * Handle persistent user annotations (ETAs, Statuses, Lead Times)
@@ -24,13 +24,6 @@ export async function GET(req) {
 
 export async function POST(req) {
     try {
-        // Optional: Check session if you want to restrict editing
-        const session = getSessionFromRequest(req);
-        if (!session) {
-            // We'll allow it for now as per current project setup, but usually 401
-            // return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
-        }
-
         const body = await req.json();
         const { module: moduleName, refId, fieldKey, fieldValue } = body;
 
@@ -39,12 +32,18 @@ export async function POST(req) {
         }
 
         const success = await MySqlService.upsertAnnotation(moduleName, refId, fieldKey, fieldValue);
-        
+
         if (success) {
+            await logUserActivity(req, {
+                action: "annotation_save",
+                moduleName,
+                refId,
+                fieldKey,
+                detail: summarizeActivityDetail(fieldValue),
+            });
             return NextResponse.json({ message: "Annotation saved" });
-        } else {
-            return NextResponse.json({ message: "Failed to save annotation" }, { status: 500 });
         }
+        return NextResponse.json({ message: "Failed to save annotation" }, { status: 500 });
     } catch (err) {
         console.error("[Annotations API POST Error]", err);
         return NextResponse.json({ message: "Internal server error" }, { status: 500 });

@@ -3,10 +3,12 @@ import { MySqlService } from "@/services/mysql";
 import {
     requireAdmin,
     sanitizeUser,
+    sanitizeUserWithBranches,
     hashPassword,
     validateUsername,
     validatePassword,
 } from "@/lib/app-users";
+import { normalizeBranchIds } from "@/lib/branch-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,7 +18,7 @@ export async function GET(request) {
         await requireAdmin(request);
         await MySqlService.ensureAppUsersTable();
         const rows = await MySqlService.listAppUsers();
-        return NextResponse.json({ users: rows.map(sanitizeUser) });
+        return NextResponse.json({ users: rows.map((row) => sanitizeUser(row)) });
     } catch (err) {
         const status = err.status || 500;
         return NextResponse.json({ message: err.message || "Failed to list users" }, { status });
@@ -45,6 +47,14 @@ export async function POST(request) {
             return NextResponse.json({ message: "Username already exists." }, { status: 409 });
         }
 
+        const branchIds = normalizeBranchIds(body.branchIds);
+        if (role === "user" && !branchIds.length) {
+            return NextResponse.json(
+                { message: "Select at least one branch for this user." },
+                { status: 400 }
+            );
+        }
+
         const id = await MySqlService.createAppUser({
             username,
             passwordHash: hashPassword(password),
@@ -53,8 +63,9 @@ export async function POST(request) {
             role,
             active,
         });
+        await MySqlService.setAppUserBranches(id, role === "admin" ? [] : branchIds);
         const created = await MySqlService.getAppUserById(id);
-        return NextResponse.json({ user: sanitizeUser(created) }, { status: 201 });
+        return NextResponse.json({ user: await sanitizeUserWithBranches(created) }, { status: 201 });
     } catch (err) {
         const status = err.status || 500;
         return NextResponse.json({ message: err.message || "Failed to create user" }, { status });

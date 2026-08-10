@@ -1,6 +1,11 @@
 import { AcumaticaService } from "@/services/acumatica";
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/session-store";
+import {
+    constrainBranchParam,
+    getRequestBranchAccess,
+    hasNoBranchAccess,
+} from "@/lib/branch-access";
 
 export async function GET(request) {
     try {
@@ -13,7 +18,9 @@ export async function GET(request) {
 
         const { searchParams } = new URL(request.url);
         
-        const branch = searchParams.get("branch") || "";
+        const access = await getRequestBranchAccess(request);
+        if (hasNoBranchAccess(access)) return NextResponse.json([]);
+        const branch = constrainBranchParam(access, searchParams.get("branch") || "");
         const startDate = searchParams.get("startDate") || "";
         const endDate = searchParams.get("endDate") || "";
 

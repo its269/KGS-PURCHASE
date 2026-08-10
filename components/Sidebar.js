@@ -267,7 +267,7 @@ export default function Sidebar() {
           </div>
 
           <div className="sidebar-session-wrap">
-            <SessionStatus collapsed={isCollapsed} userName={userName} />
+            <SessionStatus collapsed={isCollapsed} userName={userName} isAdmin={userRole === "admin"} />
           </div>
 
           {companies.length >= 2 && (

@@ -9,7 +9,7 @@ import {
 import { MySqlService } from "@/services/mysql";
 import { getSessionCookieOptions } from "@/lib/base-path";
 import { ensureAppUsersReady } from "@/lib/ensure-app-users";
-import { sanitizeUser, verifyPassword } from "@/lib/app-users";
+import { sanitizeUserWithBranches, verifyPassword } from "@/lib/app-users";
 import { persistAppSession } from "@/lib/persist-session";
 
 export const runtime = "nodejs";
@@ -77,10 +77,15 @@ export async function POST(request) {
 
         const sessionId = crypto.randomUUID();
         initMultiCompanySession(sessionId, { activeCompanyId: "main" });
-        const user = sanitizeUser(localRow);
+        const user = await sanitizeUserWithBranches(localRow);
         const erpMode = await attachSystemErpSession(sessionId);
         setLocalUserSession(sessionId, user);
         await persistAppSession(sessionId, user.id, "main");
+        MySqlService.logAppUserAction({
+            userId: user.id,
+            action: "login",
+            detail: `Signed in as ${user.username}`,
+        }).catch(() => {});
 
         try {
             const moved = await MySqlService.cleanupMisclassifiedEcomBranches();

@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
+import {
+    constrainBranchParam,
+    getRequestBranchAccess,
+    hasNoBranchAccess,
+} from "@/lib/branch-access";
 import { isExcludedBranchAlias, resolveCompanyIdForBranch, getStockWarehouseIdsForBranch } from "@/lib/companies";
 import { MySqlService } from "@/services/mysql";
 import {
@@ -111,7 +116,15 @@ export async function GET(request) {
     }
 
     const { searchParams } = new URL(request.url);
-    const branch = searchParams.get("branch") || "MAIN";
+    const access = await getRequestBranchAccess(request);
+    if (hasNoBranchAccess(access)) {
+        return NextResponse.json({
+            recommendations: [],
+            brief: { headline: "No branch access", detail: "Ask an admin to assign branches to this account." },
+            meta: { branch: "", restricted: true },
+        });
+    }
+    const branch = constrainBranchParam(access, searchParams.get("branch") || "MAIN") || (access.allBranches ? "MAIN" : "");
     const companyId = getActiveCompanyFromRequest(request) || "main";
     const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
     const forceRefresh = searchParams.get("refresh") === "1";

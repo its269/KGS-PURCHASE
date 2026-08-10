@@ -2,6 +2,11 @@ import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/session-store";
+import {
+    constrainBranchParam,
+    getRequestBranchAccess,
+    hasNoBranchAccess,
+} from "@/lib/branch-access";
 
 // Robust field extractor helpers
 const getF = (obj, k) => {
@@ -32,7 +37,11 @@ const NO_STORE = { headers: { "Cache-Control": "no-store" } };
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
-        const branch = searchParams.get("branch") || "";
+        const access = await getRequestBranchAccess(request);
+        if (hasNoBranchAccess(access)) {
+            return NextResponse.json({ items: [], totalCount: 0, restricted: true }, NO_STORE);
+        }
+        const branch = constrainBranchParam(access, searchParams.get("branch") || "");
         const asOfStr = searchParams.get("asOfDate") || new Date().toISOString().split('T')[0];
         const page = parseInt(searchParams.get("page") || "1");
         const pageSize = parseInt(searchParams.get("pageSize") || "10", 10);

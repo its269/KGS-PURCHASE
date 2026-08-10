@@ -10,6 +10,7 @@ import {
 } from "@/lib/app-users";
 import { setLocalUserSession, getSessionIdFromRequest } from "@/lib/session-store";
 import { ensureAppUsersReady } from "@/lib/ensure-app-users";
+import { logUserActivity } from "@/lib/activity-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,6 +76,13 @@ export async function PATCH(request) {
         const updated = await MySqlService.getAppUserById(me.id);
         const sessionId = getSessionIdFromRequest(request);
         if (sessionId) setLocalUserSession(sessionId, sanitizeUser(updated));
+
+        await logUserActivity(request, {
+            userId: me.id,
+            action: "profile_update",
+            moduleName: "account",
+            detail: Object.keys(fields).filter((k) => k !== "passwordHash").join(", ") || "profile",
+        });
 
         return NextResponse.json({ user: sanitizeUser(updated) });
     } catch (err) {

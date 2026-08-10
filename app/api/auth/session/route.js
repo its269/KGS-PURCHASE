@@ -10,7 +10,7 @@ import {
 } from "@/lib/session-store";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/session-messages";
 import { MySqlService } from "@/services/mysql";
-import { sanitizeUser } from "@/lib/app-users";
+import { sanitizeUserWithBranches } from "@/lib/app-users";
 import { hydrateSessionFromDb, removePersistedAppSession } from "@/lib/persist-session";
 
 export const runtime = "nodejs";
@@ -28,13 +28,16 @@ const expired = (extra = {}) =>
     );
 
 function localUserPayload(localUser) {
+    const role = localUser.role === "admin" ? "admin" : "user";
     return {
         id: localUser.id,
         username: localUser.username,
         fullName: localUser.fullName || "",
         email: localUser.email || "",
-        role: localUser.role,
+        role,
         active: true,
+        branchIds: role === "admin" ? [] : (Array.isArray(localUser.branchIds) ? localUser.branchIds : []),
+        allBranches: role === "admin" || localUser.allBranches === true,
     };
 }
 
@@ -78,7 +81,7 @@ export async function GET(request) {
                 await removePersistedAppSession(sessionId);
                 return expired({ reason: "local_user_inactive" });
             }
-            setLocalUserSession(sessionId, sanitizeUser(row));
+            setLocalUserSession(sessionId, await sanitizeUserWithBranches(row));
             meta = getSessionMeta(sessionId);
             MySqlService.touchAppSession(sessionId).catch(() => {});
         } catch (err) {

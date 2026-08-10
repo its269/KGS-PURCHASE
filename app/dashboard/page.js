@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef, memo } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
 import { withBasePath } from "@/lib/base-path";
 import PaginationBar from "@/components/PaginationBar";
+import { isLocalAdminUser } from "@/lib/user-access-client";
 import "@/styles/dashboard.css";
 
 /* ── SVG Icons ─────────────────────────────────────────────── */
@@ -364,8 +365,12 @@ export default function DashboardPage() {
                     setBranchOptions(options);
 
                     if (!selectedBranch || !options.some((b) => b.id === selectedBranch)) {
-                        const main = options.find(b => b.id.toUpperCase() === "MAIN") || options.find(b => b.id.toUpperCase().includes("MAIN"));
-                        if (main) setSelectedBranch(main.id);
+                        if (!isLocalAdminUser()) {
+                            if (options[0]) setSelectedBranch(options[0].id);
+                        } else {
+                            const main = options.find(b => b.id.toUpperCase() === "MAIN") || options.find(b => b.id.toUpperCase().includes("MAIN"));
+                            if (main) setSelectedBranch(main.id);
+                        }
                     }
                 }
             } catch (err) { console.error("Branch fetch error", err); }
@@ -552,7 +557,7 @@ export default function DashboardPage() {
                         <div className="db-select-wrapper" data-tour="branch-filter">
                             <IconFilter />
                             <select className="db-select" value={selectedBranch} onChange={(e) => handleBranchChange(e.target.value)} aria-label="Branch filter">
-                                <option value="">All Branches</option>
+                                {isLocalAdminUser() ? <option value="">All Branches</option> : null}
                                 {branchOptions.map(b => <option key={b.id} value={b.id}>{b.id}</option>)}
                             </select>
                             <IconChevron />

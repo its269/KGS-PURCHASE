@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { MySqlService } from "@/services/mysql";
 import {
     requireAdmin,
-    sanitizeUser,
+    sanitizeUserWithBranches,
     hashPassword,
     validateUsername,
     validatePassword,
 } from "@/lib/app-users";
+import { normalizeBranchIds } from "@/lib/branch-access";
 import { setLocalUserSession, getSessionIdFromRequest } from "@/lib/session-store";
 
 export const runtime = "nodejs";
@@ -77,16 +78,31 @@ export async function PATCH(request, { params }) {
             fields.active = nextActive;
         }
 
+        const nextRole = fields.role || (existing.role === "admin" ? "admin" : "user");
+        const branchIds = body.branchIds !== undefined ? normalizeBranchIds(body.branchIds) : null;
+        if (nextRole === "user" && branchIds && !branchIds.length) {
+            return NextResponse.json(
+                { message: "Select at least one branch for this user." },
+                { status: 400 }
+            );
+        }
+
         await MySqlService.updateAppUser(id, fields);
-        const updated = await MySqlService.getAppUserById(id);
+        if (branchIds || fields.role !== undefined) {
+            await MySqlService.setAppUserBranches(
+                id,
+                nextRole === "admin" ? [] : (branchIds || await MySqlService.getAppUserBranchIds(id))
+            );
+        }
+        const updated = await sanitizeUserWithBranches(await MySqlService.getAppUserById(id));
 
         // Keep current session profile in sync if editing self
         if (Number(admin.id) === id) {
             const sessionId = getSessionIdFromRequest(request);
-            if (sessionId) setLocalUserSession(sessionId, sanitizeUser(updated));
+            if (sessionId) setLocalUserSession(sessionId, updated);
         }
 
-        return NextResponse.json({ user: sanitizeUser(updated) });
+        return NextResponse.json({ user: updated });
     } catch (err) {
         const status = err.status || 500;
         return NextResponse.json({ message: err.message || "Failed to update user" }, { status });

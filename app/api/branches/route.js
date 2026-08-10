@@ -2,6 +2,7 @@ import { MySqlService } from "@/services/mysql";
 import { NextResponse } from "next/server";
 import { getActiveCompanyFromRequest } from "@/lib/session-store";
 import { filterBranchList, filterReplenishmentBranchList } from "@/lib/companies";
+import { filterBranchesForAccess, getRequestBranchAccess } from "@/lib/branch-access";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,11 @@ export async function GET(request) {
             ? await MySqlService.getReplenishmentBranches(companyId)
             : await MySqlService.getBranches(companyId);
 
-        return NextResponse.json(applyModuleFilter(branches, forModule), NO_STORE);
+        const access = await getRequestBranchAccess(request);
+        return NextResponse.json(
+            filterBranchesForAccess(applyModuleFilter(branches, forModule), access),
+            NO_STORE
+        );
     } catch (err) {
         console.error("[BFF Branches Error]", err);
         return NextResponse.json({ message: "Failed to fetch branches" }, { status: 500 });

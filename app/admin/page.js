@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { fetchWithAuth } from "@/lib/api-client";
@@ -13,6 +13,7 @@ const EMPTY_FORM = {
     email: "",
     role: "user",
     active: true,
+    branchIds: [],
 };
 
 export default function AdminPage() {
@@ -27,14 +28,34 @@ export default function AdminPage() {
     const [saving, setSaving] = useState(false);
     const [profile, setProfile] = useState({ username: "", fullName: "", email: "" });
     const [savingProfile, setSavingProfile] = useState(false);
+    const [branchOptions, setBranchOptions] = useState([]);
+    const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+    const [branchQuery, setBranchQuery] = useState("");
+    const branchPickerRef = useRef(null);
+
+    const branchLabel = (b) => (b?.name && b.name !== b.id ? `${b.id} — ${b.name}` : (b?.id || ""));
+
+    const selectedBranchSet = useMemo(() => {
+        return new Set((form.branchIds || []).map((id) => String(id).toUpperCase()));
+    }, [form.branchIds]);
+
+    const filteredBranchOptions = useMemo(() => {
+        const q = branchQuery.trim().toLowerCase();
+        if (!q) return branchOptions;
+        return branchOptions.filter((b) => {
+            const label = `${b.id} ${b.name || ""}`.toLowerCase();
+            return label.includes(q);
+        });
+    }, [branchOptions, branchQuery]);
 
     const load = useCallback(async () => {
         setLoading(true);
         setError("");
         try {
-            const [sessionRes, usersRes] = await Promise.all([
+            const [sessionRes, usersRes, branchesRes] = await Promise.all([
                 fetchWithAuth("/api/auth/session"),
                 fetchWithAuth("/api/admin/users"),
+                fetchWithAuth("/api/branches"),
             ]);
 
             if (sessionRes.status === 401) {
@@ -59,6 +80,18 @@ export default function AdminPage() {
             }
             const data = await usersRes.json();
             setUsers(data.users || []);
+            if (branchesRes.ok) {
+                const branchData = await branchesRes.json();
+                const list = Array.isArray(branchData) ? branchData : (branchData?.value || []);
+                setBranchOptions(
+                    list
+                        .map((b) => ({
+                            id: String(b.SiteID || b.branch_id || "").trim(),
+                            name: String(b.Description?.value || b.Description || b.branch_name || b.SiteID || "").trim(),
+                        }))
+                        .filter((b) => b.id)
+                );
+            }
         } catch (err) {
             setError(err.message || "Failed to load admin data");
         } finally {
@@ -70,9 +103,43 @@ export default function AdminPage() {
         load();
     }, [load]);
 
+    useEffect(() => {
+        if (!branchMenuOpen) return undefined;
+        const onDoc = (e) => {
+            if (!branchPickerRef.current?.contains(e.target)) {
+                setBranchMenuOpen(false);
+            }
+        };
+        const onKey = (e) => {
+            if (e.key === "Escape") setBranchMenuOpen(false);
+        };
+        document.addEventListener("mousedown", onDoc);
+        document.addEventListener("keydown", onKey);
+        return () => {
+            document.removeEventListener("mousedown", onDoc);
+            document.removeEventListener("keydown", onKey);
+        };
+    }, [branchMenuOpen]);
+
     const resetForm = () => {
         setEditingId(null);
         setForm(EMPTY_FORM);
+        setBranchMenuOpen(false);
+        setBranchQuery("");
+    };
+
+    const toggleBranch = (branchId) => {
+        setForm((f) => {
+            const current = f.branchIds || [];
+            const exists = current.some((id) => String(id).toUpperCase() === String(branchId).toUpperCase());
+            if (exists) {
+                return {
+                    ...f,
+                    branchIds: current.filter((id) => String(id).toUpperCase() !== String(branchId).toUpperCase()),
+                };
+            }
+            return { ...f, branchIds: [...current, branchId] };
+        });
     };
 
     const startEdit = (user) => {
@@ -84,7 +151,10 @@ export default function AdminPage() {
             email: user.email || "",
             role: user.role || "user",
             active: user.active !== false,
+            branchIds: Array.isArray(user.branchIds) ? user.branchIds : [],
         });
+        setBranchMenuOpen(false);
+        setBranchQuery("");
         setNotice("");
         setError("");
     };
@@ -95,12 +165,16 @@ export default function AdminPage() {
         setError("");
         setNotice("");
         try {
+            if (form.role === "user" && !(form.branchIds || []).length) {
+                throw new Error("Select at least one branch for this user.");
+            }
             const payload = {
                 username: form.username,
                 fullName: form.fullName,
                 email: form.email,
                 role: form.role,
                 active: form.active,
+                branchIds: form.role === "admin" ? [] : form.branchIds,
             };
             if (form.password) payload.password = form.password;
 
@@ -292,7 +366,14 @@ export default function AdminPage() {
                             Role
                             <select
                                 value={form.role}
-                                onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+                                onChange={(e) => {
+                                    const role = e.target.value;
+                                    setForm((f) => ({ ...f, role }));
+                                    if (role === "admin") {
+                                        setBranchMenuOpen(false);
+                                        setBranchQuery("");
+                                    }
+                                }}
                             >
                                 <option value="user">User</option>
                                 <option value="admin">Admin</option>
@@ -306,6 +387,101 @@ export default function AdminPage() {
                             />
                             Active
                         </label>
+                    </div>
+                    <div className="admin-branch-picker" ref={branchPickerRef}>
+                        <div className="admin-branch-picker-head">
+                            <span>Branch access</span>
+                            {form.role === "user" && (
+                                <span className="admin-branch-picker-actions">
+                                    <button
+                                        type="button"
+                                        className="admin-link"
+                                        onClick={() => setForm((f) => ({ ...f, branchIds: branchOptions.map((b) => b.id) }))}
+                                    >
+                                        Select all
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="admin-link"
+                                        onClick={() => setForm((f) => ({ ...f, branchIds: [] }))}
+                                    >
+                                        Clear
+                                    </button>
+                                </span>
+                            )}
+                        </div>
+                        {form.role === "admin" ? (
+                            <p className="admin-header-hint">Admins can view all branches. Limits apply to User accounts only.</p>
+                        ) : (
+                            <>
+                                <button
+                                    type="button"
+                                    className={`admin-branch-trigger${branchMenuOpen ? " is-open" : ""}`}
+                                    onClick={() => setBranchMenuOpen((o) => !o)}
+                                    aria-haspopup="listbox"
+                                    aria-expanded={branchMenuOpen}
+                                >
+                                    <span>
+                                        {form.branchIds.length === 0
+                                            ? "Select branches…"
+                                            : form.branchIds.length === 1
+                                                ? (branchLabel(branchOptions.find((b) => String(b.id).toUpperCase() === String(form.branchIds[0]).toUpperCase())) || form.branchIds[0])
+                                                : `${form.branchIds.length} branches selected`}
+                                    </span>
+                                    <span className="admin-branch-chevron" aria-hidden="true" />
+                                </button>
+                                {branchMenuOpen && (
+                                    <div className="admin-branch-menu" role="listbox" aria-multiselectable="true">
+                                        <input
+                                            className="admin-branch-search"
+                                            type="search"
+                                            value={branchQuery}
+                                            onChange={(e) => setBranchQuery(e.target.value)}
+                                            placeholder="Search branch…"
+                                            autoFocus
+                                        />
+                                        <div className="admin-branch-menu-list">
+                                            {filteredBranchOptions.length === 0 ? (
+                                                <p className="admin-header-hint">No branches found.</p>
+                                            ) : (
+                                                filteredBranchOptions.map((b) => {
+                                                    const checked = selectedBranchSet.has(String(b.id).toUpperCase());
+                                                    return (
+                                                        <label key={b.id} className={`admin-branch-option${checked ? " is-selected" : ""}`}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={checked}
+                                                                onChange={() => toggleBranch(b.id)}
+                                                            />
+                                                            <span>{branchLabel(b)}</span>
+                                                        </label>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                                {form.branchIds.length > 0 && (
+                                    <div className="admin-branch-chips">
+                                        {form.branchIds.map((id) => {
+                                            const opt = branchOptions.find((b) => String(b.id).toUpperCase() === String(id).toUpperCase());
+                                            return (
+                                                <button
+                                                    key={id}
+                                                    type="button"
+                                                    className="admin-branch-chip"
+                                                    onClick={() => toggleBranch(id)}
+                                                    title="Remove branch"
+                                                >
+                                                    {opt ? branchLabel(opt) : id}
+                                                    <span aria-hidden="true">×</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </>
+                        )}
                     </div>
                     <button type="submit" className="admin-btn" disabled={saving}>
                         {saving ? "Saving…" : editingId ? "Update user" : "Create user"}
@@ -323,6 +499,7 @@ export default function AdminPage() {
                                 <th>Name</th>
                                 <th>Email</th>
                                 <th>Role</th>
+                                <th>Branches</th>
                                 <th>Status</th>
                                 <th>Actions</th>
                             </tr>
@@ -330,7 +507,7 @@ export default function AdminPage() {
                         <tbody>
                             {users.length === 0 ? (
                                 <tr>
-                                    <td colSpan={6} className="admin-empty">No users yet.</td>
+                                    <td colSpan={7} className="admin-empty">No users yet.</td>
                                 </tr>
                             ) : (
                                 users.map((u) => {
@@ -345,6 +522,13 @@ export default function AdminPage() {
                                         <td>{u.email || "—"}</td>
                                         <td>
                                             <span className={`admin-badge admin-badge--${u.role}`}>{u.role}</span>
+                                        </td>
+                                        <td className="admin-branches-cell">
+                                            {u.role === "admin" || u.allBranches
+                                                ? "All branches"
+                                                : (u.branchIds || []).length
+                                                    ? (u.branchIds || []).join(", ")
+                                                    : "None"}
                                         </td>
                                         <td>{u.active ? "Active" : "Inactive"}</td>
                                         <td className="admin-actions">

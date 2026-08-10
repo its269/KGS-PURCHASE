@@ -6,6 +6,7 @@ import { withBasePath } from "@/lib/base-path";
 import InventoryDetailModal from "@/components/InventoryDetailModal";
 import PaginationBar from "@/components/PaginationBar";
 import { calcTotalCbm, formatCbm } from "@/lib/item-dimensions";
+import { isLocalAdminUser } from "@/lib/user-access-client";
 import "@/styles/dashboard.css";
 import "@/styles/stock-items.css";
 import "@/styles/po.css";
@@ -820,6 +821,9 @@ export default function PurchaseOrdersPage() {
                         return { id: b.SiteID || b.branch_id || "", name };
                     }).filter((b) => b.id);
                     setBranchOptions(options);
+                    if (!isLocalAdminUser() && options[0] && !options.some((b) => b.id === selectedBranch)) {
+                        setSelectedBranch(options[0].id);
+                    }
                 }
             } catch (err) {
                 console.error("Failed to load branches", err);
@@ -1258,7 +1262,7 @@ export default function PurchaseOrdersPage() {
                                 onChange={(e) => setSelectedBranch(e.target.value)}
                                 aria-label="Branch filter"
                             >
-                                <option value="">All Branches</option>
+                                {isLocalAdminUser() ? <option value="">All Branches</option> : null}
                                 {branchOptions.map((b) => (
                                     <option key={b.id} value={b.id}>{b.id}</option>
                                 ))}

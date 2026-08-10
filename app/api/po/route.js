@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getPoCredentialFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
+import {
+    constrainBranchParam,
+    emptyRestrictedPayload,
+    getRequestBranchAccess,
+    hasNoBranchAccess,
+} from "@/lib/branch-access";
 import { getSystemAcumaticaCredential } from "@/lib/acumatica-system-auth";
 import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
@@ -108,7 +114,11 @@ export async function GET(request) {
         const startDate = searchParams.get("startDate") || "";
         const endDate = searchParams.get("endDate") || "";
         const status = searchParams.get("status") || "";
-        const branch = (searchParams.get("branch") || "").trim();
+        const access = await getRequestBranchAccess(request);
+        if (hasNoBranchAccess(access)) {
+            return NextResponse.json(emptyRestrictedPayload({ orders: [], totalCount: 0 }), NO_STORE);
+        }
+        const branch = constrainBranchParam(access, (searchParams.get("branch") || "").trim());
         const vendorId = (searchParams.get("vendorId") || "").trim();
         const orderNbrsParam = searchParams.get("orderNbrs");
         const orderNbrs = orderNbrsParam == null
