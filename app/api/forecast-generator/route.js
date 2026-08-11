@@ -18,6 +18,7 @@ import {
 } from "@/lib/forecast-generator";
 import { logUserActivity, summarizeActivityDetail } from "@/lib/activity-log";
 import { refreshForecastComingPos, withTimeout } from "@/lib/refresh-forecast-pos";
+import { refreshForecastSales } from "@/lib/refresh-forecast-sales";
 
 export const dynamic = "force-dynamic";
 
@@ -100,17 +101,44 @@ export async function GET(request) {
         const companyId = getActiveCompanyFromRequest(request) || "main";
 
         try {
-            const refresh = await withTimeout(refreshForecastComingPos({ branch }), 20_000);
-            if (!refresh?.skipped) {
+            const poRefresh = await withTimeout(refreshForecastComingPos({ branch, cookie }), 15_000);
+            if (!poRefresh?.skipped) {
                 console.log("[Forecast Generator] Coming PO refresh", {
                     branch: branch || "ALL",
-                    ok: refresh?.ok,
-                    reason: refresh?.reason || null,
-                    orders: refresh?.orders || 0,
+                    ok: poRefresh?.ok,
+                    reason: poRefresh?.reason || null,
+                    orders: poRefresh?.orders || 0,
                 });
             }
         } catch (refreshErr) {
             console.warn("[Forecast Generator] Coming PO refresh skipped:", refreshErr.message);
+        }
+
+        const salesGaps = await MySqlService.listMissingSalesInvoiceMonths({
+            ranges: [
+                { start: last3.start, end: last3.end },
+                { start: lastYear.start, end: lastYear.end },
+            ],
+            branch: "",
+        }).catch(() => []);
+
+        if (salesGaps.length) {
+            void refreshForecastSales({
+                last3Start: last3.start,
+                last3End: last3.end,
+                lastYearStart: lastYear.start,
+                lastYearEnd: lastYear.end,
+                cookie,
+            }).then((salesRefresh) => {
+                console.log("[Forecast Generator] Sales backfill", {
+                    ok: salesRefresh?.ok,
+                    reason: salesRefresh?.reason || null,
+                    months: salesRefresh?.months || salesGaps,
+                    lines: salesRefresh?.lines || 0,
+                });
+            }).catch((err) => {
+                console.warn("[Forecast Generator] Sales backfill failed:", err.message);
+            });
         }
 
         const result = await MySqlService.getForecastGenerator({
@@ -150,6 +178,7 @@ export async function GET(request) {
                 totalPages,
             },
             source: "mysql",
+            salesGaps,
         }, NO_STORE);
     } catch (err) {
         console.error("[Forecast Generator GET]", err);

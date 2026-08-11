@@ -988,6 +988,7 @@ export const AcumaticaService = {
         lastModifiedAfter = null,
         onBatch = null,
         maxCatchupDays = 14,
+        chunkDays = 7,
     }) {
         const pageSize = 50;
         /** Cap long catch-ups so one sync doesn't run for hours / trip the network. */
@@ -1169,19 +1170,27 @@ export const AcumaticaService = {
             const to = new Date(`${untilDay}T00:00:00Z`);
             const spanDays = Math.max(0, Math.round((to - from) / 86400000));
 
-            if (spanDays > 7) {
+            const size = Math.max(1, Number(chunkDays) || 7);
+            if (spanDays > size) {
                 console.log(
-                    `>>> [SalesSync] Full range ${fromDay}→${untilDay} (${spanDays}d) — chunking by week`
+                    `>>> [SalesSync] Full range ${fromDay}→${untilDay} (${spanDays}d) — chunking by ${size}d`
                 );
-                for (const w of dayWindows(fromDay, untilDay, 7)) {
+                for (const w of dayWindows(fromDay, untilDay, size)) {
                     const filter =
                         `Date ge datetimeoffset'${w.start}T00:00:00Z' and ` +
                         `Date le datetimeoffset'${w.end}T23:59:59Z'`;
                     console.log(`>>> [SalesSync] Date window ${w.start} .. ${w.end}`);
-                    const winDocs = await fetchAllEntities(filter);
-                    const rows = docsToRows(winDocs, new Date(`${w.end}T23:59:59Z`));
-                    await emit(rows);
-                    allRows.push(...rows);
+                    try {
+                        const winDocs = await fetchAllEntities(filter);
+                        const rows = docsToRows(winDocs, new Date(`${w.end}T23:59:59Z`));
+                        await emit(rows);
+                        allRows.push(...rows);
+                    } catch (winErr) {
+                        console.error(
+                            `>>> [SalesSync] Window ${w.start}..${w.end} failed:`,
+                            winErr?.message || winErr
+                        );
+                    }
                 }
             } else {
                 const filter =

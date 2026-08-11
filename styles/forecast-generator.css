@@ -364,6 +364,17 @@
     margin: 0;
 }
 
+.fg-sales-gap {
+    margin: 0 0 0.75rem;
+    padding: 0.65rem 0.85rem;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    background: rgba(245, 158, 11, 0.1);
+    color: #fbbf24;
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+
 .fg-error {
     padding: 0.7rem 0.85rem;
     border-radius: var(--radius-md);

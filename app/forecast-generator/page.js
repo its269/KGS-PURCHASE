@@ -97,15 +97,18 @@ export default function ForecastGeneratorPage() {
     const [pagination, setPagination] = useState({ totalItems: 0, totalPages: 0 });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+    const [salesGaps, setSalesGaps] = useState([]);
     const saveTimers = useRef({});
+    const gapPolls = useRef(0);
+    const backfillStarted = useRef(false);
 
     useEffect(() => {
         Promise.resolve().then(() => {
             setMounted(true);
             try {
                 const b = localStorage.getItem("fg_branch");
-                const l3f = localStorage.getItem("fg_v3_last3_from");
-                const l3t = localStorage.getItem("fg_v3_last3_to");
+                const l3f = localStorage.getItem("fg_v4_last3_from");
+                const l3t = localStorage.getItem("fg_v4_last3_to");
                 const lyf = localStorage.getItem("fg_ly_from");
                 const lyt = localStorage.getItem("fg_ly_to");
                 if (b != null) setSelectedBranch(b);
@@ -121,8 +124,8 @@ export default function ForecastGeneratorPage() {
         if (!mounted) return;
         try {
             localStorage.setItem("fg_branch", selectedBranch);
-            localStorage.setItem("fg_v3_last3_from", last3From);
-            localStorage.setItem("fg_v3_last3_to", last3To);
+            localStorage.setItem("fg_v4_last3_from", last3From);
+            localStorage.setItem("fg_v4_last3_to", last3To);
             localStorage.setItem("fg_ly_from", lyFrom);
             localStorage.setItem("fg_ly_to", lyTo);
         } catch { /* ignore */ }
@@ -153,9 +156,11 @@ export default function ForecastGeneratorPage() {
         })();
     }, [mounted]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const fetchForecast = useCallback(async (pageOverride = page) => {
-        setLoading(true);
-        setError("");
+    const fetchForecast = useCallback(async (pageOverride = page, { silent = false } = {}) => {
+        if (!silent) {
+            setLoading(true);
+            setError("");
+        }
         try {
             const params = new URLSearchParams({
                 branch: selectedBranch,
@@ -171,7 +176,7 @@ export default function ForecastGeneratorPage() {
             const res = await fetchWithAuth(`/api/forecast-generator?${params}`);
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
-                setError(body.message || "Failed to load forecast.");
+                if (!silent) setError(body.message || "Failed to load forecast.");
                 return;
             }
             const result = await res.json();
@@ -181,11 +186,12 @@ export default function ForecastGeneratorPage() {
             setItemClasses(result.itemClasses || []);
             if (result.periods) setPeriods(result.periods);
             setPagination(result.pagination || { totalItems: 0, totalPages: 0 });
+            setSalesGaps(Array.isArray(result.salesGaps) ? result.salesGaps : []);
         } catch (err) {
             if (err.message === "Unauthorized") return;
-            setError("Unable to connect to the server.");
+            if (!silent) setError("Unable to connect to the server.");
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     }, [selectedBranch, last3From, last3To, lyFrom, lyTo, search, itemClass, page]);
 
@@ -198,6 +204,32 @@ export default function ForecastGeneratorPage() {
         if (!mounted) return;
         fetchForecast(page);
     }, [fetchForecast, mounted, page]);
+
+    useEffect(() => {
+        gapPolls.current = 0;
+        backfillStarted.current = false;
+    }, [selectedBranch, last3From, last3To, lyFrom, lyTo]);
+
+    useEffect(() => {
+        if (!mounted || !salesGaps.length || backfillStarted.current) return;
+        backfillStarted.current = true;
+        fetchWithAuth("/api/forecast-generator/sales-backfill", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ last3From, last3To, lyFrom, lyTo }),
+        }).catch(() => {
+            backfillStarted.current = false;
+        });
+    }, [mounted, salesGaps, last3From, last3To, lyFrom, lyTo]);
+
+    useEffect(() => {
+        if (!mounted || !salesGaps.length || gapPolls.current >= 24) return;
+        const timer = setTimeout(() => {
+            gapPolls.current += 1;
+            fetchForecast(page, { silent: true });
+        }, 15000);
+        return () => clearTimeout(timer);
+    }, [salesGaps, mounted, fetchForecast, page]);
 
     useEffect(() => {
         const onCompany = () => fetchForecast(1);
@@ -319,6 +351,13 @@ export default function ForecastGeneratorPage() {
                     </p>
                 </div>
 
+                {salesGaps.length > 0 ? (
+                    <p className="fg-sales-gap">
+                        Loading missing sales months from Acumatica ({salesGaps.join(", ")}).
+                        Last 3 Months / Last Year will update automatically.
+                    </p>
+                ) : null}
+
                 <div className="fg-period-bar" data-tour="period-params">
                     <div className="fg-period-group">
                         <label htmlFor="fg-last3-from">Last 3 Month Date</label>
@@ -339,7 +378,7 @@ export default function ForecastGeneratorPage() {
                                 aria-label="Last 3 months end"
                             />
                         </div>
-                        <span className="fg-period-hint">{periods.last3Label || "May – Aug 2026"}</span>
+                        <span className="fg-period-hint">{periods.last3Label || "May – Jul 2026"}</span>
                     </div>
                     <div className="fg-period-group">
                         <label htmlFor="fg-ly-from">Last Year Same Quarter</label>
@@ -573,6 +612,7 @@ export default function ForecastGeneratorPage() {
 
                 <p className="fg-footer">
                     Target Sales defaults to Estimate + Buffer and can be typed in. For P.O = Target − Inventory.
+                    Last 3 Months / Last Year = net units sold (invoices − credit memos) for the selected dates.
                     Coming PO = Open POs only (excludes On Hold), same as Replenishment.
                     Net P.O = For P.O − Coming PO. Estimated Sales Amount = Target Sales × SRP.
                 </p>

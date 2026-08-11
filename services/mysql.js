@@ -18,7 +18,7 @@ import {
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
 import { getCached, invalidateCache } from "@/lib/server-cache";
-import { FORECAST_ALL_BRANCH, forecastBranchKey, forecastSoldQty, normalizeInvKey } from "@/lib/forecast-generator.js";
+import { FORECAST_ALL_BRANCH, forecastBranchKey, listMonthsInRange, normalizeInvKey } from "@/lib/forecast-generator.js";
 import {
     openPoHeaderStatuses,
     sqlMatchOpenPoForBranch,
@@ -5105,6 +5105,51 @@ export const MySqlService = {
         };
     },
 
+    async listMissingSalesInvoiceMonths({ ranges = [], branch = "" } = {}) {
+        const months = [...new Set(
+            (ranges || []).flatMap((r) => listMonthsInRange(r.start, r.end))
+        )];
+        if (!months.length) return [];
+
+        const start = ranges.reduce((min, r) => (!min || (r.start && r.start < min) ? r.start : min), "");
+        const end = ranges.reduce((max, r) => (!max || (r.end && r.end > max) ? r.end : max), "");
+        if (!start || !end) return months;
+
+        const where = [
+            "DATE(document_date) >= ?",
+            "DATE(document_date) <= ?",
+            "order_type IN ('Invoice', 'Debit Memo')",
+        ];
+        const params = [start, end];
+        if (branch) {
+            const branchNames = await this.resolveSalesBranchNames(branch);
+            if (branchNames.length) {
+                where.push(`branch_name IN (${branchNames.map(() => "?").join(",")})`);
+                params.push(...branchNames);
+            }
+        }
+
+        try {
+            const [rows] = await purchasePool.query(
+                `SELECT DATE_FORMAT(document_date, '%Y-%m') AS ym, COUNT(*) AS c
+                 FROM product_periodic_sales
+                 WHERE ${where.join(" AND ")}
+                 GROUP BY ym`,
+                params
+            );
+            const present = new Set(
+                rows
+                    .filter((r) => Number(r.c) > 0)
+                    .map((r) => String(r.ym || "").trim())
+                    .filter(Boolean)
+            );
+            return months.filter((ym) => !present.has(ym));
+        } catch (err) {
+            console.error("[MySQL listMissingSalesInvoiceMonths]", err.message);
+            return months;
+        }
+    },
+
     async getForecastGenerator({
         companyId = "main",
         branch = "",
@@ -5174,7 +5219,7 @@ export const MySqlService = {
 
         const overallStart = last3Start < lastYearStart ? last3Start : lastYearStart;
         const overallEnd = last3End > lastYearEnd ? last3End : lastYearEnd;
-        const salesWhere = ["s.document_date >= ?", "s.document_date <= ?"];
+        const salesWhere = ["DATE(s.document_date) >= ?", "DATE(s.document_date) <= ?"];
         const salesParams = [overallStart, overallEnd];
         const salesEx = sqlExcludeSalesBranches("branch_name", "s");
         salesWhere.push(salesEx.clause);
@@ -5197,20 +5242,18 @@ export const MySqlService = {
 
         const [salesRows] = await purchasePool.query(
             `SELECT UPPER(REPLACE(TRIM(s.inventory_id), ' ', '')) AS invKey,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS last3Gross,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END) AS last3Abs,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS lastYearGross,
-                    SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END) AS lastYearAbs
+                    SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS last3Net,
+                    SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS lastYearNet
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}
              GROUP BY UPPER(REPLACE(TRIM(s.inventory_id), ' ', ''))`,
-            [last3Start, last3End, last3Start, last3End, lastYearStart, lastYearEnd, lastYearStart, lastYearEnd, ...salesParams]
+            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
         );
         const salesMap = new Map(salesRows.map((r) => [
             r.invKey,
             {
-                last3: forecastSoldQty(r.last3Gross, r.last3Abs),
-                lastYear: forecastSoldQty(r.lastYearGross, r.lastYearAbs),
+                last3: netQtySold(r.last3Net),
+                lastYear: netQtySold(r.lastYearNet),
             },
         ]));
 
@@ -5433,7 +5476,7 @@ export const MySqlService = {
 
         const overallStart = last3Start < lastYearStart ? last3Start : lastYearStart;
         const overallEnd = last3End > lastYearEnd ? last3End : lastYearEnd;
-        const salesWhere = ["s.document_date >= ?", "s.document_date <= ?"];
+        const salesWhere = ["DATE(s.document_date) >= ?", "DATE(s.document_date) <= ?"];
         const salesParams = [overallStart, overallEnd];
         const salesEx = sqlExcludeSalesBranches("branch_name", "s");
         salesWhere.push(salesEx.clause);
@@ -5455,13 +5498,11 @@ export const MySqlService = {
         }
         const [[salesMetrics]] = await purchasePool.query(
             `SELECT
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS last3Gross,
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END), 0) AS last3Abs,
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS lastYearGross,
-                COALESCE(SUM(CASE WHEN s.document_date >= ? AND s.document_date <= ? THEN ABS(s.qty) ELSE 0 END), 0) AS lastYearAbs
+                COALESCE(SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS last3Net,
+                COALESCE(SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS lastYearNet
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}`,
-            [last3Start, last3End, last3Start, last3End, lastYearStart, lastYearEnd, lastYearStart, lastYearEnd, ...salesParams]
+            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
         );
 
         let comingPo = comingPoTotal;
@@ -5475,8 +5516,8 @@ export const MySqlService = {
         return {
             productCount,
             inventoryQty: Number(inventoryQty) || 0,
-            last3MonthsQty: forecastSoldQty(salesMetrics?.last3Gross, salesMetrics?.last3Abs),
-            lastYearQty: forecastSoldQty(salesMetrics?.lastYearGross, salesMetrics?.lastYearAbs),
+            last3MonthsQty: netQtySold(salesMetrics?.last3Net),
+            lastYearQty: netQtySold(salesMetrics?.lastYearNet),
             comingPo: Number(comingPo) || 0,
             needPoCount: 0,
             estimatedSalesAmount: 0,

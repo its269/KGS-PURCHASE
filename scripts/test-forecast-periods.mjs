@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { forecastSoldQty, getDefaultForecastPeriods } from "../lib/forecast-generator.js";
+import { forecastSoldQty, getDefaultForecastPeriods, listMonthsInRange, monthInvoiceCoverageComplete } from "../lib/forecast-generator.js";
+import { netQtySold } from "../lib/sales-velocity.js";
 import {
     buildForecastPoStatusFilters,
     openPoHeaderStatuses,
@@ -12,11 +13,11 @@ import {
     sqlPoLineOpenQty,
 } from "../lib/open-po-match.js";
 
-test("last 3 months covers the same 90-day span as Last 3 Months Sales (Aug 2026 → May–Aug)", () => {
+test("last 3 months are the 3 complete months before current (Aug → May–Jul per SVG)", () => {
     const p = getDefaultForecastPeriods(new Date(2026, 7, 10));
     assert.equal(p.last3Start, "2026-05-01");
-    assert.equal(p.last3End, "2026-08-31");
-    assert.equal(p.last3Label, "May – Aug 2026");
+    assert.equal(p.last3End, "2026-07-31");
+    assert.equal(p.last3Label, "May – Jul 2026");
 });
 
 test("last year same quarter stays the upcoming quarter a year earlier", () => {
@@ -26,10 +27,18 @@ test("last year same quarter stays the upcoming quarter a year earlier", () => {
     assert.equal(p.lastYearLabel, "Oct – Dec 2025");
 });
 
-test("January 90-day span starts in October (Oct–Jan)", () => {
+test("January last 3 months are Oct–Dec of prior year", () => {
     const p = getDefaultForecastPeriods(new Date(2027, 0, 15));
     assert.equal(p.last3Start, "2026-10-01");
-    assert.equal(p.last3End, "2027-01-31");
+    assert.equal(p.last3End, "2026-12-31");
+});
+
+test("SVG 4th-quarter example years map to May–Jul and prior Oct–Dec", () => {
+    const p = getDefaultForecastPeriods(new Date(2024, 7, 15));
+    assert.equal(p.last3Start, "2024-05-01");
+    assert.equal(p.last3End, "2024-07-31");
+    assert.equal(p.lastYearStart, "2023-10-01");
+    assert.equal(p.lastYearEnd, "2023-12-31");
 });
 
 test("forecast sold qty prefers invoices and falls back to historical qty", () => {
@@ -37,6 +46,30 @@ test("forecast sold qty prefers invoices and falls back to historical qty", () =
     assert.equal(forecastSoldQty(0, 12696), 12696);
     assert.equal(forecastSoldQty(0, 0), 0);
     assert.equal(forecastSoldQty(null, 20), 20);
+});
+
+test("Forecast picker ranges include every calendar month", () => {
+    assert.deepEqual(listMonthsInRange("2026-05-01", "2026-07-31"), [
+        "2026-05", "2026-06", "2026-07",
+    ]);
+    assert.deepEqual(listMonthsInRange("2025-10-01", "2025-12-31"), [
+        "2025-10", "2025-11", "2025-12",
+    ]);
+});
+
+test("sales month coverage requires invoices near both ends of the month", () => {
+    const asOf = new Date(2026, 7, 10);
+    assert.equal(monthInvoiceCoverageComplete("2026-06", "2026-06-01", "2026-06-30", 100, asOf), true);
+    assert.equal(monthInvoiceCoverageComplete("2026-06", "2026-06-01", "2026-06-07", 50, asOf), false);
+    assert.equal(monthInvoiceCoverageComplete("2026-06", "2026-06-01", "2026-06-30", 0, asOf), false);
+    assert.equal(monthInvoiceCoverageComplete("2026-02", "2026-02-02", "2026-02-26", 10, asOf), true);
+    assert.equal(monthInvoiceCoverageComplete("2026-08", "2026-08-01", "2026-08-10", 20, asOf), true);
+    assert.equal(monthInvoiceCoverageComplete("2026-08", "2026-08-01", "2026-08-05", 20, asOf), false);
+});
+
+test("Forecast period qty is net sold (invoices minus credit memos)", () => {
+    assert.equal(netQtySold(186 - 20), 166);
+    assert.equal(netQtySold(-23), 0);
 });
 
 test("Coming PO prefixes follow the retail branch, not related warehouses only", () => {
