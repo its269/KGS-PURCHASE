@@ -69,9 +69,37 @@ export default function SyncingClient() {
     const [history, setHistory] = useState([]);
     const [loadingHistory, setLoadingHistory] = useState(true);
     const [importFile, setImportFile] = useState(null);
+    const [importType, setImportType] = useState("inventory");
     const [showImport, setShowImport] = useState(false);
+    const [importDragOver, setImportDragOver] = useState(false);
+    const [importError, setImportError] = useState(null);
     const logsEndRef = useRef(null);
     const fileInputRef = useRef(null);
+    const dragDepthRef = useRef(0);
+
+    const IMPORT_ACCEPT =
+        ".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv";
+
+    const isAllowedImportFile = (file) => {
+        if (!file) return false;
+        const name = String(file.name || "").toLowerCase();
+        return (
+            name.endsWith(".xlsx") ||
+            name.endsWith(".xls") ||
+            name.endsWith(".csv") ||
+            /spreadsheet|excel|csv/i.test(String(file.type || ""))
+        );
+    };
+
+    const pickImportFile = (file) => {
+        if (!file) return;
+        if (!isAllowedImportFile(file)) {
+            setImportError("Please use an Excel (.xlsx, .xls) or CSV file.");
+            return;
+        }
+        setImportError(null);
+        setImportFile(file);
+    };
 
     const addLog = (msg) => {
         setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -111,10 +139,19 @@ export default function SyncingClient() {
         setSyncMode(null);
         setShowImport(false);
         setImportFile(null);
+        setImportType("inventory");
+        setImportDragOver(false);
+        setImportError(null);
+        dragDepthRef.current = 0;
     };
 
     const startImport = async () => {
         if (isSyncing || !importFile) return;
+
+        const typeLabel =
+            importType === "purchase-receipts" ? "Purchase Receipts" : "Stock Items";
+        const sectionName =
+            importType === "purchase-receipts" ? "Purchase Receipts" : "Inventory";
 
         setIsSyncing(true);
         setSyncMode("import");
@@ -122,25 +159,36 @@ export default function SyncingClient() {
         setComplete(false);
         setError(null);
         setSections({
-            Inventory: { status: "run", details: `Uploading ${importFile.name}…`, progress: 15, count: 0 },
+            [sectionName]: {
+                status: "run",
+                details: `Uploading ${importFile.name}…`,
+                progress: 15,
+                count: 0,
+            },
         });
         setOverallProgress(15);
         setLogs([]);
-        addLog(`Importing Acumatica export: ${importFile.name}`);
+        addLog(`Importing ${typeLabel}: ${importFile.name}`);
 
         try {
             const form = new FormData();
             form.append("file", importFile);
+            form.append("importType", importType);
             const res = await fetch("/api/sync/import", { method: "POST", body: form });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || `Import failed (${res.status})`);
 
+            const count =
+                importType === "purchase-receipts"
+                    ? data.receipts || 0
+                    : data.catalogs || 0;
+
             setSections({
-                Inventory: {
+                [sectionName]: {
                     status: "done",
                     details: data.message,
                     progress: 100,
-                    count: data.catalogs || 0,
+                    count,
                 },
             });
             setOverallProgress(100);
@@ -344,7 +392,10 @@ export default function SyncingClient() {
                             <button
                                 type="button"
                                 className="sync-mode-card is-import"
-                                onClick={() => setShowImport(true)}
+                                onClick={() => {
+                                    setShowImport(true);
+                                    setImportError(null);
+                                }}
                             >
                                 <div className="sync-mode-icon" aria-hidden="true">
                                     <IconUpload />
@@ -355,9 +406,9 @@ export default function SyncingClient() {
                                         <span className="sync-mode-badge is-muted">Offline</span>
                                     </div>
                                     <p className="sync-mode-desc">
-                                        Upload an Acumatica Stock Items Excel/CSV (Inventory ID,
-                                        Description, Item Class, Default Price, etc.). For qty by
-                                        warehouse, use an Inventory Summary export instead.
+                                        Upload an Acumatica Excel/CSV — Stock Items / Inventory
+                                        Summary, or Purchase Receipts list. Choose the target
+                                        below before importing.
                                     </p>
                                     <span className="sync-mode-cta">Choose file →</span>
                                 </div>
@@ -368,17 +419,146 @@ export default function SyncingClient() {
                             <div className="sync-import-panel" role="region" aria-label="Import Acumatica file">
                                 <h3>Import Acumatica export</h3>
                                 <p>
-                                    Your Stock Items export works here (Inventory ID, Description, Type,
-                                    Item Class, Default Warehouse, Base Unit, Default Price, Item Status).
-                                    Catalog fields are updated; existing on-hand quantities are kept unless
-                                    the file also has qty columns.
+                                    Pick what this file contains, then select the Excel/CSV from
+                                    Acumatica.
                                 </p>
-                                <input
-                                    ref={fileInputRef}
-                                    type="file"
-                                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
-                                    onChange={(e) => setImportFile(e.target.files?.[0] || null)}
-                                />
+
+                                <div
+                                    className="sync-import-type"
+                                    role="radiogroup"
+                                    aria-label="Import target"
+                                >
+                                    <label
+                                        className={`sync-import-type-option ${
+                                            importType === "inventory" ? "is-selected" : ""
+                                        }`}
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="importType"
+                                            value="inventory"
+                                            checked={importType === "inventory"}
+                                            onChange={() => setImportType("inventory")}
+                                        />
+                                        <span className="sync-import-type-body">
+                                            <strong>Stock Items / Inventory</strong>
+                                            <span>
+                                                Catalog and optional on-hand by warehouse
+                                                (Inventory ID, Description, Item Class…).
+                                            </span>
+                                        </span>
+                                    </label>
+                                    <label
+                                        className={`sync-import-type-option ${
+                                            importType === "purchase-receipts" ? "is-selected" : ""
+                                        }`}
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="importType"
+                                            value="purchase-receipts"
+                                            checked={importType === "purchase-receipts"}
+                                            onChange={() => setImportType("purchase-receipts")}
+                                        />
+                                        <span className="sync-import-type-body">
+                                            <strong>Purchase Receipts</strong>
+                                            <span>
+                                                Receipt list export (Receipt Nbr., Status, Date,
+                                                Vendor, Total Qty., Currency…).
+                                            </span>
+                                        </span>
+                                    </label>
+                                </div>
+
+                                <div
+                                    className={`sync-import-dropzone ${
+                                        importDragOver ? "is-dragover" : ""
+                                    } ${importFile ? "has-file" : ""}`}
+                                    onDragEnter={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        dragDepthRef.current += 1;
+                                        setImportDragOver(true);
+                                    }}
+                                    onDragOver={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        e.dataTransfer.dropEffect = "copy";
+                                    }}
+                                    onDragLeave={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+                                        if (dragDepthRef.current === 0) setImportDragOver(false);
+                                    }}
+                                    onDrop={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        dragDepthRef.current = 0;
+                                        setImportDragOver(false);
+                                        const file = e.dataTransfer.files?.[0];
+                                        pickImportFile(file);
+                                    }}
+                                >
+                                    <input
+                                        ref={fileInputRef}
+                                        id="sync-import-file"
+                                        className="sync-import-file-input"
+                                        type="file"
+                                        accept={IMPORT_ACCEPT}
+                                        onChange={(e) =>
+                                            pickImportFile(e.target.files?.[0] || null)
+                                        }
+                                    />
+                                    <label
+                                        htmlFor="sync-import-file"
+                                        className="sync-import-dropzone-label"
+                                    >
+                                        <span className="sync-import-dropzone-icon" aria-hidden="true">
+                                            <IconUpload />
+                                        </span>
+                                        {importFile ? (
+                                            <>
+                                                <strong className="sync-import-dropzone-title">
+                                                    {importFile.name}
+                                                </strong>
+                                                <span className="sync-import-dropzone-hint">
+                                                    {(importFile.size / 1024).toLocaleString(undefined, {
+                                                        maximumFractionDigits: 1,
+                                                    })}{" "}
+                                                    KB — drop another file to replace, or click to browse
+                                                </span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <strong className="sync-import-dropzone-title">
+                                                    Drag & drop your file here
+                                                </strong>
+                                                <span className="sync-import-dropzone-hint">
+                                                    or click to browse · .xlsx, .xls, .csv
+                                                </span>
+                                            </>
+                                        )}
+                                    </label>
+                                    {importFile ? (
+                                        <button
+                                            type="button"
+                                            className="sync-import-clear"
+                                            onClick={() => {
+                                                setImportFile(null);
+                                                setImportError(null);
+                                                if (fileInputRef.current) fileInputRef.current.value = "";
+                                            }}
+                                        >
+                                            Clear
+                                        </button>
+                                    ) : null}
+                                </div>
+                                {importError ? (
+                                    <p className="sync-import-error" role="alert">
+                                        {importError}
+                                    </p>
+                                ) : null}
                                 <div className="sync-import-actions">
                                     <button
                                         type="button"
@@ -386,6 +566,10 @@ export default function SyncingClient() {
                                         onClick={() => {
                                             setShowImport(false);
                                             setImportFile(null);
+                                            setImportType("inventory");
+                                            setImportDragOver(false);
+                                            setImportError(null);
+                                            dragDepthRef.current = 0;
                                         }}
                                     >
                                         Cancel
@@ -396,7 +580,9 @@ export default function SyncingClient() {
                                         disabled={!importFile || isSyncing}
                                         onClick={startImport}
                                     >
-                                        {importFile ? `Import ${importFile.name}` : "Select a file first"}
+                                        {importFile
+                                            ? `Import ${importFile.name}`
+                                            : "Select a file first"}
                                     </button>
                                 </div>
                             </div>
@@ -476,7 +662,11 @@ export default function SyncingClient() {
                                                 {data.count > 0 ? (
                                                     <span className="sync-section-count">
                                                         {data.count.toLocaleString()}{" "}
-                                                        {name === "Inventory" ? "items" : "records"}
+                                                        {name === "Inventory"
+                                                            ? "items"
+                                                            : name === "Purchase Receipts"
+                                                              ? "receipts"
+                                                              : "records"}
                                                     </span>
                                                 ) : null}
                                             </div>

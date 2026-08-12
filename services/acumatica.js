@@ -935,7 +935,13 @@ export const AcumaticaService = {
             }),
         ]);
 
-        return aggregateBranchSales([...salesInvoices, ...creditMemos, ...debitMemos], {
+        // SalesInvoice can include memo types already pulled from Invoice — keep invoices only.
+        const invoicesOnly = salesInvoices.filter((inv) => {
+            const t = String(getF(inv, "Type") || "Invoice");
+            return t !== "Credit Memo" && t !== "Debit Memo";
+        });
+
+        return aggregateBranchSales([...invoicesOnly, ...creditMemos, ...debitMemos], {
             branch,
             startDate,
             endDate,
@@ -964,7 +970,12 @@ export const AcumaticaService = {
             }),
         ]);
 
-        return aggregateBranchGrossSales([...salesInvoices, ...debitMemos], {
+        const invoicesOnly = salesInvoices.filter((inv) => {
+            const t = String(getF(inv, "Type") || "Invoice");
+            return t !== "Credit Memo" && t !== "Debit Memo";
+        });
+
+        return aggregateBranchGrossSales([...invoicesOnly, ...debitMemos], {
             branch,
             startDate,
             endDate,

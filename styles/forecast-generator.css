@@ -358,6 +358,142 @@
     letter-spacing: 0.04em;
 }
 
+.fg-class-summary-trigger-wrap {
+    margin: 0 0 1rem;
+}
+
+.fg-class-summary-trigger {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.45rem 1rem;
+    margin: 0;
+    padding: 0.9rem 1.05rem;
+    text-align: left;
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--border-light);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.fg-class-summary-trigger:hover {
+    border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-light));
+    background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-surface));
+}
+
+.fg-class-summary-trigger-title {
+    font-size: 0.95rem;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+}
+
+.fg-class-summary-trigger-meta {
+    flex: 1 1 14rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.fg-class-summary-trigger-cta {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--accent-primary);
+}
+
+.fg-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    background: rgba(2, 6, 23, 0.62);
+    backdrop-filter: blur(4px);
+}
+
+.fg-lightbox-panel {
+    width: min(920px, 100%);
+    max-height: min(88vh, 760px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 1.1rem 1.15rem 1rem;
+    border-radius: 14px;
+    border: 1px solid var(--border-medium, #cbd5e1);
+    background: var(--bg-surface, #0f172a);
+    color: var(--text-primary, #f8fafc);
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+}
+
+.fg-lightbox-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.85rem;
+    margin-bottom: 0.85rem;
+}
+
+.fg-lightbox-head h2 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+}
+
+.fg-lightbox-hint {
+    margin: 0.3rem 0 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.fg-lightbox-close {
+    flex: 0 0 auto;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.55rem;
+    border: 1px solid var(--border-light);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 1.35rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.fg-lightbox-close:hover {
+    color: var(--text-primary);
+    border-color: color-mix(in srgb, var(--text-primary) 30%, var(--border-light));
+}
+
+.fg-lightbox-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-height: 0;
+    overflow: auto;
+}
+
+.fg-class-summary-wrap {
+    overflow-x: auto;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-light);
+}
+
+.fg-class-summary-table {
+    margin: 0;
+    min-width: 36rem;
+}
+
+.fg-class-summary-table th,
+.fg-class-summary-table td {
+    font-size: 0.78rem;
+}
+
 .fg-footer {
     font-size: 0.72rem;
     color: var(--text-muted);

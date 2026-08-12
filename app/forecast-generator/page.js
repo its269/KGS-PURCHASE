@@ -91,7 +91,13 @@ export default function ForecastGeneratorPage() {
         last3MonthsQty: 0,
         lastYearQty: 0,
         comingPo: 0,
+        bufferAmount: 0,
+        estimatedSalesAmount: 0,
     });
+    const [classSummary, setClassSummary] = useState([]);
+    const [classSummaryOpen, setClassSummaryOpen] = useState(false);
+    const [classSummaryPage, setClassSummaryPage] = useState(1);
+    const CLASS_SUMMARY_PAGE_SIZE = 10;
     const [periods, setPeriods] = useState(DEFAULTS);
     const [page, setPage] = useState(1);
     const [pagination, setPagination] = useState({ totalItems: 0, totalPages: 0 });
@@ -184,6 +190,7 @@ export default function ForecastGeneratorPage() {
             setDrafts({});
             setMetrics(result.metrics || {});
             setItemClasses(result.itemClasses || []);
+            setClassSummary(Array.isArray(result.classSummary) ? result.classSummary : []);
             if (result.periods) setPeriods(result.periods);
             setPagination(result.pagination || { totalItems: 0, totalPages: 0 });
             setSalesGaps(Array.isArray(result.salesGaps) ? result.salesGaps : []);
@@ -315,13 +322,13 @@ export default function ForecastGeneratorPage() {
                 "Inventory (as of Today)", "Coming PO (as of today)",
                 `Last 3 Months (${result.periods?.last3Label || ""})`,
                 `Last Year Same Quarter (${result.periods?.lastYearLabel || ""})`,
-                "Estimate Sales", "Buffer Inventory", "Target Sales",
+                "Estimate Sales", "Buffer Inventory", "Amount in Buffer", "Target Sales",
                 "For P.O", "Estimated Sales Amount", "Net P.O",
             ];
             const csvRows = list.map((r) => [
                 r.itemClass, r.inventoryId, r.srp, r.itemName,
                 r.inventoryQty, r.comingPo, r.last3MonthsQty, r.lastYearQty,
-                r.estimateSales, r.bufferInventory, r.targetSales,
+                r.estimateSales, r.bufferInventory, r.bufferAmount, r.targetSales,
                 r.forPo, r.estimatedSalesAmount, r.netPo,
             ].map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","));
             const csv = [headers.join(","), ...csvRows].join("\n");
@@ -339,6 +346,30 @@ export default function ForecastGeneratorPage() {
         () => rows.filter((r) => displayRow(r, drafts[r.inventoryId]).netPo > 0).length,
         [rows, drafts]
     );
+
+    const classSummaryPageRows = useMemo(() => {
+        const start = (classSummaryPage - 1) * CLASS_SUMMARY_PAGE_SIZE;
+        return classSummary.slice(start, start + CLASS_SUMMARY_PAGE_SIZE);
+    }, [classSummary, classSummaryPage]);
+
+    useEffect(() => {
+        const totalPages = Math.max(1, Math.ceil(classSummary.length / CLASS_SUMMARY_PAGE_SIZE));
+        if (classSummaryPage > totalPages) setClassSummaryPage(totalPages);
+    }, [classSummary.length, classSummaryPage]);
+
+    useEffect(() => {
+        if (!classSummaryOpen) return undefined;
+        const onKey = (e) => {
+            if (e.key === "Escape") setClassSummaryOpen(false);
+        };
+        window.addEventListener("keydown", onKey);
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        return () => {
+            window.removeEventListener("keydown", onKey);
+            document.body.style.overflow = prev;
+        };
+    }, [classSummaryOpen]);
 
     return (
         <div className="db-root">
@@ -432,7 +463,105 @@ export default function ForecastGeneratorPage() {
                         <span className="db-stat-value">{loading && rows.length === 0 ? "..." : fmtQty(metrics.comingPo)}</span>
                         <span className="db-stat-sub">{fmtQty(metrics.needPoCount || needPoOnPage)} still need a P.O.</span>
                     </div>
+                    <div className="db-stat-card">
+                        <span className="db-stat-label">Amount in Buffer</span>
+                        <span className="db-stat-value">{loading && rows.length === 0 ? "..." : fmtMoney(metrics.bufferAmount)}</span>
+                        <span className="db-stat-sub">Buffer qty × SRP</span>
+                    </div>
                 </div>
+
+                {classSummary.length > 0 ? (
+                    <div className="fg-class-summary-trigger-wrap">
+                        <button
+                            type="button"
+                            className="fg-class-summary-trigger"
+                            onClick={() => {
+                                setClassSummaryPage(1);
+                                setClassSummaryOpen(true);
+                            }}
+                        >
+                            <span className="fg-class-summary-trigger-title">
+                                Summary Amount By Item Class
+                            </span>
+                            <span className="fg-class-summary-trigger-meta">
+                                {classSummary.length.toLocaleString()} classes · Estimated{" "}
+                                {fmtMoney(metrics.estimatedSalesAmount || 0)} · Buffer{" "}
+                                {fmtMoney(metrics.bufferAmount || 0)}
+                            </span>
+                            <span className="fg-class-summary-trigger-cta">Open lightbox →</span>
+                        </button>
+                    </div>
+                ) : null}
+
+                {classSummaryOpen ? (
+                    <div
+                        className="fg-lightbox"
+                        role="presentation"
+                        onClick={() => setClassSummaryOpen(false)}
+                    >
+                        <div
+                            className="fg-lightbox-panel"
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="fg-class-summary-title"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="fg-lightbox-head">
+                                <div>
+                                    <h2 id="fg-class-summary-title">Summary Amount By Item Class</h2>
+                                    <p className="fg-lightbox-hint">
+                                        Estimated sales {fmtMoney(metrics.estimatedSalesAmount || 0)}
+                                        {" · "}
+                                        Buffer {fmtMoney(metrics.bufferAmount || 0)}
+                                        {" · "}
+                                        10 rows per page
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="fg-lightbox-close"
+                                    aria-label="Close summary"
+                                    onClick={() => setClassSummaryOpen(false)}
+                                >
+                                    ×
+                                </button>
+                            </div>
+                            <div className="fg-lightbox-body">
+                                <div className="fg-class-summary-wrap">
+                                    <table className="db-table fg-class-summary-table">
+                                        <thead>
+                                            <tr>
+                                                <th className="fg-col-text">Item Class</th>
+                                                <th className="fg-col-num">Items</th>
+                                                <th className="fg-col-num">Buffer Qty</th>
+                                                <th className="fg-col-num">Amount in Buffer</th>
+                                                <th className="fg-col-num">Estimated Sales Amount</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {classSummaryPageRows.map((row) => (
+                                                <tr key={row.itemClass}>
+                                                    <td className="fg-col-text">{row.itemClass}</td>
+                                                    <td className="fg-col-num">{fmtQty(row.itemCount)}</td>
+                                                    <td className="fg-col-num">{fmtQty(row.bufferQty)}</td>
+                                                    <td className="fg-col-num">{fmtMoney(row.bufferAmount)}</td>
+                                                    <td className="fg-col-num">{fmtMoney(row.estimatedSalesAmount)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <PaginationBar
+                                    page={classSummaryPage}
+                                    pageSize={CLASS_SUMMARY_PAGE_SIZE}
+                                    totalCount={classSummary.length}
+                                    onPageChange={setClassSummaryPage}
+                                    itemLabel="classes"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                ) : null}
 
                 <div className="db-toolbar" data-tour="toolbar">
                     <div className="db-toolbar-left">
@@ -511,6 +640,7 @@ export default function ForecastGeneratorPage() {
                                 <th className="fg-th-stock fg-col-num">Last Year<br />Same Quarter</th>
                                 <th className="fg-th-plan fg-col-num">Estimate Sales</th>
                                 <th className="fg-th-plan fg-col-num">Buffer Inventory</th>
+                                <th className="fg-th-plan fg-col-num">Amount in Buffer</th>
                                 <th className="fg-th-plan fg-col-num">Target Sales</th>
                                 <th className="fg-th-plan fg-col-num">For P.O</th>
                                 <th className="fg-th-plan fg-col-num">Estimated Sales Amount</th>
@@ -520,14 +650,14 @@ export default function ForecastGeneratorPage() {
                         <tbody>
                             {loading && rows.length === 0 ? (
                                 <tr>
-                                    <td colSpan={14} className="fg-empty">
+                                    <td colSpan={15} className="fg-empty">
                                         <div className="db-spinner db-spinner-lg" style={{ margin: "0 auto 0.75rem" }} />
                                         Loading forecast...
                                     </td>
                                 </tr>
                             ) : rows.length === 0 ? (
                                 <tr>
-                                    <td colSpan={14} className="fg-empty">
+                                    <td colSpan={15} className="fg-empty">
                                         No stock items match this branch and search.
                                     </td>
                                 </tr>
@@ -576,6 +706,7 @@ export default function ForecastGeneratorPage() {
                                                 aria-label={`Buffer inventory for ${row.inventoryId}`}
                                             />
                                         </td>
+                                        <td className="fg-td-plan fg-col-num">{fmtMoney(calc.bufferAmount)}</td>
                                         <td className="fg-td-plan fg-col-num fg-col-input">
                                             <input
                                                 className="fg-input"
@@ -612,6 +743,7 @@ export default function ForecastGeneratorPage() {
 
                 <p className="fg-footer">
                     Target Sales defaults to Estimate + Buffer and can be typed in. For P.O = Target − Inventory.
+                    Amount in Buffer = Buffer Inventory × SRP. Items with no sales history stay listed (qty 0).
                     Last 3 Months / Last Year = net units sold (invoices − credit memos) for the selected dates.
                     Coming PO = Open POs only (excludes On Hold), same as Replenishment.
                     Net P.O = For P.O − Coming PO. Estimated Sales Amount = Target Sales × SRP.

@@ -18,7 +18,7 @@ import {
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
 import { getCached, invalidateCache } from "@/lib/server-cache";
-import { FORECAST_ALL_BRANCH, forecastBranchKey, listMonthsInRange, normalizeInvKey } from "@/lib/forecast-generator.js";
+import { FORECAST_ALL_BRANCH, forecastBranchKey, forecastSoldQty, listMonthsInRange, monthInvoiceCoverageComplete, normalizeInvKey } from "@/lib/forecast-generator.js";
 import {
     openPoHeaderStatuses,
     sqlMatchOpenPoForBranch,
@@ -52,6 +52,8 @@ const purchasePool = mysql.createPool({
     connectTimeout: 30000,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
+    // Match Acumatica / Manila calendar dates for Forecast period windows
+    timezone: "+08:00",
 });
 
 /** Flag queries slower than 100ms for performance logging. */
@@ -3471,6 +3473,88 @@ export const MySqlService = {
         }
     },
 
+    async ensurePurchaseReceiptsTable() {
+        try {
+            await purchasePool.query(`
+                CREATE TABLE IF NOT EXISTS purchase_receipts (
+                    id VARCHAR(80) NOT NULL PRIMARY KEY,
+                    receipt_nbr VARCHAR(40) NOT NULL,
+                    type VARCHAR(40) NULL,
+                    status VARCHAR(40) NULL,
+                    receipt_date DATE NULL,
+                    vendor_id VARCHAR(40) NULL,
+                    vendor_name VARCHAR(255) NULL,
+                    total_qty DECIMAL(18,4) NULL DEFAULT 0,
+                    currency VARCHAR(16) NULL,
+                    created_on DATE NULL,
+                    last_sync DATETIME NULL,
+                    KEY idx_pr_date (receipt_date),
+                    KEY idx_pr_vendor (vendor_id),
+                    KEY idx_pr_nbr (receipt_nbr)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+        } catch (err) {
+            console.error("[MySQL ensurePurchaseReceiptsTable Error]", err);
+            throw err;
+        }
+    },
+
+    /**
+     * Upsert Acumatica Purchase Receipt header rows (file import or API).
+     */
+    async upsertPurchaseReceipts(rows = []) {
+        if (!rows.length) return 0;
+        await this.ensurePurchaseReceiptsTable();
+        return withMysqlRetry("upsertPurchaseReceipts", async () => {
+            const connection = await purchasePool.getConnection();
+            const CHUNK = 200;
+            let written = 0;
+            try {
+                await connection.beginTransaction();
+                const sql = `INSERT INTO purchase_receipts
+                    (id, receipt_nbr, type, status, receipt_date, vendor_id, vendor_name,
+                     total_qty, currency, created_on, last_sync)
+                 VALUES ?
+                 ON DUPLICATE KEY UPDATE
+                    type = VALUES(type),
+                    status = VALUES(status),
+                    receipt_date = VALUES(receipt_date),
+                    vendor_id = VALUES(vendor_id),
+                    vendor_name = VALUES(vendor_name),
+                    total_qty = VALUES(total_qty),
+                    currency = VALUES(currency),
+                    created_on = VALUES(created_on),
+                    last_sync = VALUES(last_sync)`;
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const values = chunk.map((r) => [
+                        r.id || `${String(r.type || "Receipt").toUpperCase()}::${r.receipt_nbr}`,
+                        r.receipt_nbr,
+                        r.type ?? null,
+                        r.status ?? null,
+                        r.receipt_date ?? null,
+                        r.vendor_id ?? null,
+                        r.vendor_name ?? null,
+                        r.total_qty ?? 0,
+                        r.currency ?? null,
+                        r.created_on ?? null,
+                        r.last_sync ? new Date(r.last_sync) : new Date(),
+                    ]);
+                    await connection.query(sql, [values]);
+                    written += chunk.length;
+                }
+                await connection.commit();
+                return written;
+            } catch (err) {
+                await connection.rollback();
+                console.error("[MySQL upsertPurchaseReceipts Error]", err);
+                throw err;
+            } finally {
+                connection.release();
+            }
+        });
+    },
+
     /**
      * Bulk upsert rows from Supabase product_periodic_sales into db_purchase.
      * Multi-row VALUES batches (not per-row execute) to cut sync time and pool load.
@@ -5105,7 +5189,7 @@ export const MySqlService = {
         };
     },
 
-    async listMissingSalesInvoiceMonths({ ranges = [], branch = "" } = {}) {
+    async listMissingSalesInvoiceMonths({ ranges = [], branch = "", asOf = new Date() } = {}) {
         const months = [...new Set(
             (ranges || []).flatMap((r) => listMonthsInRange(r.start, r.end))
         )];
@@ -5116,8 +5200,8 @@ export const MySqlService = {
         if (!start || !end) return months;
 
         const where = [
-            "DATE(document_date) >= ?",
-            "DATE(document_date) <= ?",
+            "CAST(document_date AS DATE) >= ?",
+            "CAST(document_date AS DATE) <= ?",
             "order_type IN ('Invoice', 'Debit Memo')",
         ];
         const params = [start, end];
@@ -5131,19 +5215,31 @@ export const MySqlService = {
 
         try {
             const [rows] = await purchasePool.query(
-                `SELECT DATE_FORMAT(document_date, '%Y-%m') AS ym, COUNT(*) AS c
+                `SELECT DATE_FORMAT(CAST(document_date AS DATE), '%Y-%m') AS ym,
+                        COUNT(*) AS c,
+                        DATE_FORMAT(MIN(CAST(document_date AS DATE)), '%Y-%m-%d') AS dmin,
+                        DATE_FORMAT(MAX(CAST(document_date AS DATE)), '%Y-%m-%d') AS dmax
                  FROM product_periodic_sales
                  WHERE ${where.join(" AND ")}
                  GROUP BY ym`,
                 params
             );
-            const present = new Set(
-                rows
-                    .filter((r) => Number(r.c) > 0)
-                    .map((r) => String(r.ym || "").trim())
-                    .filter(Boolean)
+            const coverage = new Map(
+                rows.map((r) => [
+                    String(r.ym || "").trim(),
+                    {
+                        c: Number(r.c) || 0,
+                        dmin: r.dmin,
+                        dmax: r.dmax,
+                    },
+                ])
             );
-            return months.filter((ym) => !present.has(ym));
+            return months.filter((ym) => {
+                const row = coverage.get(ym);
+                if (!row || row.c <= 0) return true;
+                // Partial months (e.g. Jul 1–14 only) must stay missing so Forecast re-pulls.
+                return !monthInvoiceCoverageComplete(ym, row.dmin, row.dmax, row.c, asOf);
+            });
         } catch (err) {
             console.error("[MySQL listMissingSalesInvoiceMonths]", err.message);
             return months;
@@ -5219,7 +5315,7 @@ export const MySqlService = {
 
         const overallStart = last3Start < lastYearStart ? last3Start : lastYearStart;
         const overallEnd = last3End > lastYearEnd ? last3End : lastYearEnd;
-        const salesWhere = ["DATE(s.document_date) >= ?", "DATE(s.document_date) <= ?"];
+        const salesWhere = ["CAST(s.document_date AS DATE) >= ?", "CAST(s.document_date AS DATE) <= ?"];
         const salesParams = [overallStart, overallEnd];
         const salesEx = sqlExcludeSalesBranches("branch_name", "s");
         salesWhere.push(salesEx.clause);
@@ -5242,18 +5338,28 @@ export const MySqlService = {
 
         const [salesRows] = await purchasePool.query(
             `SELECT UPPER(REPLACE(TRIM(s.inventory_id), ' ', '')) AS invKey,
-                    SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS last3Net,
-                    SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS lastYearNet
+                    SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS last3Net,
+                    SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS last3Gross,
+                    SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END) AS lastYearNet,
+                    SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END) AS lastYearGross
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}
              GROUP BY UPPER(REPLACE(TRIM(s.inventory_id), ' ', ''))`,
-            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
+            [
+                last3Start, last3End,
+                last3Start, last3End,
+                lastYearStart, lastYearEnd,
+                lastYearStart, lastYearEnd,
+                ...salesParams,
+            ]
         );
         const salesMap = new Map(salesRows.map((r) => [
             r.invKey,
             {
-                last3: netQtySold(r.last3Net),
-                lastYear: netQtySold(r.lastYearNet),
+                // Prefer net (invoice − credit memo) to match Acumatica Sales Profitability Quantity.
+                // Fall back to gross only when the window has no nettable invoice qty.
+                last3: netQtySold(r.last3Net) || forecastSoldQty(r.last3Gross, 0),
+                lastYear: netQtySold(r.lastYearNet) || forecastSoldQty(r.lastYearGross, 0),
             },
         ]));
 
@@ -5306,8 +5412,7 @@ export const MySqlService = {
             if (classUpper && String(itemClassName).toUpperCase().trim() !== classUpper) continue;
             const inventoryQty = Number(r.inventoryQty) || 0;
             const comingPo = comingPoMap.get(key) || 0;
-            const atBranch = Number(r.atBranch) || 0;
-            if (branch && !atBranch && sales.last3 <= 0 && sales.lastYear <= 0 && comingPo <= 0) continue;
+            // Keep zero-sale items: catalog / stock rows stay in Forecast even with no history.
             const input = inputMap.get(key);
             merged.push({
                 inventoryId: r.inventoryId,
@@ -5380,12 +5485,48 @@ export const MySqlService = {
 
         const totalItems = merged.length;
         const pageRows = merged.slice(offsetInt, offsetInt + limitInt);
+
+        const classTotals = new Map();
+        let bufferAmountTotal = 0;
+        for (const r of merged) {
+            const est = r.estimateSales == null ? Math.max(r.last3MonthsQty, r.lastYearQty) : r.estimateSales;
+            const buffer = Number(r.bufferInventory) || 0;
+            const suggestedTarget = (Number(est) || 0) + buffer;
+            const target = r.targetSales == null ? suggestedTarget : Number(r.targetSales);
+            const srp = Number(r.srp) || 0;
+            const bufferAmount = buffer * srp;
+            const estimatedSalesAmount = (Number(target) || 0) * srp;
+            bufferAmountTotal += bufferAmount;
+            const cls = String(r.itemClass || "").trim() || "(No class)";
+            const prev = classTotals.get(cls) || {
+                itemClass: cls,
+                itemCount: 0,
+                bufferQty: 0,
+                bufferAmount: 0,
+                estimatedSalesAmount: 0,
+                last3MonthsQty: 0,
+                lastYearQty: 0,
+            };
+            prev.itemCount += 1;
+            prev.bufferQty += buffer;
+            prev.bufferAmount += bufferAmount;
+            prev.estimatedSalesAmount += estimatedSalesAmount;
+            prev.last3MonthsQty += Number(r.last3MonthsQty) || 0;
+            prev.lastYearQty += Number(r.lastYearQty) || 0;
+            classTotals.set(cls, prev);
+        }
+        const classSummary = [...classTotals.values()].sort((a, z) =>
+            z.estimatedSalesAmount - a.estimatedSalesAmount
+            || String(a.itemClass).localeCompare(String(z.itemClass))
+        );
+
         const metrics = {
             productCount: totalItems,
             inventoryQty: merged.reduce((s, r) => s + (Number(r.inventoryQty) || 0), 0),
             last3MonthsQty: merged.reduce((s, r) => s + (Number(r.last3MonthsQty) || 0), 0),
             lastYearQty: merged.reduce((s, r) => s + (Number(r.lastYearQty) || 0), 0),
             comingPo: merged.reduce((s, r) => s + (Number(r.comingPo) || 0), 0),
+            bufferAmount: bufferAmountTotal,
             needPoCount: merged.filter((r) => {
                 const est = r.estimateSales == null ? Math.max(r.last3MonthsQty, r.lastYearQty) : r.estimateSales;
                 const suggestedTarget = (Number(est) || 0) + (Number(r.bufferInventory) || 0);
@@ -5400,7 +5541,7 @@ export const MySqlService = {
             }, 0),
         };
 
-        return { rows: pageRows, totalItems, itemClasses, metrics };
+        return { rows: pageRows, totalItems, itemClasses, metrics, classSummary };
     },
 
     async _getOpenPoQtyAllUncached(companyId = "main", { includeOnHold = false, useOrderQty = false } = {}) {
@@ -5476,7 +5617,7 @@ export const MySqlService = {
 
         const overallStart = last3Start < lastYearStart ? last3Start : lastYearStart;
         const overallEnd = last3End > lastYearEnd ? last3End : lastYearEnd;
-        const salesWhere = ["DATE(s.document_date) >= ?", "DATE(s.document_date) <= ?"];
+        const salesWhere = ["CAST(s.document_date AS DATE) >= ?", "CAST(s.document_date AS DATE) <= ?"];
         const salesParams = [overallStart, overallEnd];
         const salesEx = sqlExcludeSalesBranches("branch_name", "s");
         salesWhere.push(salesEx.clause);
@@ -5498,11 +5639,19 @@ export const MySqlService = {
         }
         const [[salesMetrics]] = await purchasePool.query(
             `SELECT
-                COALESCE(SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS last3Net,
-                COALESCE(SUM(CASE WHEN DATE(s.document_date) >= ? AND DATE(s.document_date) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS lastYearNet
+                COALESCE(SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS last3Net,
+                COALESCE(SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS last3Gross,
+                COALESCE(SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_NET_QTY}) ELSE 0 END), 0) AS lastYearNet,
+                COALESCE(SUM(CASE WHEN CAST(s.document_date AS DATE) >= ? AND CAST(s.document_date AS DATE) <= ? THEN (${SQL_GROSS_QTY}) ELSE 0 END), 0) AS lastYearGross
              FROM product_periodic_sales s
              WHERE ${salesWhere.join(" AND ")}`,
-            [last3Start, last3End, lastYearStart, lastYearEnd, ...salesParams]
+            [
+                last3Start, last3End,
+                last3Start, last3End,
+                lastYearStart, lastYearEnd,
+                lastYearStart, lastYearEnd,
+                ...salesParams,
+            ]
         );
 
         let comingPo = comingPoTotal;
@@ -5516,8 +5665,8 @@ export const MySqlService = {
         return {
             productCount,
             inventoryQty: Number(inventoryQty) || 0,
-            last3MonthsQty: netQtySold(salesMetrics?.last3Net),
-            lastYearQty: netQtySold(salesMetrics?.lastYearNet),
+            last3MonthsQty: netQtySold(salesMetrics?.last3Net) || forecastSoldQty(salesMetrics?.last3Gross, 0),
+            lastYearQty: netQtySold(salesMetrics?.lastYearNet) || forecastSoldQty(salesMetrics?.lastYearGross, 0),
             comingPo: Number(comingPo) || 0,
             needPoCount: 0,
             estimatedSalesAmount: 0,

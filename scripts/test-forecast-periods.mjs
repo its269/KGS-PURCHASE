@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { forecastSoldQty, getDefaultForecastPeriods, listMonthsInRange, monthInvoiceCoverageComplete } from "../lib/forecast-generator.js";
+import { computeForecastFields, forecastSoldQty, getDefaultForecastPeriods, listMonthsInRange, monthInvoiceCoverageComplete } from "../lib/forecast-generator.js";
 import { netQtySold } from "../lib/sales-velocity.js";
 import {
     buildForecastPoStatusFilters,
@@ -48,6 +48,18 @@ test("forecast sold qty prefers invoices and falls back to historical qty", () =
     assert.equal(forecastSoldQty(null, 20), 20);
 });
 
+test("buffer amount is buffer inventory times SRP", () => {
+    const row = computeForecastFields({
+        last3MonthsQty: 10,
+        lastYearQty: 8,
+        srp: 35,
+        bufferInventory: 4,
+    });
+    assert.equal(row.bufferInventory, 4);
+    assert.equal(row.bufferAmount, 140);
+    assert.equal(row.estimatedSalesAmount, (10 + 4) * 35);
+});
+
 test("Forecast picker ranges include every calendar month", () => {
     assert.deepEqual(listMonthsInRange("2026-05-01", "2026-07-31"), [
         "2026-05", "2026-06", "2026-07",
@@ -65,11 +77,35 @@ test("sales month coverage requires invoices near both ends of the month", () =>
     assert.equal(monthInvoiceCoverageComplete("2026-02", "2026-02-02", "2026-02-26", 10, asOf), true);
     assert.equal(monthInvoiceCoverageComplete("2026-08", "2026-08-01", "2026-08-10", 20, asOf), true);
     assert.equal(monthInvoiceCoverageComplete("2026-08", "2026-08-01", "2026-08-05", 20, asOf), false);
+    // MySQL DATE arriving as prior-day 16:00Z must still count as Jul 1 / Jul 14
+    assert.equal(
+        monthInvoiceCoverageComplete(
+            "2026-07",
+            new Date("2026-06-30T16:00:00.000Z"),
+            new Date("2026-07-14T16:00:00.000Z"),
+            100,
+            asOf
+        ),
+        false
+    );
+    assert.equal(
+        monthInvoiceCoverageComplete(
+            "2026-07",
+            new Date("2026-06-30T16:00:00.000Z"),
+            new Date("2026-07-30T16:00:00.000Z"),
+            100,
+            asOf
+        ),
+        true
+    );
 });
 
-test("Forecast period qty is net sold (invoices minus credit memos)", () => {
+test("Forecast period qty prefers net sold, falls back to invoice gross", () => {
     assert.equal(netQtySold(186 - 20), 166);
     assert.equal(netQtySold(-23), 0);
+    // Invoice 35184 − CM-* 459 = 34725 (ignore duplicate SI-* credit memos)
+    assert.equal(netQtySold(34725) || forecastSoldQty(35184, 0), 34725);
+    assert.equal(netQtySold(0) || forecastSoldQty(100, 0), 100);
 });
 
 test("Coming PO prefixes follow the retail branch, not related warehouses only", () => {

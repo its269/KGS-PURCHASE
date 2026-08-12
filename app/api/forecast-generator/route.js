@@ -162,6 +162,7 @@ export async function GET(request) {
             data,
             metrics: result.metrics || emptyMetrics(),
             itemClasses: result.itemClasses || [],
+            classSummary: result.classSummary || [],
             periods: {
                 last3Start: last3.start,
                 last3End: last3.end,
@@ -273,6 +274,7 @@ function emptyMetrics() {
         last3MonthsQty: 0,
         lastYearQty: 0,
         comingPo: 0,
+        bufferAmount: 0,
         needPoCount: 0,
         estimatedSalesAmount: 0,
     };
