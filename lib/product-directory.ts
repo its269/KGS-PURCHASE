@@ -141,14 +141,23 @@ async function ensureKcTables(): Promise<void> {
           id VARCHAR(64) NOT NULL PRIMARY KEY,
           category_id VARCHAR(64) NOT NULL,
           name VARCHAR(255) NOT NULL,
+          source_code VARCHAR(128) NULL,
           sort_order INT NOT NULL DEFAULT 0,
           is_active TINYINT(1) NOT NULL DEFAULT 1,
           created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           KEY idx_category (category_id),
+          KEY idx_source (source_code),
           KEY idx_active_sort (is_active, sort_order)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    try {
+        await db.query(
+            "ALTER TABLE kc_item_classes ADD COLUMN source_code VARCHAR(128) NULL AFTER name"
+        );
+    } catch {
+        /* column already exists */
+    }
     await db.query(`
         CREATE TABLE IF NOT EXISTS kc_folders (
           id VARCHAR(64) NOT NULL PRIMARY KEY,
@@ -209,11 +218,68 @@ async function ensureTables(): Promise<void> {
     await ensureActionLogsTable();
 }
 
-async function seedIfEmpty(): Promise<void> {
-    const db = getPool();
-    const [rows] = await db.query<CountRow[]>("SELECT COUNT(*) AS c FROM kc_categories");
-    if (Number(rows[0]?.c || 0) > 0) return;
+const POSTING_TO_CATEGORY: Record<string, string> = {
+    MCHPRINTER: "machine",
+    INKS: "inks",
+    CONSUMABLE: "media",
+    ACCSSORIES: "tools",
+};
 
+const CATEGORY_NAMES: Record<string, string> = {
+    machine: "Machine",
+    inks: "Inks",
+    media: "Media",
+    tools: "Tools",
+};
+
+const SOURCE_CODE_LABELS: Record<string, string> = {
+    ECOEPSON: "Eco Solvent",
+    ECOSOLVENT: "Eco Solvent",
+    SOLVENTPR: "Solvent",
+    SOLVENT: "Solvent",
+    SUBLIMTION: "Sublimation",
+    UVPRINTER: "UV Printer",
+    FLATBEDCUT: "Flatbed Cutter",
+    "FLATBED CU": "Flatbed Cutter",
+    LASERMACH: "Laser Machine",
+    HEATPRESS: "Heat Press",
+    "HEAT PRESS": "Heat Press",
+    CUTTERPLOT: "Cutter Plotter",
+    PRINTHEAD: "Printhead",
+    LAMINATOR: "Laminator",
+    ACCSSORIES: "Accessories",
+    TARPAULIN: "Tarpaulin",
+    VINYLSTIC: "Vinyl Sticker",
+    LABEL: "Label",
+    PVCBOARD: "PVC Board",
+    ACRYLIC: "Acrylic",
+    TEXTILE: "Textile",
+    DISPLAY: "Display",
+    EMBROIDERY: "Embroidery",
+    CNCROUTER: "CNC Router",
+};
+
+function slug(raw: string): string {
+    const s = String(raw || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return s || "other";
+}
+
+function labelForSourceCode(code: string): string {
+    const key = String(code || "").trim();
+    if (!key) return "Other";
+    if (SOURCE_CODE_LABELS[key]) return SOURCE_CODE_LABELS[key];
+    return key
+        .toLowerCase()
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function ensureCategories(): Promise<void> {
+    const db = getPool();
     const categories: [string, string, number][] = [
         ["machine", "Machine", 1],
         ["inks", "Inks", 2],
@@ -222,52 +288,131 @@ async function seedIfEmpty(): Promise<void> {
     ];
     for (const [id, name, sort] of categories) {
         await db.query(
-            "INSERT INTO kc_categories (id, name, sort_order, is_active) VALUES (?,?,?,1)",
+            `INSERT INTO kc_categories (id, name, sort_order, is_active) VALUES (?,?,?,1)
+             ON DUPLICATE KEY UPDATE name=VALUES(name), sort_order=VALUES(sort_order), is_active=1`,
             [id, name, sort]
         );
     }
+}
 
-    const icId = "kc_ic_eco_solvent";
-    await db.query(
-        "INSERT INTO kc_item_classes (id, category_id, name, sort_order, is_active) VALUES (?,?,?,1,1)",
-        [icId, "machine", "Eco Solvent"]
-    );
-
-    const folders: [string, string, number][] = [
-        ["kc_fld_brochure", "Brochure", 1],
-        ["kc_fld_inks", "Inks", 2],
-        ["kc_fld_machines", "Machines", 3],
-        ["kc_fld_images", "Images", 4],
-        ["kc_fld_other", "Other folder", 5],
-    ];
-    for (const [id, name, sort] of folders) {
+/** One-time copy from inventory_items into KC tables (browse still reads KC only). */
+async function importInventoryCatalog(): Promise<void> {
+    const db = getPool();
+    await ensureCategories();
+    try {
         await db.query(
-            `INSERT INTO kc_folders (id, item_class_id, parent_id, name, kind, sort_order, is_active)
-             VALUES (?,?,NULL,?,'folder',?,1)`,
-            [id, icId, name, sort]
+            "ALTER TABLE kc_item_classes ADD COLUMN source_code VARCHAR(128) NULL AFTER name"
         );
+    } catch {
+        /* already exists */
     }
 
     await db.query(
-        `INSERT INTO kc_folders (id, item_class_id, parent_id, name, kind, sort_order, is_active)
-         VALUES (?,?,?,?,'folder',1,1)`,
-        ["kc_fld_models", icId, "kc_fld_machines", "Different Model"]
+        "UPDATE kc_products SET is_active=0 WHERE id LIKE 'kc_prd_%' AND is_active=1"
+    );
+    await db.query(
+        `UPDATE kc_folders SET is_active=0 WHERE id IN (
+          'kc_fld_brochure','kc_fld_inks','kc_fld_machines','kc_fld_images','kc_fld_other','kc_fld_models'
+        )`
+    );
+    await db.query(
+        `UPDATE kc_item_classes SET is_active=0
+         WHERE id='kc_ic_eco_solvent' AND (source_code IS NULL OR source_code='')`
     );
 
-    const samples: [string, string, string, string, string][] = [
-        ["kc_prd_brochure_1", "kc_fld_brochure", "Eco Solvent Brochure A", "BR-ECO-A", "Different type of brochure for Eco Solvent"],
-        ["kc_prd_ink_1", "kc_fld_inks", "Eco Solvent Ink Set", "INK-ECO-1", "Different type of Inks for Eco Solvent"],
-        ["kc_prd_machine_1", "kc_fld_machines", "Eco Solvent Printer Sample", "MCH-ECO-1", "Different type of machines for Eco Solvent"],
-        ["kc_prd_model_1", "kc_fld_models", "Organized Model Sample", "MDL-ECO-1", "Organized Model of machines"],
-        ["kc_prd_image_1", "kc_fld_images", "Sample Image Pack", "IMG-ECO-1", "FOLDER OF IMAGES"],
-    ];
-    for (const [id, folderId, name, sku, description] of samples) {
+    interface ClassAggRow extends RowDataPacket {
+        posting_class: string;
+        item_class: string;
+        c: number;
+    }
+    const [classRows] = await db.query<ClassAggRow[]>(
+        `SELECT posting_class, item_class, COUNT(DISTINCT inventory_id) AS c
+         FROM inventory_items
+         WHERE deleted_at IS NULL AND item_status='Active' AND company_id='main'
+           AND posting_class IN ('MCHPRINTER','INKS','CONSUMABLE','ACCSSORIES')
+           AND item_class IS NOT NULL AND TRIM(item_class) <> ''
+         GROUP BY posting_class, item_class
+         ORDER BY posting_class, c DESC, item_class`
+    );
+
+    const icMap: Record<string, string> = {};
+    let sort = 0;
+    for (const row of classRows) {
+        const posting = row.posting_class;
+        const code = String(row.item_class || "").trim();
+        const cat = POSTING_TO_CATEGORY[posting];
+        if (!cat || !code) continue;
+        sort += 1;
+        const icId = `kc_ic_${slug(code)}`;
+        const name = labelForSourceCode(code);
         await db.query(
-            `INSERT INTO kc_products (id, folder_id, name, sku, description, sort_order, is_active)
-             VALUES (?,?,?,?,?,1,1)`,
-            [id, folderId, name, sku, description]
+            `INSERT INTO kc_item_classes (id, category_id, name, source_code, sort_order, is_active)
+             VALUES (?,?,?,?,?,1)
+             ON DUPLICATE KEY UPDATE category_id=VALUES(category_id), name=VALUES(name),
+               source_code=VALUES(source_code), sort_order=VALUES(sort_order), is_active=1`,
+            [icId, cat, name, code, sort]
+        );
+        icMap[`${cat}|${code}`] = icId;
+        await ensureItemsFolder(icId);
+    }
+
+    interface InvRow extends RowDataPacket {
+        inventory_id: string;
+        inventory_name: string | null;
+        item_class: string | null;
+        posting_class: string;
+        type: string | null;
+    }
+    const [invRows] = await db.query<InvRow[]>(
+        `SELECT inventory_id, inventory_name, item_class, posting_class, type
+         FROM inventory_items
+         WHERE deleted_at IS NULL AND item_status='Active' AND company_id='main'
+           AND posting_class IN ('MCHPRINTER','INKS','CONSUMABLE','ACCSSORIES')
+         GROUP BY inventory_id, inventory_name, item_class, posting_class, type
+         ORDER BY inventory_name`
+    );
+
+    for (const row of invRows) {
+        const posting = row.posting_class;
+        const code = String(row.item_class || "").trim();
+        const cat = POSTING_TO_CATEGORY[posting];
+        if (!cat || !code) continue;
+        const key = `${cat}|${code}`;
+        const icId = icMap[key];
+        if (!icId) continue;
+        const folderId = await ensureItemsFolder(icId);
+        const pid = String(row.inventory_id);
+        const name = row.inventory_name || pid;
+        const sku = pid;
+        let desc = `${CATEGORY_NAMES[cat] || cat} · ${labelForSourceCode(code)}`;
+        if (row.type) desc += ` · ${row.type}`;
+        await db.query(
+            `INSERT INTO kc_products (id, folder_id, name, sku, description, file_url, sort_order, is_active)
+             VALUES (?,?,?,?,?,NULL,0,1)
+             ON DUPLICATE KEY UPDATE folder_id=VALUES(folder_id), name=VALUES(name),
+               sku=VALUES(sku), description=VALUES(description), is_active=1`,
+            [pid, folderId, name, sku, desc]
         );
     }
+}
+
+async function importInventoryCatalogIfNeeded(): Promise<void> {
+    const db = getPool();
+    const [prodRows] = await db.query<CountRow[]>(
+        "SELECT COUNT(*) AS c FROM kc_products WHERE is_active=1"
+    );
+    const [icRows] = await db.query<CountRow[]>(
+        "SELECT COUNT(*) AS c FROM kc_item_classes WHERE is_active=1"
+    );
+    const products = Number(prodRows[0]?.c || 0);
+    const ics = Number(icRows[0]?.c || 0);
+    if (products >= 100 && ics >= 10) return;
+    await importInventoryCatalog();
+}
+
+async function seedIfEmpty(): Promise<void> {
+    await ensureCategories();
+    await importInventoryCatalogIfNeeded();
 }
 
 async function getCategory(id: string): Promise<CategoryRow | null> {
@@ -375,10 +520,10 @@ async function listItemClasses(categoryId: string, categoryName: string): Promis
     );
     const out: FolderNode[] = [];
     for (const row of rows) {
+        const folderId = `kc_fld_items_${row.id}`;
         const [countRows] = await db.query<CountRow[]>(
-            `SELECT COUNT(*) AS c FROM kc_folders
-             WHERE is_active=1 AND item_class_id=? AND parent_id IS NULL`,
-            [row.id]
+            "SELECT COUNT(*) AS c FROM kc_products WHERE is_active=1 AND folder_id=?",
+            [folderId]
         );
         out.push({
             id: row.id,
@@ -471,9 +616,13 @@ async function doBrowse(folderId: string): Promise<BrowseResult> {
         if (!ic) return { folders: [], products: [] };
         const cat = await getCategory(ic.category_id);
         const path = [ROOT_NAME, cat?.name || "", ic.name].filter(Boolean);
+        const catalogId = await ensureItemsFolder(current);
+        const folders = (await listFolders(current, null, path)).filter(
+            (f) => f.id !== catalogId
+        );
         return {
-            folders: await listFolders(current, null, path),
-            products: [],
+            folders,
+            products: await listProducts(catalogId, path),
         };
     }
 
@@ -943,6 +1092,14 @@ export const ProductDirectoryService = {
         await ensureTables();
         return listActionLogs(body.limit);
     },
+
+    /** Admin: re-import Active inventory_items into KC CMS tables. */
+    async importCatalog(_body: JsonBody = {}, request?: Request) {
+        requireAdmin(request);
+        await ensureTables();
+        await importInventoryCatalog();
+        return { imported: true };
+    },
 };
 
 export const PRODUCT_DIRECTORY_ACTIONS: Record<string, keyof typeof ProductDirectoryService> = {
@@ -966,4 +1123,6 @@ export const PRODUCT_DIRECTORY_ACTIONS: Record<string, keyof typeof ProductDirec
     inventory_action_log: "actionLogWrite",
     action_logs: "actionLogsList",
     inventory_action_logs: "actionLogsList",
+    import_catalog: "importCatalog",
+    inventory_import_catalog: "importCatalog",
 };
