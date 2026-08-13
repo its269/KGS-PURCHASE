@@ -1,15 +1,25 @@
 /**
- * Product Directory HTTP API (Next.js).
+ * Product Directory HTTP API (Next.js / TypeScript).
  *
- * Examples:
- *   GET  /api/product-directory/health
- *   POST /api/product-directory/browse
- *   POST /api/product-directory/inventory_browse
- *   POST /api/product-directory/action_log
- *   POST /api/product-directory?action=search
+ * Production (Flutter):
+ *   http://190.92.233.232/kgs-purchase/api/product-directory/inventory_browse
  *
- * Admin mutations (folder/product create/delete, action_logs list) require header
- * X-Inventory-Admin-Token when INVENTORY_ADMIN_TOKEN is set.
+ * Local (no base path):
+ *   http://localhost:3002/api/product-directory/inventory_browse
+ *
+ * Actions (POST JSON body unless noted):
+ *   GET/POST  .../health | inventory_health
+ *   POST      .../browse | inventory_browse          { folder_id? }
+ *   POST      .../search | inventory_search          { query, limit? }
+ *   POST      .../product | inventory_product        { product_id }
+ *   POST      .../folder_create | inventory_folder_create
+ *   POST      .../product_create | inventory_product_create
+ *   POST      .../folder_delete | inventory_folder_delete
+ *   POST      .../product_delete | inventory_product_delete
+ *   POST      .../action_log | inventory_action_log
+ *   POST      .../action_logs | inventory_action_logs  (admin)
+ *
+ * Admin mutations need header X-Inventory-Admin-Token when INVENTORY_ADMIN_TOKEN is set.
  */
 import { NextResponse } from "next/server";
 import {
@@ -20,18 +30,20 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const CORS_HEADERS = {
+const CORS_HEADERS: Record<string, string> = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers":
         "Content-Type, Authorization, Cookie, X-Inventory-Admin-Token, session_token, X-Session-Id",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
-function json(data, status = 200) {
+type RouteContext = { params: Promise<{ action?: string[] }> };
+
+function json(data: unknown, status = 200) {
     return NextResponse.json(data, { status, headers: CORS_HEADERS });
 }
 
-function resolveAction(request, params) {
+function resolveAction(request: Request, params: { action?: string[] }) {
     const { searchParams } = new URL(request.url);
     let action = (searchParams.get("action") || "").trim();
 
@@ -42,10 +54,10 @@ function resolveAction(request, params) {
     return action.toLowerCase().replace(/[^a-z0-9_]/g, "");
 }
 
-async function parseBody(request) {
+async function parseBody(request: Request): Promise<Record<string, unknown>> {
     if (request.method === "GET" || request.method === "HEAD") {
         const { searchParams } = new URL(request.url);
-        const body = {};
+        const body: Record<string, unknown> = {};
         for (const [key, value] of searchParams.entries()) {
             if (key === "action") continue;
             body[key] = value;
@@ -57,19 +69,19 @@ async function parseBody(request) {
         const text = await request.text();
         if (!text) return {};
         const parsed = JSON.parse(text);
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : {};
     } catch {
         return {};
     }
 }
 
-async function handle(request, context) {
+async function handle(request: Request, context: RouteContext) {
     const params = await context.params;
     let actionKey = resolveAction(request, params);
     const body = await parseBody(request);
 
-    // Only use body.action for routing when it maps to a known endpoint.
-    // (action_log payloads also send body.action = opened_product|searched|downloaded)
     if (!actionKey && body.action) {
         const fromBody = String(body.action)
             .toLowerCase()
@@ -96,7 +108,10 @@ async function handle(request, context) {
     }
 
     try {
-        const handler = ProductDirectoryService[methodName];
+        const handler = ProductDirectoryService[methodName] as (
+            body: Record<string, unknown>,
+            request?: Request
+        ) => Promise<unknown>;
         const needsRequest = [
             "folderCreate",
             "productCreate",
@@ -110,14 +125,15 @@ async function handle(request, context) {
             : await handler.call(ProductDirectoryService, body);
 
         return json({ status: "success", success: true, data });
-    } catch (err) {
-        const status = err?.status || 500;
+    } catch (err: unknown) {
+        const e = err as { status?: number; message?: string };
+        const status = e?.status || 500;
         console.error(`[product-directory] ${actionKey}:`, err);
         return json(
             {
                 status: "error",
                 success: false,
-                message: err?.message || "Internal server error",
+                message: e?.message || "Internal server error",
             },
             status
         );
@@ -128,10 +144,10 @@ export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
-export async function GET(request, context) {
+export async function GET(request: Request, context: RouteContext) {
     return handle(request, context);
 }
 
-export async function POST(request, context) {
+export async function POST(request: Request, context: RouteContext) {
     return handle(request, context);
 }
