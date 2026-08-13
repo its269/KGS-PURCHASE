@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 const NO_STORE = { headers: { "Cache-Control": "no-store" } };
 
 /** Acumatica Purchase Order Status values used in this tenant. */
-export const ACUMATICA_PO_STATUSES = [
+const ACUMATICA_PO_STATUSES = [
     "On Hold",
     "Open",
     "Balanced",
