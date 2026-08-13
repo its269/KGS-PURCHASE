@@ -116,7 +116,6 @@ try {
     pm2 status
 
     Write-Step "Health check"
-    Start-Sleep -Seconds 8
     function Test-SignInHealthy([string]$BaseUrl) {
         $page = Invoke-WebRequest -Uri "$BaseUrl/signin" -UseBasicParsing -TimeoutSec 15
         if ($page.StatusCode -ne 200) { throw "HTTP $($page.StatusCode)" }
@@ -129,12 +128,28 @@ try {
         }
         return "HTTP $($page.StatusCode), CSS OK ($($asset.Content.Length) bytes)"
     }
-    try {
-        $msg = Test-SignInHealthy 'http://127.0.0.1:3001/kgs-purchase'
-        Write-Host "OK  127.0.0.1:3001/kgs-purchase/signin -> $msg" -ForegroundColor Green
-    } catch {
-        Write-Warning "Local health check: $($_.Exception.Message)"
-        throw "Local health check failed: $($_.Exception.Message)"
+    $healthCheckUrl = 'http://127.0.0.1:3001/kgs-purchase'
+    $maxWaitSeconds = 60
+    $pollInterval = 3
+    $elapsed = 0
+    $lastError = $null
+    Write-Host "Waiting for server on $healthCheckUrl (up to ${maxWaitSeconds}s)..."
+    while ($elapsed -lt $maxWaitSeconds) {
+        try {
+            $msg = Test-SignInHealthy $healthCheckUrl
+            Write-Host "OK  127.0.0.1:3001/kgs-purchase/signin -> $msg" -ForegroundColor Green
+            $lastError = $null
+            break
+        } catch {
+            $lastError = $_.Exception.Message
+            Write-Host "  [${elapsed}s] Not ready yet: $lastError"
+            Start-Sleep -Seconds $pollInterval
+            $elapsed += $pollInterval
+        }
+    }
+    if ($lastError) {
+        Write-Warning "Local health check: $lastError"
+        throw "Local health check failed: $lastError"
     }
     try {
         $msg2 = Test-SignInHealthy 'http://190.92.233.232/kgs-purchase'
