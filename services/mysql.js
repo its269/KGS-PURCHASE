@@ -208,11 +208,12 @@ function sqlMatchForecastWarehouses(alias, destinations, warehouseCol = "warehou
     const sites = (destinations || []).map((d) => String(d || "").trim().toUpperCase()).filter(Boolean);
     if (!sites.length) return { clause: "1=1", params: [] };
     const ph = sites.map(() => "?").join(", ");
+    // Match Acumatica Inventory Summary: qty lives on WarehouseID, not Branch/Site.
+    // Matching branch_id/site_id as well can pick a different warehouse (e.g. MAIN
+    // stock tagged as ECOMMERCE) and disagree with the warehouse on-hand total.
     return {
-        clause: `(UPPER(TRIM(COALESCE(${alias}.branch_id,''))) IN (${ph})
-              OR UPPER(TRIM(COALESCE(${alias}.${warehouseCol},''))) IN (${ph})
-              OR UPPER(TRIM(COALESCE(${alias}.site_id,''))) IN (${ph}))`,
-        params: [...sites, ...sites, ...sites],
+        clause: `UPPER(TRIM(COALESCE(${alias}.${warehouseCol},''))) IN (${ph})`,
+        params: sites,
     };
 }
 
@@ -5285,9 +5286,11 @@ export const MySqlService = {
             stockParams.push(...ecomOnly.params);
         }
 
+        // Prefer Qty On Hand (physical stock) — Qty Available can go negative when
+        // allocations exceed on-hand, which does not match Acumatica Inventory Summary.
         const qtyCase = destinations.length
-            ? `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN COALESCE(f.available, f.on_hand, 0) ELSE 0 END)`
-            : `SUM(CASE WHEN f.${whCol} != '__catalog__' THEN COALESCE(f.available, f.on_hand, 0) ELSE 0 END)`;
+            ? `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN GREATEST(0, COALESCE(f.on_hand, 0)) ELSE 0 END)`
+            : `SUM(CASE WHEN f.${whCol} != '__catalog__' THEN GREATEST(0, COALESCE(f.on_hand, 0)) ELSE 0 END)`;
         const qtyParams = destinations.length ? stockMatch.params : [];
 
         const atBranchCase = destinations.length
@@ -5609,7 +5612,7 @@ export const MySqlService = {
             stockParams.push(...stockMatch.params);
         }
         const [[{ inventoryQty }]] = await pool.query(
-            `SELECT COALESCE(SUM(COALESCE(w.available, w.on_hand, 0)), 0) AS inventoryQty
+            `SELECT COALESCE(SUM(GREATEST(0, COALESCE(w.on_hand, 0))), 0) AS inventoryQty
              FROM inventory_items w
              WHERE ${stockWhere.join(" AND ")}`,
             stockParams
