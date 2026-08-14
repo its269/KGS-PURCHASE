@@ -95,23 +95,31 @@ export async function GET(request) {
         ) || { start: defaults.lastYearStart, end: defaults.lastYearEnd };
 
         const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
-        const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "10", 10) || 10));
+        // UI list stays small; CSV export needs the full filtered set (USER + admin).
+        const isExport = searchParams.get("export") === "1";
+        const pageSizeRaw = Math.max(1, parseInt(searchParams.get("pageSize") || "10", 10) || 10);
+        const pageSize = isExport
+            ? Math.min(50_000, pageSizeRaw)
+            : Math.min(100, pageSizeRaw);
         const search = searchParams.get("search") || "";
         const itemClass = searchParams.get("itemClass") || "";
         const companyId = getActiveCompanyFromRequest(request) || "main";
 
-        try {
-            const poRefresh = await withTimeout(refreshForecastComingPos({ branch, cookie }), 15_000);
-            if (!poRefresh?.skipped) {
-                console.log("[Forecast Generator] Coming PO refresh", {
-                    branch: branch || "ALL",
-                    ok: poRefresh?.ok,
-                    reason: poRefresh?.reason || null,
-                    orders: poRefresh?.orders || 0,
-                });
+        // Skip PO refresh on export so a large download is not cut short by the 15s timeout.
+        if (!isExport) {
+            try {
+                const poRefresh = await withTimeout(refreshForecastComingPos({ branch, cookie }), 15_000);
+                if (!poRefresh?.skipped) {
+                    console.log("[Forecast Generator] Coming PO refresh", {
+                        branch: branch || "ALL",
+                        ok: poRefresh?.ok,
+                        reason: poRefresh?.reason || null,
+                        orders: poRefresh?.orders || 0,
+                    });
+                }
+            } catch (refreshErr) {
+                console.warn("[Forecast Generator] Coming PO refresh skipped:", refreshErr.message);
             }
-        } catch (refreshErr) {
-            console.warn("[Forecast Generator] Coming PO refresh skipped:", refreshErr.message);
         }
 
         const salesGaps = await MySqlService.listMissingSalesInvoiceMonths({

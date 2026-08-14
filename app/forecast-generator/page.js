@@ -311,12 +311,26 @@ export default function ForecastGeneratorPage() {
                 itemClass,
                 page: "1",
                 pageSize: "50000",
+                export: "1",
             });
             const res = await fetchWithAuth(`/api/forecast-generator?${params}`);
-            if (!res.ok) return;
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                setError(body.message || "CSV export failed.");
+                return;
+            }
             const result = await res.json();
             const list = result.data || [];
-            if (!list.length) return;
+            const totalItems = Number(result.pagination?.totalItems) || list.length;
+            if (!list.length) {
+                setError("No rows to export for the current filters.");
+                return;
+            }
+            if (list.length < totalItems) {
+                setError(`Export returned ${list.length} of ${totalItems} rows. Try again or narrow filters.`);
+            } else {
+                setError("");
+            }
             const headers = [
                 "Item Class", "Inventory ID", "SRP", "Item Name",
                 "Inventory (as of Today)", "Coming PO (as of today)",
@@ -331,15 +345,18 @@ export default function ForecastGeneratorPage() {
                 r.estimateSales, r.bufferInventory, r.bufferAmount, r.targetSales,
                 r.forPo, r.estimatedSalesAmount, r.netPo,
             ].map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","));
-            const csv = [headers.join(","), ...csvRows].join("\n");
-            const blob = new Blob([csv], { type: "text/csv" });
+            // BOM so Excel opens UTF-8 correctly (item names / ₱-free numeric columns).
+            const csv = `\uFEFF${[headers.join(","), ...csvRows].join("\n")}`;
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
             a.download = `forecast-generator-${selectedBranch || "all"}-${new Date().toISOString().slice(0, 10)}.csv`;
             a.click();
             URL.revokeObjectURL(url);
-        } catch { /* ignore */ }
+        } catch (err) {
+            setError(err?.message || "CSV export failed.");
+        }
     }, [selectedBranch, last3From, last3To, lyFrom, lyTo, search, itemClass]);
 
     const needPoOnPage = useMemo(
