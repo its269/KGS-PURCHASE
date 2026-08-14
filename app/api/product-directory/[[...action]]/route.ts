@@ -118,7 +118,6 @@ async function handle(request: Request, context: RouteContext) {
             "folderDelete",
             "productDelete",
             "actionLogsList",
-            "resetFlowchart",
         ].includes(methodName);
 
         const data = needsRequest

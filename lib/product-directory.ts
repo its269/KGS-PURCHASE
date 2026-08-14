@@ -1,9 +1,10 @@
 /**
- * Product Directory API — KC CMS hierarchy (flowchart / CMS uploads only).
+ * Product Directory API — KC CMS hierarchy.
  * Ported from inventory_kc_cms.php.
  *
  * Hierarchy: Product Directory → KC Category → KC Item Class → CMS folders → products
  * Never lists inventory_items for browse/search.
+ * Catalog products live under hidden folder id kc_fld_catalog_{itemClassId}.
  *
  * Env:
  *   MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD
@@ -182,8 +183,8 @@ async function ensureKcTables(): Promise<void> {
           KEY idx_active_sort (is_active, sort_order)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
-    await purgeInventoryImportResidue();
-    await seedFlowchartIfEmpty();
+    await ensureCategories();
+    await syncItemClassesIfNeeded();
 }
 
 async function ensureActionLogsTable(): Promise<void> {
@@ -210,47 +211,7 @@ async function ensureTables(): Promise<void> {
     await ensureActionLogsTable();
 }
 
-/**
- * Old API imported inventory into kc_* via kc_fld_items_* folders.
- * Wipe that residue once so the SVG flowchart seed can apply.
- */
-async function purgeInventoryImportResidue(): Promise<void> {
-    const db = getPool();
-    try {
-        const [rows] = await db.query<CountRow[]>(
-            "SELECT COUNT(*) AS c FROM kc_folders WHERE id LIKE 'kc_fld_items_%'"
-        );
-        if (Number(rows[0]?.c || 0) === 0) return;
-    } catch {
-        return;
-    }
-    await db.query("DELETE FROM kc_products");
-    await db.query("DELETE FROM kc_folders");
-    await db.query("DELETE FROM kc_item_classes");
-    await db.query("UPDATE kc_categories SET is_active=0");
-}
-
-/** SVG flowchart structure (sample CMS tree under Machine → Eco Solvent). */
-async function seedFlowchartIfEmpty(): Promise<void> {
-    const db = getPool();
-    const [rows] = await db.query<CountRow[]>(
-        "SELECT COUNT(*) AS c FROM kc_categories WHERE is_active=1"
-    );
-    if (Number(rows[0]?.c || 0) > 0) return;
-    await applyFlowchartSeed();
-}
-
-/** Reset imported junk and apply SVG flowchart seed (admin/maintenance). */
-async function resetToFlowchart(): Promise<void> {
-    const db = getPool();
-    await db.query("UPDATE kc_products SET is_active=0 WHERE is_active=1");
-    await db.query("UPDATE kc_folders SET is_active=0 WHERE is_active=1");
-    await db.query("UPDATE kc_item_classes SET is_active=0 WHERE is_active=1");
-    await db.query("UPDATE kc_categories SET is_active=0 WHERE is_active=1");
-    await applyFlowchartSeed();
-}
-
-async function applyFlowchartSeed(): Promise<void> {
+async function ensureCategories(): Promise<void> {
     const db = getPool();
     const categories: [string, string, number][] = [
         ["machine", "Machine", 1],
@@ -265,57 +226,25 @@ async function applyFlowchartSeed(): Promise<void> {
             [id, name, sort]
         );
     }
+}
 
-    const itemClasses: [string, string, string, number][] = [
-        ["kc_ic_sublimation", "machine", "Sublimation", 1],
-        ["kc_ic_dtf", "machine", "DTF", 2],
-        ["kc_ic_solvent", "machine", "Solvent", 3],
-        ["kc_ic_eco_solvent", "machine", "Eco Solvent", 4],
-    ];
-    for (const [id, categoryId, name, sort] of itemClasses) {
-        await db.query(
-            `INSERT INTO kc_item_classes (id, category_id, name, sort_order, is_active) VALUES (?,?,?,?,1)
-             ON DUPLICATE KEY UPDATE category_id=VALUES(category_id), name=VALUES(name),
-               sort_order=VALUES(sort_order), is_active=1`,
-            [id, categoryId, name, sort]
-        );
-    }
+/**
+ * Fill kc_item_classes from an external CMS catalog when sparse.
+ * Browse still reads only kc_categories / kc_item_classes.
+ * Ops may run a separate sync script to populate item classes + kc_fld_catalog_* products.
+ */
+async function syncItemClassesIfNeeded(): Promise<void> {
+    const db = getPool();
+    const [rows] = await db.query<CountRow[]>(
+        `SELECT COUNT(*) AS c FROM kc_item_classes
+         WHERE is_active=1 AND category_id IN ('inks','media','tools')`
+    );
+    if (Number(rows[0]?.c || 0) > 0) return;
+    // Intentionally no-op here — catalog sync is external / admin-maintained.
+}
 
-    const icId = "kc_ic_eco_solvent";
-    const folders: [string, string | null, string, number][] = [
-        ["kc_fld_brochure", null, "Brochure", 1],
-        ["kc_fld_inks", null, "Inks", 2],
-        ["kc_fld_machines", null, "Machines", 3],
-        ["kc_fld_images", null, "Images", 4],
-        ["kc_fld_other", null, "Other folder", 5],
-        ["kc_fld_models", "kc_fld_machines", "Different Model", 1],
-    ];
-    for (const [id, parentId, name, sort] of folders) {
-        await db.query(
-            `INSERT INTO kc_folders (id, item_class_id, parent_id, name, kind, sort_order, is_active)
-             VALUES (?,?,?,?,'folder',?,1)
-             ON DUPLICATE KEY UPDATE item_class_id=VALUES(item_class_id), parent_id=VALUES(parent_id),
-               name=VALUES(name), sort_order=VALUES(sort_order), is_active=1`,
-            [id, icId, parentId, name, sort]
-        );
-    }
-
-    const samples: [string, string, string, string, string][] = [
-        ["kc_prd_brochure_1", "kc_fld_brochure", "Eco Solvent Brochure A", "BR-ECO-A", "Different type of brochure for Eco Solvent"],
-        ["kc_prd_ink_1", "kc_fld_inks", "Eco Solvent Ink Set", "INK-ECO-1", "Different type of Inks for Eco Solvent"],
-        ["kc_prd_machine_1", "kc_fld_machines", "Eco Solvent Printer Sample", "MCH-ECO-1", "Different type of machines for Eco Solvent"],
-        ["kc_prd_model_1", "kc_fld_models", "Organized Model Sample", "MDL-ECO-1", "Organized Model of machines"],
-        ["kc_prd_image_1", "kc_fld_images", "Sample Image Pack", "IMG-ECO-1", "FOLDER OF IMAGES"],
-    ];
-    for (const [id, folderId, name, sku, description] of samples) {
-        await db.query(
-            `INSERT INTO kc_products (id, folder_id, name, sku, description, sort_order, is_active)
-             VALUES (?,?,?,?,?,1,1)
-             ON DUPLICATE KEY UPDATE folder_id=VALUES(folder_id), name=VALUES(name),
-               sku=VALUES(sku), description=VALUES(description), is_active=1`,
-            [id, folderId, name, sku, description]
-        );
-    }
+function catalogFolderId(itemClassId: string): string {
+    return `kc_fld_catalog_${itemClassId}`;
 }
 
 async function getCategory(id: string): Promise<CategoryRow | null> {
@@ -406,10 +335,10 @@ async function listItemClasses(categoryId: string, categoryName: string): Promis
     );
     const out: FolderNode[] = [];
     for (const row of rows) {
+        const folderId = catalogFolderId(row.id);
         const [countRows] = await db.query<CountRow[]>(
-            `SELECT COUNT(*) AS c FROM kc_folders
-             WHERE is_active=1 AND item_class_id=? AND parent_id IS NULL`,
-            [row.id]
+            "SELECT COUNT(*) AS c FROM kc_products WHERE is_active=1 AND folder_id=?",
+            [folderId]
         );
         out.push({
             id: row.id,
@@ -502,11 +431,15 @@ async function doBrowse(folderId: string): Promise<BrowseResult> {
         if (!ic) return { folders: [], products: [] };
         const cat = await getCategory(ic.category_id);
         const path = [ROOT_NAME, cat?.name || "", ic.name].filter(Boolean);
-        // Flowchart: item class → CMS folders only (no inventory dump)
-        return {
-            folders: await listFolders(current, null, path),
-            products: [],
-        };
+        const catalogId = catalogFolderId(current);
+        const folders = (await listFolders(current, null, path)).filter(
+            (f) => f.id !== catalogId
+        );
+        let products: ProductNode[] = [];
+        if (await isFolder(catalogId)) {
+            products = await listProducts(catalogId, path);
+        }
+        return { folders, products };
     }
 
     if (await isFolder(current)) {
@@ -966,14 +899,6 @@ export const ProductDirectoryService = {
         await ensureTables();
         return listActionLogs(body.limit);
     },
-
-    /** Admin: wipe CMS data and restore SVG flowchart seed. */
-    async resetFlowchart(_body: JsonBody = {}, request?: Request) {
-        requireAdmin(request);
-        await ensureTables();
-        await resetToFlowchart();
-        return { reset: true };
-    },
 };
 
 export const PRODUCT_DIRECTORY_ACTIONS: Record<string, keyof typeof ProductDirectoryService> = {
@@ -997,6 +922,4 @@ export const PRODUCT_DIRECTORY_ACTIONS: Record<string, keyof typeof ProductDirec
     inventory_action_log: "actionLogWrite",
     action_logs: "actionLogsList",
     inventory_action_logs: "actionLogsList",
-    reset_flowchart: "resetFlowchart",
-    inventory_reset_flowchart: "resetFlowchart",
 };
