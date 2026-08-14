@@ -105,6 +105,7 @@ export default function ForecastGeneratorPage() {
     const [error, setError] = useState("");
     const [salesGaps, setSalesGaps] = useState([]);
     const saveTimers = useRef({});
+    const pendingSaves = useRef({});
     const gapPolls = useRef(0);
     const backfillStarted = useRef(false);
 
@@ -256,19 +257,22 @@ export default function ForecastGeneratorPage() {
             ? (nextDraft.targetSales === "" || nextDraft.targetSales == null ? null : Number(nextDraft.targetSales))
             : (baseRow.targetIsOverride ? Number(baseRow.targetSales) : null);
         if (saveTimers.current[inventoryId]) clearTimeout(saveTimers.current[inventoryId]);
+        const payload = {
+            branch: selectedBranch,
+            inventoryId,
+            estimateSales: estimateToSave,
+            bufferInventory: bufferToSave,
+            targetSales: targetToSave,
+        };
+        pendingSaves.current[inventoryId] = { payload, computed, estimateToSave, bufferToSave, targetToSave };
         saveTimers.current[inventoryId] = setTimeout(async () => {
             try {
                 await fetchWithAuth("/api/forecast-generator", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        branch: selectedBranch,
-                        inventoryId,
-                        estimateSales: estimateToSave,
-                        bufferInventory: bufferToSave,
-                        targetSales: targetToSave,
-                    }),
+                    body: JSON.stringify(payload),
                 });
+                delete pendingSaves.current[inventoryId];
                 setRows((prev) => prev.map((r) => (
                     r.inventoryId === inventoryId
                         ? {
@@ -284,6 +288,18 @@ export default function ForecastGeneratorPage() {
             } catch { /* ignore */ }
         }, 450);
     }, [selectedBranch]);
+
+    useEffect(() => () => {
+        Object.values(saveTimers.current).forEach((t) => clearTimeout(t));
+        const leftover = Object.values(pendingSaves.current);
+        leftover.forEach(({ payload }) => {
+            fetchWithAuth("/api/forecast-generator", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            }).catch(() => {});
+        });
+    }, []);
 
     const updateDraft = (row, field, value) => {
         const next = { ...(drafts[row.inventoryId] || {}), [field]: value };
@@ -396,6 +412,7 @@ export default function ForecastGeneratorPage() {
                     <p>
                         Plan purchase quantities from last 3 months and last year same quarter.
                         {periods.forecastQuarterLabel ? ` Upcoming quarter: ${periods.forecastQuarterLabel}.` : ""}
+                        {" "}Estimate, Buffer, and Target autosave as you type.
                     </p>
                 </div>
 

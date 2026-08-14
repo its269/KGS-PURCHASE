@@ -278,6 +278,35 @@
     font-size: 0.95rem;
 }
 
+.repl-qty-input {
+    width: 88px;
+    max-width: 100%;
+    margin-left: auto;
+    display: block;
+    text-align: right;
+    font: inherit;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 0.28rem 0.45rem;
+}
+
+.repl-qty-input:focus {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
+
+.repl-qty-suggested {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
 .repl-action {
     font-size: 0.82rem;
     color: var(--text-secondary);

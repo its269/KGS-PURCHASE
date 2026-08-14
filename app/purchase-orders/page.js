@@ -866,7 +866,7 @@ export default function PurchaseOrdersPage() {
             } catch (e) {
                 console.error("Failed to persist annotation", e);
             }
-        }, 800);
+        }, 500);
     };
 
     const persistLogisticsFields = (key, nextUi) => {
@@ -892,7 +892,7 @@ export default function PurchaseOrdersPage() {
             } catch (e) {
                 console.error("Failed to persist logistics annotations", e);
             }
-        }, 800);
+        }, 500);
     };
 
     const updateLogistics = (key, receiptDate, mutator) => {

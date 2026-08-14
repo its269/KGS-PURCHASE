@@ -228,7 +228,7 @@ export default function SuppliersPage() {
             } catch (e) {
                 console.error("Failed to persist lead time", e);
             }
-        }, 800);
+        }, 500);
     };
 
     useEffect(() => {

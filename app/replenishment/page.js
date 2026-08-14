@@ -320,7 +320,11 @@ function AiExplainLightbox({ rec, onClose }) {
     );
 }
 
-function ReplenishmentRows({ recs, onExplain, explainId, isMain }) {
+function orderQtyRefId(branchId, itemId) {
+    return `${String(branchId || "").trim().toUpperCase()}|${String(itemId || "").trim().toUpperCase()}`;
+}
+
+function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrderQtyChange }) {
     return recs.map((rec) => {
         const ai = rec.aiInsights || {};
         const how = ai.howItWorks || {};
@@ -358,7 +362,18 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain }) {
                 <td className="repl-num">{hasSales ? `${fmtNum(days)} days` : "—"}</td>
                 <td className="repl-num">{leadTime > 0 ? `${fmtNum(leadTime)} days` : "—"}</td>
                 <td className="repl-num repl-order-qty">
-                    {Number(rec.suggestedQty) > 0 ? `+${fmtNum(rec.suggestedQty)}` : fmtNum(rec.suggestedQty ?? 0)}
+                    <input
+                        className="repl-qty-input"
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={drafts[rec.itemId] !== undefined ? drafts[rec.itemId] : (rec.suggestedQty ?? 0)}
+                        onChange={(e) => onOrderQtyChange(rec, e.target.value)}
+                        aria-label={`Order qty for ${rec.itemId}`}
+                    />
+                    {Number(rec.suggestedQty) > 0 ? (
+                        <span className="repl-qty-suggested">Suggested {fmtNum(rec.suggestedQty)}</span>
+                    ) : null}
                 </td>
                 <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
                 <td className="repl-ai-cell">
@@ -395,7 +410,11 @@ export default function ReplenishmentPage() {
     const [aiExplainRec, setAiExplainRec] = useState(null);
     const [openColumnInfo, setOpenColumnInfo] = useState(null);
     const [page, setPage] = useState(1);
+    const [orderQtyDrafts, setOrderQtyDrafts] = useState({});
+    const [qtySaveHint, setQtySaveHint] = useState("");
     const fetchGenRef = useRef(0);
+    const saveTimers = useRef({});
+    const pendingSaves = useRef({});
     const closeAiExplain = useCallback(() => setAiExplainRec(null), []);
 
     const retailBranches = useMemo(
@@ -496,6 +515,9 @@ export default function ReplenishmentPage() {
     useEffect(() => {
         const savedView = localStorage.getItem("repl_view_mode");
         const savedBranch = localStorage.getItem("repl_selected_branch") || "";
+        const savedSearch = localStorage.getItem("repl_search");
+        const savedClass = localStorage.getItem("repl_item_class");
+        const savedPriority = localStorage.getItem("repl_priority");
         if (savedView === "main" || savedView === "branch") {
             setViewMode(savedView);
         } else if (savedBranch === "MAIN") {
@@ -504,6 +526,11 @@ export default function ReplenishmentPage() {
             setViewMode("branch");
             setSelectedBranch(savedBranch);
         }
+        if (savedSearch) setSearch(savedSearch);
+        if (savedClass) setItemClassFilter(savedClass);
+        if (savedPriority === "all" || savedPriority === "soon" || savedPriority === "urgent") {
+            setPriorityFilter(savedPriority);
+        }
     }, []);
 
     useEffect(() => {
@@ -511,7 +538,10 @@ export default function ReplenishmentPage() {
         if (viewMode === "branch" && selectedBranch) {
             localStorage.setItem("repl_selected_branch", selectedBranch);
         }
-    }, [viewMode, selectedBranch]);
+        localStorage.setItem("repl_search", search);
+        localStorage.setItem("repl_item_class", itemClassFilter);
+        localStorage.setItem("repl_priority", priorityFilter);
+    }, [viewMode, selectedBranch, search, itemClassFilter, priorityFilter]);
 
     useEffect(() => {
         let active = true;
@@ -554,15 +584,93 @@ export default function ReplenishmentPage() {
         return () => window.removeEventListener("company-changed", onCompanyChange);
     }, [fetchRecommendations, activeBranch]);
 
+    useEffect(() => {
+        if (!activeBranch) return undefined;
+        let cancelled = false;
+        setOrderQtyDrafts({});
+        (async () => {
+            try {
+                const res = await fetchWithAuth("/api/annotations?module=replenishment");
+                if (!res.ok) return;
+                const data = await res.json();
+                if (cancelled) return;
+                const branchKey = String(activeBranch).trim().toUpperCase();
+                const next = {};
+                for (const [refId, fields] of Object.entries(data || {})) {
+                    if (!refId.startsWith(`${branchKey}|`)) continue;
+                    const itemId = refId.slice(branchKey.length + 1);
+                    if (!itemId) continue;
+                    if (fields.orderQty === undefined || fields.orderQty === null || fields.orderQty === "") continue;
+                    next[itemId] = String(fields.orderQty);
+                }
+                setOrderQtyDrafts(next);
+            } catch {
+                /* ignore */
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [activeBranch]);
+
+    const persistOrderQty = useCallback((rec, value) => {
+        const itemId = rec.itemId;
+        const branchId = rec.branchId || activeBranch;
+        const refId = orderQtyRefId(branchId, itemId);
+        if (saveTimers.current[refId]) clearTimeout(saveTimers.current[refId]);
+        pendingSaves.current[refId] = { refId, fieldValue: value };
+        setQtySaveHint("Saving…");
+        saveTimers.current[refId] = setTimeout(async () => {
+            try {
+                await fetchWithAuth("/api/annotations", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        module: "replenishment",
+                        refId,
+                        fieldKey: "orderQty",
+                        fieldValue: value,
+                    }),
+                });
+                delete pendingSaves.current[refId];
+                setQtySaveHint("Saved");
+            } catch (err) {
+                console.error("Failed to save replenishment order qty", err);
+                setQtySaveHint("Save failed");
+            }
+        }, 500);
+    }, [activeBranch]);
+
+    const handleOrderQtyChange = useCallback((rec, value) => {
+        setOrderQtyDrafts((prev) => ({ ...prev, [rec.itemId]: value }));
+        persistOrderQty(rec, value);
+    }, [persistOrderQty]);
+
+    useEffect(() => () => {
+        Object.values(saveTimers.current).forEach((t) => clearTimeout(t));
+        Object.values(pendingSaves.current).forEach(({ refId, fieldValue }) => {
+            fetchWithAuth("/api/annotations", {
+                method: "POST",
+                body: JSON.stringify({
+                    module: "replenishment",
+                    refId,
+                    fieldKey: "orderQty",
+                    fieldValue,
+                }),
+            }).catch(() => {});
+        });
+    }, []);
+
     const stats = useMemo(() => {
         const metaStats = meta?.stats;
         const urgent = metaStats?.urgent ?? recs.filter((r) => r.priorityLevel === "High").length;
         const soon = metaStats?.soon ?? recs.filter((r) => r.priorityLevel === "Medium").length;
         const zeroOrder = recs.filter((r) => (r.suggestedQty ?? 0) === 0).length;
-        const totalSuggested = metaStats?.totalSuggested
-            ?? recs.reduce((sum, r) => sum + (r.suggestedQty || 0), 0);
+        const totalSuggested = recs.reduce((sum, r) => {
+            const qty = orderQtyDrafts[r.itemId] !== undefined
+                ? Number(orderQtyDrafts[r.itemId]) || 0
+                : (Number(r.suggestedQty) || 0);
+            return sum + qty;
+        }, 0);
         return { urgent, soon, zeroOrder, totalSuggested };
-    }, [recs, meta]);
+    }, [recs, meta, orderQtyDrafts]);
 
     const itemClassOptions = useMemo(() => {
         const set = new Set();
@@ -606,7 +714,6 @@ export default function ReplenishmentPage() {
 
     useEffect(() => {
         setPage(1);
-        setItemClassFilter("");
         closeAiExplain();
     }, [viewMode, selectedBranch, closeAiExplain]);
 
@@ -666,7 +773,9 @@ export default function ReplenishmentPage() {
                 ai.salesVelocity ?? "",
                 ai.daysRemaining ?? "",
                 leadTime || "",
-                rec.suggestedQty ?? 0,
+                orderQtyDrafts[rec.itemId] !== undefined
+                    ? (Number(orderQtyDrafts[rec.itemId]) || 0)
+                    : (rec.suggestedQty ?? 0),
                 ai.whatToDo || rec.restockSource || ""
             );
             return base.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
@@ -680,7 +789,7 @@ export default function ReplenishmentPage() {
         a.download = `replenishment-${isMain ? "MAIN" : selectedBranch}-${new Date().toISOString().split("T")[0]}.csv`;
         a.click();
         URL.revokeObjectURL(url);
-    }, [filteredRecs, isMain, selectedBranch, viewMode]);
+    }, [filteredRecs, isMain, selectedBranch, viewMode, orderQtyDrafts]);
 
     return (
         <div className="db-root">
@@ -691,6 +800,7 @@ export default function ReplenishmentPage() {
                         {isMain
                             ? "MAIN warehouse planning — vendor orders to supply all retail branches."
                             : "Branch replenishment — stock transfers needed from MAIN warehouse."}
+                        {" "}Order qty autosaves as you type.
                     </p>
                 </div>
 
@@ -952,6 +1062,8 @@ export default function ReplenishmentPage() {
                                     onExplain={setAiExplainRec}
                                     explainId={aiExplainRec?.recommendationId}
                                     isMain={isMain}
+                                    drafts={orderQtyDrafts}
+                                    onOrderQtyChange={handleOrderQtyChange}
                                 />
                             )}
                         </tbody>
@@ -976,6 +1088,7 @@ export default function ReplenishmentPage() {
                         {meta.salesScope === "network" && " · Velocity from all branches"}
                         {meta.salesScope === "catalog-network" &&
                             " · Sales velocity from network invoices for this branch's catalog"}
+                        {qtySaveHint ? ` · ${qtySaveHint}` : ""}
                     </p>
                 )}
             </main>

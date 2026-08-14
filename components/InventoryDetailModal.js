@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
 import { DIMENSION_FIELDS, calcBoxCbm, formatCbm } from "@/lib/item-dimensions";
 import "@/styles/inventory-detail.css";
@@ -64,9 +64,18 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
     const [error, setError] = useState(null);
     const [notes, setNotes] = useState("");
     const [savingNotes, setSavingNotes] = useState(false);
+    const [notesSaved, setNotesSaved] = useState(false);
     const [dimensions, setDimensions] = useState({});
     const [savingDims, setSavingDims] = useState(false);
     const [dimSaved, setDimSaved] = useState(false);
+    const notesTimer = useRef(null);
+    const dimsTimer = useRef(null);
+    const notesRef = useRef("");
+    const dimsRef = useRef({});
+    const notesDirty = useRef(false);
+    const dimsDirty = useRef(false);
+    const persistNotesRef = useRef(async () => {});
+    const persistDimsRef = useRef(async () => {});
 
     useEffect(() => {
         if (!inventoryId) return;
@@ -76,6 +85,10 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
         setLoading(true);
         setDetail(null);
         setError(null);
+        notesDirty.current = false;
+        dimsDirty.current = false;
+        setDimSaved(false);
+        setNotesSaved(false);
 
         (async () => {
             try {
@@ -88,11 +101,14 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
                     throw new Error(d.error || d.message || "Failed to load details");
                 }
                 setDetail(d);
-                setNotes(d.annotations?.internal_notes || "");
+                const loadedNotes = d.annotations?.internal_notes || "";
+                setNotes(loadedNotes);
+                notesRef.current = loadedNotes;
                 const loaded = dimObjectFromApi(d.dimensions);
                 const boxCbm = calcBoxCbm(loaded.length_m, loaded.height_m, loaded.width_m);
                 if (boxCbm != null) loaded.cbm = formatCbm(boxCbm, 4);
                 setDimensions(loaded);
+                dimsRef.current = loaded;
                 setError(null);
             } catch (err) {
                 if (cancelled) return;
@@ -110,11 +126,17 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
         return () => {
             cancelled = true;
             controller.abort();
+            if (notesTimer.current) clearTimeout(notesTimer.current);
+            if (dimsTimer.current) clearTimeout(dimsTimer.current);
+            if (notesDirty.current) persistNotesRef.current(notesRef.current);
+            if (dimsDirty.current) persistDimsRef.current(dimsRef.current);
         };
     }, [inventoryId]);
 
-    const handleSaveNotes = async () => {
+    const persistNotes = async (value) => {
+        if (!inventoryId) return;
         setSavingNotes(true);
+        setNotesSaved(false);
         try {
             await fetchWithAuth("/api/annotations", {
                 method: "POST",
@@ -122,45 +144,32 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
                     module: "inventory",
                     refId: inventoryId,
                     fieldKey: "internal_notes",
-                    fieldValue: notes
-                })
+                    fieldValue: value,
+                }),
             });
             setDetail((prev) => prev ? {
                 ...prev,
-                annotations: { ...(prev.annotations || {}), internal_notes: notes }
+                annotations: { ...(prev.annotations || {}), internal_notes: value },
             } : prev);
+            setNotesSaved(true);
+            notesDirty.current = false;
         } catch (err) {
             console.error("Failed to save notes", err);
         } finally {
             setSavingNotes(false);
         }
     };
+    persistNotesRef.current = persistNotes;
 
-    const handleDimChange = (key, value) => {
-        setDimSaved(false);
-        setDimensions((prev) => {
-            const next = { ...prev, [key]: value };
-            if (key === "length_m" || key === "height_m" || key === "width_m") {
-                const boxCbm = calcBoxCbm(next.length_m, next.height_m, next.width_m);
-                next.cbm = boxCbm != null ? formatCbm(boxCbm, 4) : "";
-            }
-            return next;
-        });
-    };
-
-    const autoCbm = useMemo(
-        () => calcBoxCbm(dimensions.length_m, dimensions.height_m, dimensions.width_m),
-        [dimensions.length_m, dimensions.height_m, dimensions.width_m]
-    );
-
-    const handleSaveDimensions = async () => {
+    const persistDimensions = async (formState) => {
+        if (!inventoryId) return;
         setSavingDims(true);
         setDimSaved(false);
         try {
-            const boxCbm = calcBoxCbm(dimensions.length_m, dimensions.height_m, dimensions.width_m);
+            const boxCbm = calcBoxCbm(formState.length_m, formState.height_m, formState.width_m);
             const form = {
-                ...dimensions,
-                cbm: boxCbm != null ? String(boxCbm) : dimensions.cbm,
+                ...formState,
+                cbm: boxCbm != null ? String(boxCbm) : formState.cbm,
             };
             const res = await fetchWithAuth(`/api/stock-items/${encodeURIComponent(inventoryId)}/dimensions`, {
                 method: "PUT",
@@ -170,10 +179,11 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
             if (!res.ok) throw new Error("Save failed");
             const data = await res.json();
             const saved = dimObjectFromApi(data.dimensions);
-            // Prefer recalculated CBM from sides when all three exist
             const recalc = calcBoxCbm(saved.length_m, saved.height_m, saved.width_m);
             if (recalc != null) saved.cbm = formatCbm(recalc, 4);
             setDimensions(saved);
+            dimsRef.current = saved;
+            dimsDirty.current = false;
             setDimSaved(true);
             setDetail((prev) => prev ? { ...prev, dimensions: data.dimensions } : prev);
             onDimensionsSaved?.(data.dimensions || {
@@ -186,6 +196,37 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
             setSavingDims(false);
         }
     };
+    persistDimsRef.current = persistDimensions;
+
+    const handleNotesChange = (value) => {
+        notesDirty.current = true;
+        notesRef.current = value;
+        setNotesSaved(false);
+        setNotes(value);
+        if (notesTimer.current) clearTimeout(notesTimer.current);
+        notesTimer.current = setTimeout(() => persistNotes(value), 500);
+    };
+
+    const handleDimChange = (key, value) => {
+        dimsDirty.current = true;
+        setDimSaved(false);
+        setDimensions((prev) => {
+            const next = { ...prev, [key]: value };
+            if (key === "length_m" || key === "height_m" || key === "width_m") {
+                const boxCbm = calcBoxCbm(next.length_m, next.height_m, next.width_m);
+                next.cbm = boxCbm != null ? formatCbm(boxCbm, 4) : "";
+            }
+            dimsRef.current = next;
+            if (dimsTimer.current) clearTimeout(dimsTimer.current);
+            dimsTimer.current = setTimeout(() => persistDimensions(next), 500);
+            return next;
+        });
+    };
+
+    const autoCbm = useMemo(
+        () => calcBoxCbm(dimensions.length_m, dimensions.height_m, dimensions.width_m),
+        [dimensions.length_m, dimensions.height_m, dimensions.width_m]
+    );
 
     if (!inventoryId) return null;
 
@@ -336,16 +377,9 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
                                 })}
                             </div>
                             <div className="idm-dim-actions">
-                                {dimSaved && <span className="idm-dim-saved">Saved</span>}
-                                <button
-                                    type="button"
-                                    className="db-action-btn"
-                                    onClick={handleSaveDimensions}
-                                    disabled={savingDims}
-                                    style={{ height: "32px", fontSize: "0.75rem", padding: "0 1rem" }}
-                                >
-                                    {savingDims ? "Saving..." : "Save Dimensions"}
-                                </button>
+                                <span className="idm-dim-saved" aria-live="polite">
+                                    {savingDims ? "Saving…" : dimSaved ? "Saved" : "Autosaves as you type"}
+                                </span>
                             </div>
                         </div>
 
@@ -357,7 +391,7 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
                                     className="idm-notes-area"
                                     placeholder="Add internal notes about this item (e.g., replacement info, quality notes)..."
                                     value={notes}
-                                    onChange={(e) => setNotes(e.target.value)}
+                                    onChange={(e) => handleNotesChange(e.target.value)}
                                     style={{ 
                                         width: '100%', 
                                         minHeight: '80px', 
@@ -370,14 +404,9 @@ export default function InventoryDetailModal({ inventoryId, onClose, onDimension
                                     }}
                                 />
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-                                    <button 
-                                        className="db-action-btn"
-                                        onClick={handleSaveNotes}
-                                        disabled={savingNotes}
-                                        style={{ height: '32px', fontSize: '0.75rem', padding: '0 1rem' }}
-                                    >
-                                        {savingNotes ? "Saving..." : "Save Notes"}
-                                    </button>
+                                    <span className="idm-dim-saved" aria-live="polite">
+                                        {savingNotes ? "Saving…" : notesSaved ? "Saved" : "Autosaves as you type"}
+                                    </span>
                                 </div>
                             </div>
                         </div>
