@@ -208,12 +208,11 @@ function sqlMatchForecastWarehouses(alias, destinations, warehouseCol = "warehou
     const sites = (destinations || []).map((d) => String(d || "").trim().toUpperCase()).filter(Boolean);
     if (!sites.length) return { clause: "1=1", params: [] };
     const ph = sites.map(() => "?").join(", ");
-    // Match Acumatica Inventory Summary: qty lives on WarehouseID, not Branch/Site.
-    // Matching branch_id/site_id as well can pick a different warehouse (e.g. MAIN
-    // stock tagged as ECOMMERCE) and disagree with the warehouse on-hand total.
     return {
-        clause: `UPPER(TRIM(COALESCE(${alias}.${warehouseCol},''))) IN (${ph})`,
-        params: sites,
+        clause: `(UPPER(TRIM(COALESCE(${alias}.branch_id,''))) IN (${ph})
+              OR UPPER(TRIM(COALESCE(${alias}.${warehouseCol},''))) IN (${ph})
+              OR UPPER(TRIM(COALESCE(${alias}.site_id,''))) IN (${ph}))`,
+        params: [...sites, ...sites, ...sites],
     };
 }
 
@@ -5286,11 +5285,11 @@ export const MySqlService = {
             stockParams.push(...ecomOnly.params);
         }
 
-        // Prefer Qty On Hand (physical stock) — Qty Available can go negative when
-        // allocations exceed on-hand, which does not match Acumatica Inventory Summary.
+        // Keep v1.2.25 source (Qty Available) but drop the minus sign Acumatica
+        // stores when allocations exceed on-hand (e.g. -133 → 133).
         const qtyCase = destinations.length
-            ? `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN GREATEST(0, COALESCE(f.on_hand, 0)) ELSE 0 END)`
-            : `SUM(CASE WHEN f.${whCol} != '__catalog__' THEN GREATEST(0, COALESCE(f.on_hand, 0)) ELSE 0 END)`;
+            ? `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN ABS(COALESCE(f.available, f.on_hand, 0)) ELSE 0 END)`
+            : `SUM(CASE WHEN f.${whCol} != '__catalog__' THEN ABS(COALESCE(f.available, f.on_hand, 0)) ELSE 0 END)`;
         const qtyParams = destinations.length ? stockMatch.params : [];
 
         const atBranchCase = destinations.length
@@ -5525,7 +5524,7 @@ export const MySqlService = {
 
         const metrics = {
             productCount: totalItems,
-            inventoryQty: merged.reduce((s, r) => s + (Number(r.inventoryQty) || 0), 0),
+            inventoryQty: merged.reduce((s, r) => s + Math.abs(Number(r.inventoryQty) || 0), 0),
             last3MonthsQty: merged.reduce((s, r) => s + (Number(r.last3MonthsQty) || 0), 0),
             lastYearQty: merged.reduce((s, r) => s + (Number(r.lastYearQty) || 0), 0),
             comingPo: merged.reduce((s, r) => s + (Number(r.comingPo) || 0), 0),
@@ -5612,7 +5611,7 @@ export const MySqlService = {
             stockParams.push(...stockMatch.params);
         }
         const [[{ inventoryQty }]] = await pool.query(
-            `SELECT COALESCE(SUM(GREATEST(0, COALESCE(w.on_hand, 0))), 0) AS inventoryQty
+            `SELECT COALESCE(SUM(ABS(COALESCE(w.available, w.on_hand, 0))), 0) AS inventoryQty
              FROM inventory_items w
              WHERE ${stockWhere.join(" AND ")}`,
             stockParams

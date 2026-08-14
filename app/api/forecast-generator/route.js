@@ -49,7 +49,7 @@ function mapRow(raw) {
         itemClass: raw.itemClass || "",
         itemName: raw.itemName || "—",
         srp: Number(raw.srp) || 0,
-        inventoryQty: Math.max(0, Number(raw.inventoryQty) || 0),
+        inventoryQty: Math.abs(Number(raw.inventoryQty) || 0),
         comingPo: Math.max(0, Number(raw.comingPo) || 0),
         last3MonthsQty: Math.max(0, Number(raw.last3MonthsQty) || 0),
         lastYearQty: Math.max(0, Number(raw.lastYearQty) || 0),
