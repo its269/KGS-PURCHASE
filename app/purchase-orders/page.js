@@ -298,7 +298,7 @@ function collectOrderNbrsByUserStatus(userInputs, status) {
     if (!status) return null;
     const nbrs = new Set();
     for (const [refId, fields] of Object.entries(userInputs || {})) {
-        if ((fields?.userStatus || "") === status) {
+        if ((fields?.userStatus || "Pending") === status) {
             const nbr = orderNbrFromAnnotationRef(refId);
             if (nbr) nbrs.add(nbr);
         }
@@ -353,18 +353,6 @@ const PO_STATUS_FILTER_OPTIONS = [
     "Closed",
 ];
 
-const ACUMATICA_PO_STATUS_OPTIONS = [
-    "On Hold",
-    "Open",
-    "Balanced",
-    "Pending Approval",
-    "Pending Printing",
-    "Pending Email",
-    "Completed",
-    "Cancelled",
-    "Closed",
-];
-
 function normalizePoStatus(status) {
     const s = String(status || "").trim();
     if (!s) return "";
@@ -373,28 +361,16 @@ function normalizePoStatus(status) {
     return s;
 }
 
-function ErpStatusCell({ value, onChange, disabled }) {
+/** ERP status from Acumatica — display only (not editable). */
+function ErpStatusCell({ value }) {
     const current = normalizePoStatus(value);
-    const options = ACUMATICA_PO_STATUS_OPTIONS.includes(current)
-        ? ACUMATICA_PO_STATUS_OPTIONS
-        : current
-          ? [current, ...ACUMATICA_PO_STATUS_OPTIONS]
-          : ACUMATICA_PO_STATUS_OPTIONS;
-
+    if (!current) {
+        return <span className="po-erp-status po-status-default">—</span>;
+    }
     return (
-        <select
-            className={`po-erp-status-select ${poStatusClass(current)}`}
-            value={current}
-            disabled={disabled}
-            onChange={(e) => onChange(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            aria-label="Purchase order status"
-        >
-            {!current && <option value="">— Select —</option>}
-            {options.map((opt) => (
-                <option key={opt} value={opt}>{opt}</option>
-            ))}
-        </select>
+        <span className={`po-erp-status ${poStatusClass(current)}`} title={current}>
+            {current}
+        </span>
     );
 }
 
@@ -629,13 +605,13 @@ const USER_STATUS_GUIDE = {
 };
 
 function UserStatusCell({ value, onChange }) {
+    const current = value || "Pending";
     return (
         <select
             className="po-input-text po-user-status-select"
-            value={value || ""}
+            value={current}
             onChange={(e) => onChange(e.target.value)}
         >
-            <option value="">— Select —</option>
             {USER_STATUS_OPTIONS.map((opt) => (
                 <option key={opt} value={opt}>{opt}</option>
             ))}
@@ -935,43 +911,6 @@ export default function PurchaseOrdersPage() {
         });
     };
 
-    const handleErpStatusChange = async (orderNbr, nextStatus) => {
-        const status = normalizePoStatus(nextStatus);
-        if (!orderNbr || !status) return;
-        setOrders((prev) =>
-            prev.map((po) => (po.orderNbr === orderNbr ? { ...po, status } : po))
-        );
-        try {
-            const res = await fetchWithAuth("/api/po/status", {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ orderNbr, status }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data.message || "Failed to update status");
-            if (data.status && data.status !== status) {
-                setOrders((prev) =>
-                    prev.map((po) =>
-                        po.orderNbr === orderNbr ? { ...po, status: data.status } : po
-                    )
-                );
-            }
-        } catch (err) {
-            console.error("Failed to update PO status", err);
-            alert(err.message || "Failed to update status");
-            // reload list to restore server value
-            try {
-                const res = await fetchWithAuth(`/api/po?page=${page}&pageSize=${PAGE_SIZE}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    setOrders(data.orders ?? []);
-                }
-            } catch {
-                /* ignore */
-            }
-        }
-    };
-
     // Save filters to localStorage
     useEffect(() => {
         if (!isInitialMount.current) {
@@ -1120,7 +1059,7 @@ export default function PurchaseOrdersPage() {
             if (!multiDateMatches(ui.receivedDate, f.receivedDate, o.receiptDate)) return false;
             if (!textIncludes(ui.remarks, f.remarks)) return false;
             // userStatus is applied server-side via orderNbrs; keep a client check for safety
-            if (f.userStatus && (ui.userStatus || "") !== f.userStatus) return false;
+            if (f.userStatus && (ui.userStatus || "Pending") !== f.userStatus) return false;
             if (f.totalAmount && !textIncludes(String(o.totalAmount ?? ""), f.totalAmount)
                 && !textIncludes(fmt(o.totalAmount), f.totalAmount)) return false;
             return true;
@@ -1476,11 +1415,8 @@ export default function PurchaseOrdersPage() {
                                                     <option value="China">China</option>
                                                 </select>
                                             </td>
-                                            <td onClick={(e) => e.stopPropagation()}>
-                                                <ErpStatusCell
-                                                    value={po.status}
-                                                    onChange={(val) => handleErpStatusChange(po.orderNbr, val)}
-                                                />
+                                            <td>
+                                                <ErpStatusCell value={po.status} />
                                             </td>
                                             <td className="po-multi-entry-td" onClick={(e) => e.stopPropagation()}>
                                                 <PoMultiEntryCell

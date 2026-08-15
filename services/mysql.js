@@ -229,6 +229,24 @@ function sqlExcludeForecastDamage(alias, warehouseCol = "warehouse_id") {
     };
 }
 
+/** Literal (no-bind) form for CASE expressions — keywords are fixed app constants. */
+function sqlExcludeForecastDamageLiteral(alias, warehouseCol = "warehouse_id") {
+    const cols = [
+        `UPPER(TRIM(COALESCE(${alias}.branch_id,'')))`,
+        `UPPER(TRIM(COALESCE(${alias}.site_id,'')))`,
+        `UPPER(TRIM(COALESCE(${alias}.${warehouseCol},'')))`,
+    ];
+    const likes = EXCLUDED_BRANCH_KEYWORDS.flatMap((kw) =>
+        cols.map((c) => `${c} NOT LIKE '%${String(kw).replace(/'/g, "''")}%'`)
+    );
+    return `(${likes.join(" AND ")})`;
+}
+
+function isForecastDamageRow(row = {}) {
+    const keys = [row.warehouse_id, row.default_warehouse, row.branch_id, row.site_id];
+    return keys.some((k) => isExcludedBranchAlias(k));
+}
+
 function normalizeInventorySearch(search) {
     return String(search || "").trim().replace(/\s+/g, " ");
 }
@@ -5120,6 +5138,12 @@ export const MySqlService = {
                             last_sync
                         FROM \`${inventoryDb}\`.\`${table}\`
                         WHERE inventory_id IS NOT NULL AND TRIM(inventory_id) != ''
+                          AND UPPER(TRIM(COALESCE(default_warehouse,''))) NOT LIKE '%DAMAGE%'
+                          AND UPPER(TRIM(COALESCE(branch_id,''))) NOT LIKE '%DAMAGE%'
+                          AND UPPER(TRIM(COALESCE(site_id,''))) NOT LIKE '%DAMAGE%'
+                          AND UPPER(TRIM(COALESCE(default_warehouse,''))) NOT LIKE '%DISCOUNTED%'
+                          AND UPPER(TRIM(COALESCE(branch_id,''))) NOT LIKE '%DISCOUNTED%'
+                          AND UPPER(TRIM(COALESCE(site_id,''))) NOT LIKE '%DISCOUNTED%'
                         ON DUPLICATE KEY UPDATE
                             branch_id = COALESCE(VALUES(branch_id), branch_id),
                             site_id = COALESCE(VALUES(site_id), site_id),
@@ -5145,11 +5169,42 @@ export const MySqlService = {
         }
     },
 
+    async purgeForecastDamageStock() {
+        if (MySqlService._forecastDamagePurged) return 0;
+        try {
+            await this.ensureForecastItemStockTable();
+            const [result] = await purchasePool.query(
+                `DELETE FROM forecast_item_stock
+                 WHERE UPPER(TRIM(COALESCE(warehouse_id,''))) LIKE '%DAMAGE%'
+                    OR UPPER(TRIM(COALESCE(branch_id,''))) LIKE '%DAMAGE%'
+                    OR UPPER(TRIM(COALESCE(site_id,''))) LIKE '%DAMAGE%'
+                    OR UPPER(TRIM(COALESCE(warehouse_id,''))) LIKE '%DISCOUNTED%'
+                    OR UPPER(TRIM(COALESCE(branch_id,''))) LIKE '%DISCOUNTED%'
+                    OR UPPER(TRIM(COALESCE(site_id,''))) LIKE '%DISCOUNTED%'`
+            );
+            MySqlService._forecastDamagePurged = true;
+            const removed = result?.affectedRows || 0;
+            if (removed > 0) {
+                console.log(`[Forecast stock] purged ${removed} DAMAGE/DISCOUNTED rows`);
+                invalidateCache("forecastGen:");
+            }
+            return removed;
+        } catch (err) {
+            console.warn("[MySQL purgeForecastDamageStock]", err.message);
+            return 0;
+        }
+    },
+
     async upsertForecastItemStockRows(rows = [], companyId = "main") {
-        const list = (rows || []).filter((r) => String(r?.inventory_id || "").trim());
+        // Forecast must never store DAMAGE / DISCOUNTED — Inventory Damage KPI keeps those
+        // in product_inventory_items only.
+        const list = (rows || []).filter(
+            (r) => String(r?.inventory_id || "").trim() && !isForecastDamageRow(r)
+        );
         if (!list.length) return 0;
         try {
             await this.ensureForecastItemStockTable();
+            await this.purgeForecastDamageStock();
             const company = String(companyId || "main").trim() || "main";
             const CHUNK = 200;
             const now = new Date();
@@ -5324,6 +5379,7 @@ export const MySqlService = {
         pageSize = 10,
     } = {}) {
         await this.ensureForecastInputsTable();
+        await this.purgeForecastDamageStock();
         const src = await this._forecastStockSource();
         const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
         const searchTerm = normalizeInventorySearch(search);
@@ -5337,6 +5393,7 @@ export const MySqlService = {
         const nameCol = src.nameCol;
         const stockMatch = sqlMatchForecastWarehouses("f", destinations, whCol);
         const damageEx = sqlExcludeForecastDamage("f", whCol);
+        const damageLit = sqlExcludeForecastDamageLiteral("f", whCol);
 
         const stockWhere = ["f.company_id = ?", damageEx.clause];
         const stockParams = [effectiveCompanyId, ...damageEx.params];
@@ -5352,13 +5409,14 @@ export const MySqlService = {
 
         // Keep v1.2.25 source (Qty Available) but drop the minus sign Acumatica
         // stores when allocations exceed on-hand (e.g. -133 → 133).
+        // DAMAGE / DISCOUNTED are excluded in WHERE and again in CASE (never count them).
         const qtyCase = destinations.length
-            ? `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN ABS(COALESCE(f.available, f.on_hand, 0)) ELSE 0 END)`
-            : `SUM(CASE WHEN f.${whCol} != '__catalog__' THEN ABS(COALESCE(f.available, f.on_hand, 0)) ELSE 0 END)`;
+            ? `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${damageLit} AND ${stockMatch.clause} THEN ABS(COALESCE(f.available, f.on_hand, 0)) ELSE 0 END)`
+            : `SUM(CASE WHEN f.${whCol} != '__catalog__' AND ${damageLit} THEN ABS(COALESCE(f.available, f.on_hand, 0)) ELSE 0 END)`;
         const qtyParams = destinations.length ? stockMatch.params : [];
 
         const atBranchCase = destinations.length
-            ? `MAX(CASE WHEN f.${whCol} != '__catalog__' AND ${stockMatch.clause} THEN 1 ELSE 0 END)`
+            ? `MAX(CASE WHEN f.${whCol} != '__catalog__' AND ${damageLit} AND ${stockMatch.clause} THEN 1 ELSE 0 END)`
             : "1";
         const atBranchParams = destinations.length ? stockMatch.params : [];
 

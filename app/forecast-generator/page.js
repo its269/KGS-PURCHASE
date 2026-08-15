@@ -480,7 +480,7 @@ export default function ForecastGeneratorPage() {
                     <div className="db-stat-card">
                         <span className="db-stat-label">Inventory today</span>
                         <span className="db-stat-value">{loading && rows.length === 0 ? "..." : fmtQty(metrics.inventoryQty)}</span>
-                        <span className="db-stat-sub">On-hand / available</span>
+                        <span className="db-stat-sub">Sellable only (excl. Damage)</span>
                     </div>
                     <div className="db-stat-card">
                         <span className="db-stat-label">Last 3 months</span>
