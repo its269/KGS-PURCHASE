@@ -190,6 +190,7 @@ export async function GET(request) {
                         servedFrom: "cache",
                         comingPoScope: String(branch).trim().toUpperCase() || "MAIN",
                         stockWarehouses: getStockWarehouseIdsForBranch(branch),
+                        stockMetric: "qty_on_hand",
                     },
                 });
             }

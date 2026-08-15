@@ -2153,8 +2153,64 @@ export const MySqlService = {
     },
 
     /**
+     * Qty On Hand by inventory ID for a branch/warehouse group.
+     * Reads Acumatica-synced forecast_item_stock (preferred) — same source Forecast uses.
+     * inventory_items is often incomplete/stale after sync writes to product_inventory_items.
+     */
+    async getBranchOnHandMap({ branch = "MAIN", companyId = "main" } = {}) {
+        const map = new Map();
+        if (isExcludedBranchAlias(branch)) return map;
+
+        const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
+        const destinations = getStockWarehouseIdsForBranch(branch);
+        if (!destinations.length) return map;
+
+        try {
+            const src = await this._forecastStockSource();
+            const whCol = src.warehouseCol;
+            const ph = destinations.map(() => "?").join(", ");
+            const damageEx = sqlExcludeForecastDamage("f", whCol);
+            const where = [
+                `f.${whCol} != '__catalog__'`,
+                `UPPER(TRIM(COALESCE(f.${whCol},''))) IN (${ph})`,
+                damageEx.clause,
+            ];
+            const params = [...destinations, ...damageEx.params];
+
+            if (isEcomBranchAlias(branch) || effectiveCompanyId === "ecommerce") {
+                // Ecommerce stock may live under company ecommerce or main with ECOM warehouse IDs.
+                where.unshift(`(f.company_id = 'ecommerce' OR f.company_id = 'main')`);
+            } else {
+                where.unshift(`f.company_id = ?`);
+                params.unshift(effectiveCompanyId);
+                const ecomEx = sqlExcludeEcomBranches("f");
+                where.push(ecomEx.clause);
+                params.push(...ecomEx.params);
+            }
+
+            const [rows] = await purchasePool.query(
+                `SELECT UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) AS invKey,
+                        COALESCE(SUM(GREATEST(0, COALESCE(f.on_hand, 0))), 0) AS onHand
+                 FROM ${src.qualified} f
+                 WHERE ${where.join(" AND ")}
+                 GROUP BY UPPER(REPLACE(TRIM(f.inventory_id), ' ', ''))`,
+                params
+            );
+            for (const r of rows) {
+                const key = String(r.invKey || "").trim();
+                if (!key) continue;
+                map.set(key, Number(r.onHand) || 0);
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getBranchOnHandMap Error]", err);
+            return map;
+        }
+    },
+
+    /**
      * Branch-accurate stock + sales for replenishment analysis.
-     * Uses branch_id (site/branch location), not default_warehouse (physical warehouse).
+     * Stock qty = Acumatica Qty On Hand from forecast_item_stock (synced on inventory sync).
      */
     async getReplenishmentItems({ branch = "MAIN", companyId = "main", salesMap = null } = {}) {
         if (isExcludedBranchAlias(branch)) {
@@ -2172,45 +2228,37 @@ export const MySqlService = {
                     branch: isMainWarehouse ? "" : branch,
                 }));
 
+            const onHandMap = await this.getBranchOnHandMap({ branch, companyId: effectiveCompanyId });
+
+            // Seed items from stock rows + catalog metadata where needed.
             const whereClauses = [
                 "i.default_warehouse != '__catalog__'",
-                "i.branch_id IS NOT NULL",
-                "TRIM(i.branch_id) != ''",
                 "(i.item_status IS NULL OR UPPER(TRIM(i.item_status)) = 'ACTIVE')",
             ];
             const params = [];
+            const stockWarehouses = getStockWarehouseIdsForBranch(branch);
+            const ph = stockWarehouses.map(() => "?").join(", ");
+            // Match Acumatica Inventory Summary warehouse IDs (default_warehouse), not only branch_id.
+            whereClauses.push(
+                `(UPPER(TRIM(COALESCE(i.default_warehouse,''))) IN (${ph})
+                  OR UPPER(TRIM(COALESCE(i.branch_id,''))) IN (${ph}))`
+            );
+            params.push(...stockWarehouses, ...stockWarehouses);
 
             if (isEcomBranch) {
-                const ecomAliases = [...ECOM_BRANCH_ALIASES];
                 whereClauses.push(
-                    `UPPER(TRIM(i.branch_id)) IN (${ecomAliases.map(() => "?").join(", ")})`
+                    `(i.company_id = 'ecommerce' OR i.company_id = 'main')`
                 );
-                params.push(...ecomAliases);
-                whereClauses.push(
-                    `(i.company_id = 'ecommerce' OR (i.company_id = 'main' AND UPPER(TRIM(i.branch_id)) IN (${ecomAliases.map(() => "?").join(", ")})))`
-                );
-                params.push(...ecomAliases);
             } else {
-                const stockWarehouses = getStockWarehouseIdsForBranch(branch);
-                whereClauses.push(
-                    `UPPER(TRIM(i.branch_id)) IN (${stockWarehouses.map(() => "?").join(", ")})`
-                );
-                params.push(...stockWarehouses);
                 whereClauses.push("i.company_id = ?");
                 params.push(effectiveCompanyId);
-
                 const branchEx = sqlExcludeBranches("i");
                 whereClauses.push(branchEx.clause);
                 params.push(...branchEx.params);
-
                 if (effectiveCompanyId === "main") {
                     const ecomEx = sqlExcludeEcomBranches("i");
                     whereClauses.push(ecomEx.clause);
                     params.push(...ecomEx.params);
-                } else if (effectiveCompanyId === "ecommerce") {
-                    const ecomOnly = sqlOnlyEcomBranches("i");
-                    whereClauses.push(ecomOnly.clause);
-                    params.push(...ecomOnly.params);
                 }
             }
 
@@ -2220,8 +2268,7 @@ export const MySqlService = {
                     MAX(i.inventory_name) as description,
                     MAX(i.item_status) as itemStatus,
                     MAX(i.item_class) as itemClass,
-                    COALESCE(SUM(i.on_hand), 0) as totalOnHand,
-                    COALESCE(SUM(i.available), 0) as totalAvailable
+                    COALESCE(SUM(GREATEST(0, COALESCE(i.on_hand, 0))), 0) as totalOnHand
                  FROM inventory_items i
                  WHERE ${whereClauses.join(" AND ")}
                  GROUP BY TRIM(i.inventory_id)
@@ -2234,47 +2281,65 @@ export const MySqlService = {
                 const key = (r.inventoryId || "").toUpperCase().trim();
                 if (!key) continue;
                 const sales = resolvedSales.get(key) || { qty_sold: 0, total_sales: 0 };
-                const onHand = Number(r.totalOnHand) || 0;
-                const available = Number(r.totalAvailable) || 0;
-                const usableStock = available > 0 ? available : onHand;
+                // Prefer live Acumatica-synced on-hand when present.
+                const onHand = onHandMap.has(key)
+                    ? Number(onHandMap.get(key)) || 0
+                    : Number(r.totalOnHand) || 0;
                 itemMap.set(key, {
-                    ...r,
-                    totalOnHand: usableStock,
-                    totalAvailable: available,
+                    inventoryId: r.inventoryId,
+                    description: r.description,
+                    itemStatus: r.itemStatus,
+                    itemClass: r.itemClass,
+                    totalOnHand: onHand,
+                    totalAvailable: onHand,
                     totalQtySold: sales.qty_sold,
                     totalSales: sales.total_sales,
                     salesScope: isMainWarehouse ? "network" : "branch",
+                    stockSource: onHandMap.has(key) ? "forecast_item_stock" : "inventory_items",
                 });
             }
 
+            // Items with synced on-hand but no inventory_items warehouse row (common after sync
+            // writes only to product_inventory_items / forecast_item_stock).
+            const missingStockKeys = [];
+            for (const [key, qty] of onHandMap.entries()) {
+                if (!itemMap.has(key) && (Number(qty) || 0) > 0) missingStockKeys.push(key);
+            }
             // Include items with branch sales but no on-hand stock at this branch (stockout risk).
             const missingSalesKeys = [];
             for (const [key, sales] of resolvedSales) {
                 if (!itemMap.has(key) && sales.qty_sold > 0) missingSalesKeys.push(key);
             }
-            if (missingSalesKeys.length > 0) {
-                const placeholders = missingSalesKeys.map(() => "?").join(", ");
+            const missingKeys = [...new Set([...missingStockKeys, ...missingSalesKeys])];
+            if (missingKeys.length > 0) {
+                const placeholders = missingKeys.map(() => "?").join(", ");
                 const catalogCompanyId = isEcomBranch ? "ecommerce" : effectiveCompanyId;
                 const [catalogRows] = await pool.query(
                     `SELECT TRIM(inventory_id) AS inventoryId, inventory_name AS description, item_class AS itemClass
                      FROM inventory_items
                      WHERE company_id = ? AND default_warehouse = '__catalog__'
                        AND UPPER(TRIM(inventory_id)) IN (${placeholders})`,
-                    [catalogCompanyId, ...missingSalesKeys]
+                    [catalogCompanyId, ...missingKeys]
                 );
-                for (const cat of catalogRows) {
-                    const key = (cat.inventoryId || "").toUpperCase().trim();
+                const catalogByKey = new Map(
+                    catalogRows.map((c) => [(c.inventoryId || "").toUpperCase().trim(), c])
+                );
+                for (const key of missingKeys) {
+                    if (itemMap.has(key)) continue;
                     const sales = resolvedSales.get(key) || { qty_sold: 0, total_sales: 0 };
+                    const cat = catalogByKey.get(key);
+                    const onHand = Number(onHandMap.get(key)) || 0;
                     itemMap.set(key, {
-                        inventoryId: cat.inventoryId,
-                        description: cat.description,
+                        inventoryId: cat?.inventoryId || key,
+                        description: cat?.description || "—",
                         itemStatus: "ACTIVE",
-                        itemClass: cat.itemClass,
-                        totalOnHand: 0,
-                        totalAvailable: 0,
+                        itemClass: cat?.itemClass || "",
+                        totalOnHand: onHand,
+                        totalAvailable: onHand,
                         totalQtySold: sales.qty_sold,
                         totalSales: sales.total_sales,
                         salesScope: isMainWarehouse ? "network" : "branch",
+                        stockSource: onHandMap.has(key) ? "forecast_item_stock" : "catalog",
                     });
                 }
             }
