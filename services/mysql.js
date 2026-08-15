@@ -5797,4 +5797,31 @@ export const MySqlService = {
             estimatedSalesAmount: 0,
         };
     },
+
+    /**
+     * Lightweight DB reachability check for /api/health (short timeout).
+     */
+    async pingDatabases(timeoutMs = 5000) {
+        const ms = Math.max(1000, Math.min(15000, Number(timeoutMs) || 5000));
+        const started = Date.now();
+        const timeout = new Promise((_, reject) => {
+            setTimeout(() => reject(Object.assign(new Error("DB_PING_TIMEOUT"), { code: "ETIMEDOUT" })), ms);
+        });
+        try {
+            await Promise.race([
+                Promise.all([
+                    purchasePool.query("SELECT 1 AS ok"),
+                    pool.query("SELECT 1 AS ok"),
+                ]),
+                timeout,
+            ]);
+            return { ok: true, ms: Date.now() - started };
+        } catch (err) {
+            return {
+                ok: false,
+                ms: Date.now() - started,
+                error: err?.code || err?.message || "database unreachable",
+            };
+        }
+    },
 };

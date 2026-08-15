@@ -1,6 +1,7 @@
 import "./globals.css";
 import AuthBootstrap from "@/components/AuthBootstrap";
 import BackgroundIncrementalSync from "@/components/BackgroundIncrementalSync";
+import ConnectionWarning from "@/components/ConnectionWarning";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { withBasePath } from "@/lib/base-path";
 
@@ -38,6 +39,7 @@ export default function RootLayout({ children }) {
         <ThemeProvider>
           <AuthBootstrap />
           <BackgroundIncrementalSync />
+          <ConnectionWarning />
           {children}
         </ThemeProvider>
       </body>
