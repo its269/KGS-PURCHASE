@@ -50,6 +50,13 @@ const IconActivity = () => (
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
     </svg>
 );
+const IconAlert = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+        <line x1="12" y1="9" x2="12" y2="13" />
+        <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+);
 const IconDownload = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
@@ -164,7 +171,7 @@ function textIncludes(haystack, needle) {
 }
 
 /** Logistics fields stored as JSON arrays (legacy single strings still parse). */
-const LOGISTICS_MULTI_FIELDS = ["containerNumber", "shipOutDate", "eta", "receivedDate"];
+const LOGISTICS_MULTI_FIELDS = ["containerNumber", "shipOutDate", "eta", "receivedDate", "remarks"];
 
 function parseMultiValue(raw) {
     if (raw == null || raw === "") return [""];
@@ -215,7 +222,55 @@ function hasAnyMultiValue(raw) {
     return parseMultiValue(raw).some((v) => String(v).trim());
 }
 
-/** Aligned multi-entry slots for container / ship out / ETA / received. */
+/** Add calendar months, keeping the same day when possible (Jul 22 → Aug 22). */
+function addCalendarMonths(iso, months = 1) {
+    const key = toDateKey(iso);
+    if (!key) return "";
+    const [y, m, d] = key.split("-").map(Number);
+    const target = new Date(y, m - 1 + months, 1);
+    const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(d, lastDay));
+    return toDateKey(target);
+}
+
+function isOpenArrivalUserStatus(userStatus) {
+    const s = String(userStatus || "Pending").trim().toLowerCase();
+    return s !== "arrived" && s !== "cancelled" && s !== "canceled";
+}
+
+/**
+ * Ship-out slots that reached +1 month and still have no Received date.
+ * Example: ship out Jul 22 appears on the dashboard from Aug 22 onward.
+ */
+function collectOverdueShipOuts(userInputs, asOf = todayIso()) {
+    const today = toDateKey(asOf) || todayIso();
+    const seen = new Set();
+    const orderNbrs = [];
+    let shipmentCount = 0;
+    for (const refId of Object.keys(userInputs || {})) {
+        const nbr = orderNbrFromAnnotationRef(refId) || poAnnotationKey(refId);
+        if (!nbr || seen.has(nbr)) continue;
+        seen.add(nbr);
+        const ui = getPoUserInputs(userInputs, nbr);
+        if (!isOpenArrivalUserStatus(ui?.userStatus)) continue;
+        const logistics = getLogisticsEntries(ui);
+        let hit = false;
+        for (let i = 0; i < logistics.shipOutDate.length; i++) {
+            const ship = toDateKey(logistics.shipOutDate[i]);
+            if (!ship) continue;
+            if (String(logistics.receivedDate[i] || "").trim()) continue;
+            const due = addCalendarMonths(ship, 1);
+            if (due && due <= today) {
+                shipmentCount += 1;
+                hit = true;
+            }
+        }
+        if (hit) orderNbrs.push(nbr);
+    }
+    return { orderNbrs, shipmentCount };
+}
+
+/** Aligned multi-entry slots for container / ship out / ETA / received / remarks. */
 function getLogisticsEntries(ui, receiptDate) {
     const fields = {};
     let maxLen = 1;
@@ -677,6 +732,47 @@ function UserStatusGuidePanel({ activeTab, onTabChange, onFilterTable, tableFilt
     );
 }
 
+function ShipOutOverduePanel({ shipmentCount, orderCount, filtering, onToggleFilter }) {
+    const hasOverdue = shipmentCount > 0;
+    return (
+        <section
+            className={`po-shipout-overdue-panel ${hasOverdue ? "is-alert" : ""} ${filtering ? "is-filtering" : ""}`}
+            aria-labelledby="po-shipout-overdue-title"
+        >
+            <div className="po-shipout-overdue-head">
+                <div className="po-shipout-overdue-icon" aria-hidden="true">
+                    <IconAlert />
+                </div>
+                <div>
+                    <h2 id="po-shipout-overdue-title">Overdue Ship Out</h2>
+                    <p>Still not arrived 1 month after Ship Out.</p>
+                </div>
+            </div>
+            <div className="po-shipout-overdue-stats">
+                <div className="po-shipout-overdue-stat">
+                    <span className="po-shipout-overdue-value">{shipmentCount}</span>
+                    <span className="po-shipout-overdue-label">Shipments overdue</span>
+                </div>
+                <div className="po-shipout-overdue-stat">
+                    <span className="po-shipout-overdue-value">{orderCount}</span>
+                    <span className="po-shipout-overdue-label">Purchase orders</span>
+                </div>
+            </div>
+            <p className="po-shipout-overdue-hint">
+                Example: Ship Out Jul 22 appears here from Aug 22 if Received is still empty.
+            </p>
+            <button
+                type="button"
+                className={`po-status-filter-table-btn ${filtering ? "active" : ""}`}
+                onClick={onToggleFilter}
+                disabled={!hasOverdue && !filtering}
+            >
+                {filtering ? "Clear overdue filter" : "Show overdue in table"}
+            </button>
+        </section>
+    );
+}
+
 export default function PurchaseOrdersPage() {
     const [orders, setOrders] = useState([]);
     const [page, setPage] = useState(1);
@@ -696,6 +792,7 @@ export default function PurchaseOrdersPage() {
     const [userInputs, setUserInputs] = useState({}); // key -> { eta, userStatus }
     const [statusGuideTab, setStatusGuideTab] = useState(USER_STATUS_OPTIONS[0]);
     const [userStatusTableFilter, setUserStatusTableFilter] = useState("");
+    const [overdueShipOutFilter, setOverdueShipOutFilter] = useState(false);
     const [columnFilters, setColumnFilters] = useState(EMPTY_COLUMN_FILTERS);
     const [exporting, setExporting] = useState(false);
 
@@ -934,11 +1031,16 @@ export default function PurchaseOrdersPage() {
             return;
         }
         setPage(1);
-    }, [debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus]);
+    }, [debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus, overdueShipOutFilter]);
 
     const userStatusOrderNbrs = useMemo(
         () => collectOrderNbrsByUserStatus(userInputs, columnFilters.userStatus),
         [userInputs, columnFilters.userStatus]
+    );
+
+    const overdueShipOut = useMemo(
+        () => collectOverdueShipOuts(userInputs),
+        [userInputs]
     );
 
     const fetchOrders = useCallback(async () => {
@@ -951,22 +1053,45 @@ export default function PurchaseOrdersPage() {
                 return;
             }
 
+            let overdueNbrs = null;
+            if (overdueShipOutFilter) {
+                overdueNbrs = overdueShipOut.orderNbrs;
+                if (!overdueNbrs.length) {
+                    setOrders([]);
+                    setHasMore(false);
+                    return;
+                }
+            }
+
             const params = new URLSearchParams({
                 page: String(page),
                 pageSize: String(PAGE_SIZE),
-                startDate: startDate,
-                endDate: endDate,
             });
-            // User Status filter looks up annotated order #s across all ERP statuses
+            if (!overdueShipOutFilter) {
+                params.set("startDate", startDate);
+                params.set("endDate", endDate);
+            }
+            // User Status / overdue filters look up annotated order #s across all ERP statuses
             // (default toolbar "Open" would hide Customs / Delayed / Cancelled matches)
-            if (!columnFilters.userStatus && status) {
+            if (!columnFilters.userStatus && !overdueShipOutFilter && status) {
                 params.set("status", status);
             }
             if (debSearch) params.set("search", debSearch);
             if (selectedBranch) params.set("branch", selectedBranch);
+
+            let nbrs = null;
             if (columnFilters.userStatus && userStatusOrderNbrs?.length) {
-                params.set("orderNbrs", userStatusOrderNbrs.join(","));
+                nbrs = userStatusOrderNbrs;
             }
+            if (overdueNbrs) {
+                nbrs = nbrs ? nbrs.filter((n) => overdueNbrs.includes(n)) : overdueNbrs;
+                if (!nbrs.length) {
+                    setOrders([]);
+                    setHasMore(false);
+                    return;
+                }
+            }
+            if (nbrs?.length) params.set("orderNbrs", nbrs.join(","));
 
             const res = await fetchWithAuth(`/api/po?${params}`); 
             if (!res.ok) {
@@ -982,7 +1107,7 @@ export default function PurchaseOrdersPage() {
         } finally {
             setLoading(false);
         }
-    }, [page, debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus, userStatusOrderNbrs]);
+    }, [page, debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus, userStatusOrderNbrs, overdueShipOutFilter, overdueShipOut.orderNbrs]);
 
     useEffect(() => {
         fetchOrders();
@@ -1057,14 +1182,15 @@ export default function PurchaseOrdersPage() {
             if (!multiDateMatches(ui.shipOutDate, f.shipOutDate)) return false;
             if (!multiDateMatches(ui.eta, f.eta)) return false;
             if (!multiDateMatches(ui.receivedDate, f.receivedDate, o.receiptDate)) return false;
-            if (!textIncludes(ui.remarks, f.remarks)) return false;
+            if (!multiTextIncludes(ui.remarks, f.remarks)) return false;
             // userStatus is applied server-side via orderNbrs; keep a client check for safety
             if (f.userStatus && (ui.userStatus || "Pending") !== f.userStatus) return false;
+            if (overdueShipOutFilter && !overdueShipOut.orderNbrs.includes(poAnnotationKey(o.orderNbr))) return false;
             if (f.totalAmount && !textIncludes(String(o.totalAmount ?? ""), f.totalAmount)
                 && !textIncludes(fmt(o.totalAmount), f.totalAmount)) return false;
             return true;
         });
-    }, [orders, userInputs, columnFilters]);
+    }, [orders, userInputs, columnFilters, overdueShipOutFilter, overdueShipOut.orderNbrs]);
 
     return (
         <div className="po-root">
@@ -1074,6 +1200,12 @@ export default function PurchaseOrdersPage() {
                         <h1>Purchase Orders</h1>
                         <p>View and manage all purchase orders live from Acumatica ERP.</p>
                     </div>
+                    <ShipOutOverduePanel
+                        shipmentCount={overdueShipOut.shipmentCount}
+                        orderCount={overdueShipOut.orderNbrs.length}
+                        filtering={overdueShipOutFilter}
+                        onToggleFilter={() => setOverdueShipOutFilter((v) => !v)}
+                    />
                     <UserStatusGuidePanel
                         activeTab={statusGuideTab}
                         onTabChange={setStatusGuideTab}
@@ -1377,7 +1509,9 @@ export default function PurchaseOrdersPage() {
                                 </td></tr>
                             ) : displayedOrders.length === 0 ? (
                                 <tr><td colSpan={15} className="si-empty-cell" style={{ padding: '4rem 0' }}>
-                                    {columnFilters.userStatus
+                                    {overdueShipOutFilter
+                                        ? "No purchase orders are overdue on Ship Out (1 month with no Received date)."
+                                        : columnFilters.userStatus
                                         ? `No orders currently set to User Status “${columnFilters.userStatus}”. Pick that status on a row first, then filter again — or choose All.`
                                         : activeColumnFilterChips.length > 0
                                         ? "No purchase orders match the current column filters."
@@ -1468,14 +1602,15 @@ export default function PurchaseOrdersPage() {
                                                     onRemove={onLogisticsRemove}
                                                 />
                                             </td>
-                                            <td onClick={(e) => e.stopPropagation()}>
-                                                <input
-                                                    type="text"
-                                                    className="po-input-text"
-                                                    style={{ width: '100%' }}
+                                            <td className="po-multi-entry-td" onClick={(e) => e.stopPropagation()}>
+                                                <PoMultiEntryCell
+                                                    entries={logistics.remarks}
                                                     placeholder="Remarks"
-                                                    value={ui.remarks || ""}
-                                                    onChange={(e) => handleUserInput(key, 'remarks', e.target.value)}
+                                                    showAdd={false}
+                                                    showRemove={false}
+                                                    onChangeAt={(i, val) => handleLogisticsChange(key, "remarks", i, val, po.receiptDate)}
+                                                    onAdd={onLogisticsAdd}
+                                                    onRemove={onLogisticsRemove}
                                                 />
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>

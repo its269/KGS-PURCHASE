@@ -84,6 +84,12 @@
     box-shadow: none;
 }
 
+.sync-pill-running {
+    color: var(--status-warning);
+    border-color: color-mix(in srgb, var(--status-warning) 40%, var(--border-light));
+    background: color-mix(in srgb, var(--status-warning) 12%, var(--bg-main));
+}
+
 .sync-link-back {
     display: inline-flex;
     align-items: center;

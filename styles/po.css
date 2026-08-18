@@ -28,9 +28,9 @@
 
 .po-page-title-row {
     display: grid;
-    grid-template-columns: minmax(220px, 0.9fr) minmax(320px, 1.4fr);
+    grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 0.9fr) minmax(320px, 1.3fr);
     align-items: start;
-    gap: 1.25rem 1.75rem;
+    gap: 1.25rem 1.5rem;
     container-type: inline-size;
     container-name: po-title;
 }
@@ -45,6 +45,103 @@
 
 .po-page-title-text p {
     margin: 0;
+}
+
+/* ── Overdue Ship Out dashboard (header) ────────────────── */
+.po-shipout-overdue-panel {
+    min-width: 0;
+    padding: 0.9rem 1rem 1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+}
+
+.po-shipout-overdue-panel.is-alert {
+    border-color: rgba(245, 158, 11, 0.45);
+    box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.12);
+}
+
+.po-shipout-overdue-panel.is-filtering {
+    border-color: rgba(59, 130, 246, 0.45);
+}
+
+.po-shipout-overdue-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+}
+
+.po-shipout-overdue-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    background: rgba(245, 158, 11, 0.14);
+    color: var(--status-warning, #f59e0b);
+}
+
+.po-shipout-overdue-head h2 {
+    margin: 0 0 0.15rem;
+    font-size: 0.95rem;
+    font-weight: 750;
+}
+
+.po-shipout-overdue-head p {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+
+.po-shipout-overdue-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+}
+
+.po-shipout-overdue-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.45rem 0.55rem;
+    border-radius: 8px;
+    background: var(--bg-main);
+    border: 1px solid var(--border-light);
+}
+
+.po-shipout-overdue-value {
+    font-size: 1.35rem;
+    font-weight: 800;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+}
+
+.po-shipout-overdue-panel.is-alert .po-shipout-overdue-value {
+    color: var(--status-warning, #f59e0b);
+}
+
+.po-shipout-overdue-label {
+    font-size: 0.7rem;
+    font-weight: 650;
+    color: var(--text-muted);
+}
+
+.po-shipout-overdue-hint {
+    margin: 0;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--text-secondary);
+}
+
+.po-shipout-overdue-panel .po-status-filter-table-btn {
+    width: 100%;
 }
 
 /* ── Inline User Status Guide (header) ──────────────────── */
@@ -975,10 +1072,6 @@ select.po-select-box:focus {
 .po-input-date,
 input.po-select-box[type="date"] {
     position: relative;
-    background-image: var(--date-calendar-icon);
-    background-repeat: no-repeat;
-    background-position: right 0.55rem center;
-    background-size: 16px 16px;
     padding-right: 2.35rem !important;
 }
 
@@ -1001,20 +1094,7 @@ input.po-select-box[type="date"] {
 .po-input-date::-webkit-calendar-picker-indicator,
 input.po-select-box[type="date"]::-webkit-calendar-picker-indicator {
     cursor: pointer;
-    position: absolute;
-    right: 0;
-    top: 0;
-    width: 2.5rem;
-    height: 100%;
-    margin: 0;
-    padding: 0;
-    opacity: 0;
-}
-
-.po-date-input:focus,
-.po-input-date:focus,
-input.po-select-box[type="date"]:focus {
-    background-image: var(--date-calendar-icon);
+    opacity: 1;
 }
 
 .po-input-date,
@@ -1031,13 +1111,7 @@ input.po-select-box[type="date"]:focus {
     transition: all 0.2s;
 }
 
-.po-input-date {
-    background-image: var(--date-calendar-icon);
-    background-repeat: no-repeat;
-    background-position: right 0.55rem center;
-    background-size: 16px 16px;
-    padding-right: 2.35rem !important;
-}
+.po-input-date { padding-right: 2.35rem !important; }
 
 select.po-input-text {
     cursor: pointer;
@@ -1058,9 +1132,7 @@ select.po-input-text {
     box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
 }
 
-.po-input-date:focus {
-    background-image: var(--date-calendar-icon);
-}
+.po-input-date:focus { background-image: none; }
 
 input.po-select-box[type="date"] {
     background-color: var(--bg-main);

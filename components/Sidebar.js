@@ -7,6 +7,7 @@ import { DataCache } from "@/lib/data-cache";
 import { fetchWithAuth } from "@/lib/api-client";
 import { useTheme } from "./ThemeProvider";
 import SessionStatus from "./SessionStatus";
+import AutoSyncIndicator from "./AutoSyncIndicator";
 import TourGuide from "./TourGuide";
 import { withBasePath } from "@/lib/base-path";
 import { APP_VERSION } from "@/lib/app-version";
@@ -290,6 +291,8 @@ export default function Sidebar() {
             )}
           </svg>
         </button>
+
+        <AutoSyncIndicator collapsed={isCollapsed} />
 
         <div className="sidebar-footer">
           <div className="sidebar-version" title={`System version ${APP_VERSION}`}>

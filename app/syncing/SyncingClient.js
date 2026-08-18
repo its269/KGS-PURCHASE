@@ -37,6 +37,23 @@ const IconChevronLeft = () => (
     </svg>
 );
 
+async function waitForActiveSyncToFinish(timeoutMs = 120000, pollMs = 5000) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+        try {
+            const statusRes = await fetch("/api/sync?status=1", { cache: "no-store" });
+            if (statusRes.ok) {
+                const status = await statusRes.json();
+                if (!status?.running) return true;
+            }
+        } catch {
+            /* ignore transient polling errors */
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+    return false;
+}
+
 function formatMode(mode) {
     if (mode === "incremental" || mode === "delta" || mode === "quick") return "Quick";
     if (mode === "full") return "Full";
@@ -73,6 +90,7 @@ export default function SyncingClient() {
     const [showImport, setShowImport] = useState(false);
     const [importDragOver, setImportDragOver] = useState(false);
     const [importError, setImportError] = useState(null);
+    const [activeSync, setActiveSync] = useState({ running: false, section: "", mode: "" });
     const logsEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const dragDepthRef = useRef(0);
@@ -123,6 +141,34 @@ export default function SyncingClient() {
     useEffect(() => {
         fetchHistory();
     }, [fetchHistory]);
+
+    useEffect(() => {
+        let cancelled = false;
+        let timer = null;
+
+        const pollStatus = async () => {
+            try {
+                const res = await fetch("/api/sync?status=1", { cache: "no-store" });
+                if (!res.ok || cancelled) return;
+                const data = await res.json();
+                if (cancelled) return;
+                setActiveSync({
+                    running: Boolean(data?.running),
+                    section: data?.section || "",
+                    mode: data?.mode || "",
+                });
+            } catch {
+                /* ignore transient errors */
+            }
+        };
+
+        pollStatus();
+        timer = setInterval(pollStatus, 5000);
+        return () => {
+            cancelled = true;
+            if (timer) clearInterval(timer);
+        };
+    }, []);
 
     useEffect(() => {
         if (logsEndRef.current) {
@@ -229,7 +275,15 @@ export default function SyncingClient() {
                 mode: apiMode,
             });
 
-            const res = await fetch(`/api/sync?${queryParams.toString()}`, { method: "POST" });
+            let res = await fetch(`/api/sync?${queryParams.toString()}`, { method: "POST" });
+            if (res.status === 409) {
+                addLog("Another sync is already running. Waiting for it to finish...");
+                const freed = await waitForActiveSyncToFinish();
+                if (freed) {
+                    addLog("Previous sync finished. Retrying now...");
+                    res = await fetch(`/api/sync?${queryParams.toString()}`, { method: "POST" });
+                }
+            }
             if (!res.ok) {
                 let errorMsg = `Sync failed with status ${res.status}`;
                 try {
@@ -327,6 +381,11 @@ export default function SyncingClient() {
                 </div>
                 <div className="sync-topbar-meta">
                     <span className="sync-pill">Acumatica → MySQL</span>
+                    {activeSync.running ? (
+                        <span className="sync-pill sync-pill-running" title={`Sync in progress: ${activeSync.section || "Starting"}`}>
+                            Sync running{activeSync.section ? `: ${activeSync.section}` : ""}
+                        </span>
+                    ) : null}
                     <Link href="/dashboard" className="sync-link-back">
                         <IconChevronLeft /> Dashboard
                     </Link>

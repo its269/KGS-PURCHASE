@@ -18,6 +18,7 @@ export const dynamic = "force-dynamic";
 
 /** Prevent overlapping syncs in this Node process (manual + auto-sync). */
 let syncInProgress = false;
+let syncProgressState = { running: false, progress: 0, section: "", mode: "" };
 
 /**
  * BFF API Route for Data Synchronization
@@ -42,6 +43,7 @@ export async function POST(request) {
         );
     }
     syncInProgress = true;
+    syncProgressState = { running: true, progress: 2, section: "Starting", mode: "" };
 
     let effectiveCookie = cookie;
     // Prefer a fresh system login for long syncs (user OAuth tokens expire mid-run)
@@ -410,6 +412,17 @@ export async function POST(request) {
         async start(controller) {
             const send = (data) => {
                 if (signal.aborted) return;
+                if (data && !data.ping) {
+                    const p = Number(data.progress);
+                    syncProgressState = {
+                        running: true,
+                        progress: Number.isFinite(p)
+                            ? Math.max(0, Math.min(100, p))
+                            : (syncProgressState.progress || 0),
+                        section: data.section || syncProgressState.section || "",
+                        mode: options.mode || "incremental",
+                    };
+                }
                 controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
             };
 
@@ -421,6 +434,7 @@ export async function POST(request) {
             const finish = () => {
                 clearInterval(keepAlive);
                 syncInProgress = false;
+                syncProgressState = { running: false, progress: 0, section: "", mode: "" };
                 controller.close();
             };
 
@@ -1170,6 +1184,15 @@ export async function GET(request) {
         if (!cookie) return Response.json({ message: "Unauthorized" }, { status: 401 });
 
         const { searchParams } = new URL(request.url);
+        if (searchParams.get("status") === "1") {
+            return Response.json({
+                running: Boolean(syncInProgress),
+                progress: Number(syncProgressState.progress) || 0,
+                section: syncProgressState.section || "",
+                mode: syncProgressState.mode || "",
+            });
+        }
+
         const limit = parseInt(searchParams.get("limit") || "20");
 
         const logs = await MySqlService.getSyncLogs(limit);
