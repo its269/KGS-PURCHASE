@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { DataCache } from "@/lib/data-cache";
@@ -99,6 +99,9 @@ export default function Sidebar() {
   const [allowedModules, setAllowedModules] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const navListRef = useRef(null);
+  const activeTabRef = useRef(null);
+  const tabReadyRef = useRef(false);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -156,6 +159,65 @@ export default function Sidebar() {
       return next;
     });
   };
+
+  const moveActiveTab = useCallback((animate) => {
+    const list = navListRef.current;
+    const tab = activeTabRef.current;
+    if (!list || !tab) return;
+
+    const active = list.querySelector(".sidebar-item.active");
+    if (!active) {
+      tab.classList.remove("is-visible");
+      return;
+    }
+
+    const shouldAnimate = Boolean(animate && tabReadyRef.current);
+    if (!shouldAnimate) {
+      tab.classList.remove("is-ready");
+    }
+
+    tab.classList.add("is-visible");
+    tab.style.transform = `translateY(${active.offsetTop}px)`;
+    tab.style.height = `${active.offsetHeight}px`;
+
+    if (!tabReadyRef.current) {
+      tabReadyRef.current = true;
+      requestAnimationFrame(() => tab.classList.add("is-ready"));
+      return;
+    }
+
+    if (!shouldAnimate) {
+      void tab.offsetHeight;
+      tab.classList.add("is-ready");
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!mounted) return;
+    moveActiveTab(true);
+  }, [mounted, pathname, isCollapsed, isOpen, userRole, allowedModules, moveActiveTab]);
+
+  useEffect(() => {
+    const list = navListRef.current;
+    const sidebar = document.getElementById("main-sidebar");
+    if (!list) return;
+
+    const onResize = () => moveActiveTab(false);
+    const ro = new ResizeObserver(onResize);
+    ro.observe(list);
+    window.addEventListener("resize", onResize);
+
+    const onSidebarTransition = (event) => {
+      if (event.propertyName === "width") moveActiveTab(false);
+    };
+    sidebar?.addEventListener("transitionend", onSidebarTransition);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", onResize);
+      sidebar?.removeEventListener("transitionend", onSidebarTransition);
+    };
+  }, [moveActiveTab]);
 
   // Close sidebar on navigation (mobile)
   useEffect(() => {
@@ -246,18 +308,21 @@ export default function Sidebar() {
         </div>
 
         <nav className="sidebar-nav">
-          {navItems.map((item) => (
-            <Link
-              key={item.name}
-              href={item.href}
-              className={`sidebar-item ${mounted && pathname === item.href ? "active" : ""}`}
-              title={isCollapsed ? item.name : ""}
-              data-tour={item.tourId || undefined}
-            >
-              <span className="sidebar-item-icon">{item.icon}</span>
-              {!isCollapsed && <span>{item.name}</span>}
-            </Link>
-          ))}
+          <div className="sidebar-nav-list" ref={navListRef}>
+            <span className="sidebar-active-tab" ref={activeTabRef} aria-hidden="true" />
+            {navItems.map((item) => (
+              <Link
+                key={item.name}
+                href={item.href}
+                className={`sidebar-item ${mounted && pathname === item.href ? "active" : ""}`}
+                title={isCollapsed ? item.name : ""}
+                data-tour={item.tourId || undefined}
+              >
+                <span className="sidebar-item-icon">{item.icon}</span>
+                {!isCollapsed && <span>{item.name}</span>}
+              </Link>
+            ))}
+          </div>
         </nav>
 
         <button

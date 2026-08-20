@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest, getActiveCompanyFromRequest } from "@/lib/session-store";
+import { getStockWarehouseIdsForBranch } from "@/lib/companies";
 import { getSystemAcumaticaCredential } from "@/lib/acumatica-system-auth";
 import { AcumaticaService, mapSummaryLocations } from "@/services/acumatica";
 
@@ -21,6 +22,7 @@ export async function GET(request) {
 
         const { searchParams } = new URL(request.url);
         const inventoryId = String(searchParams.get("inventoryId") || "").trim();
+        const branch = String(searchParams.get("branch") || "").trim();
         if (!inventoryId) {
             return NextResponse.json({ message: "inventoryId is required." }, { status: 400, ...NO_STORE });
         }
@@ -40,12 +42,23 @@ export async function GET(request) {
         }
 
         const results = await AcumaticaService.getInventorySummaryResults(inventoryId, credential);
-        const locations = mapSummaryLocations(results);
+        let locations = mapSummaryLocations(results);
+
+        if (branch) {
+            const allowed = new Set(
+                getStockWarehouseIdsForBranch(branch).map((id) => String(id).trim().toUpperCase())
+            );
+            locations = locations.filter((loc) =>
+                allowed.has(String(loc.warehouseId || "").trim().toUpperCase())
+            );
+        }
+
         const companyId = getActiveCompanyFromRequest(request) || "main";
 
         return NextResponse.json(
             {
                 inventoryId,
+                branch: branch || null,
                 companyId,
                 locations,
                 source: "acumatica-summary",

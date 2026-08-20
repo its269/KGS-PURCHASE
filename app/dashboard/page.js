@@ -109,11 +109,17 @@ const cellNum = (row, key) => {
 };
 
 /* ── Table Row Component ───────────────────────────────────── */
-const InventoryRow = memo(({ row }) => {
+const InventoryRow = memo(({ row, branch }) => {
     const [open, setOpen] = useState(false);
     const [locs, setLocs] = useState(null);
     const [locLoading, setLocLoading] = useState(false);
     const [locError, setLocError] = useState("");
+
+    useEffect(() => {
+        setOpen(false);
+        setLocs(null);
+        setLocError("");
+    }, [branch]);
 
     const onHand = Number(row.OnHand?.value);
     const onHandVal = Number.isFinite(onHand) ? onHand : NaN;
@@ -135,9 +141,9 @@ const InventoryRow = memo(({ row }) => {
         setLocLoading(true);
         setLocError("");
         try {
-            const res = await fetchWithAuth(
-                `/api/inventory/locations?inventoryId=${encodeURIComponent(inventoryId)}`
-            );
+            const params = new URLSearchParams({ inventoryId });
+            if (branch) params.set("branch", branch);
+            const res = await fetchWithAuth(`/api/inventory/locations?${params}`);
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || "Failed to load locations");
             setLocs(data.locations || []);
@@ -614,6 +620,7 @@ export default function DashboardPage() {
                                     <InventoryRow
                                         key={`${row.InventoryID?.value ?? "row"}-${row.Branch?.value ?? ""}-${i}`}
                                         row={row}
+                                        branch={selectedBranch}
                                     />
                                 ))}
                             </tbody>

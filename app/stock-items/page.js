@@ -395,8 +395,6 @@ export default function StockItemsPage() {
                                     <th className="si-col-num">Price</th>
                                     <th className="si-col-unit">Unit</th>
                                     <th className="si-col-status">Status</th>
-                                    <th className="si-col-num">Qty sold</th>
-                                    <th className="si-col-num">Total sales</th>
                                     <th className="si-col-dim">Dims</th>
                                     <th className="si-col-action">
                                         <span className="si-sr-only">Action</span>
@@ -406,7 +404,7 @@ export default function StockItemsPage() {
                             <tbody>
                                 {loading && items.length === 0 ? (
                                     <tr>
-                                        <td colSpan={11} className="si-loading-cell">
+                                        <td colSpan={9} className="si-loading-cell">
                                             <div className="si-empty-state">
                                                 <div className="db-spinner db-spinner-lg" />
                                                 <span>Fetching items…</span>
@@ -415,7 +413,7 @@ export default function StockItemsPage() {
                                     </tr>
                                 ) : items.length === 0 ? (
                                     <tr>
-                                        <td colSpan={11} className="si-empty-cell">
+                                        <td colSpan={9} className="si-empty-cell">
                                             <div className="si-empty-state">
                                                 <strong>No matching items</strong>
                                                 <span>Try a different search term or clear filters.</span>
@@ -486,23 +484,6 @@ export default function StockItemsPage() {
                                                             </span>
                                                         ) : null}
                                                     </div>
-                                                </td>
-                                                <td className="si-col-num">
-                                                    {Number(item.totalQtySold) > 0 ? (
-                                                        Number(item.totalQtySold).toLocaleString()
-                                                    ) : (
-                                                        <span className="si-muted">—</span>
-                                                    )}
-                                                </td>
-                                                <td className="si-col-num si-sales">
-                                                    {Number(item.totalSales) > 0 ? (
-                                                        `₱${Number(item.totalSales).toLocaleString(
-                                                            undefined,
-                                                            { minimumFractionDigits: 2 }
-                                                        )}`
-                                                    ) : (
-                                                        <span className="si-muted">—</span>
-                                                    )}
                                                 </td>
                                                 <td className="si-col-dim">
                                                     {item.hasDimensions ? (
