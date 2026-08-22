@@ -12,6 +12,7 @@
  *   POST      .../browse | inventory_browse          { folder_id? }
  *   POST      .../search | inventory_search          { query, limit? }
  *   POST      .../product | inventory_product        { product_id }
+ *   POST      .../item_class_media | inventory_item_class_media  { item_class_id, media_kind }
  *   POST      .../folder_create | inventory_folder_create
  *   POST      .../product_create | inventory_product_create
  *   POST      .../folder_delete | inventory_folder_delete
@@ -25,7 +26,7 @@ import { NextResponse } from "next/server";
 import {
     ProductDirectoryService,
     PRODUCT_DIRECTORY_ACTIONS,
-} from "@/lib/product-directory";
+} from "../service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

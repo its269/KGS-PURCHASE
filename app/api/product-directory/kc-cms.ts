@@ -1,0 +1,1050 @@
+import { randomBytes } from "crypto";
+import { getPool, type RowDataPacket } from "./db";
+import type {
+  BrowseResult,
+  InventoryFolder,
+  InventoryProduct,
+} from "./types";
+
+export const ROOT_ID = "kg-posting";
+export const ROOT_NAME = "KC Posting Class";
+
+function id(prefix: string): string {
+  return `${prefix}${randomBytes(6).toString("hex")}`;
+}
+
+export async function ensureTables(): Promise<void> {
+  const db = getPool();
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kc_categories (
+      id VARCHAR(64) NOT NULL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_active_sort (is_active, sort_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kc_item_classes (
+      id VARCHAR(64) NOT NULL PRIMARY KEY,
+      category_id VARCHAR(64) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      source_code VARCHAR(128) NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_category (category_id),
+      KEY idx_active_sort (is_active, sort_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  try {
+    await db.query(
+      "ALTER TABLE kc_item_classes ADD COLUMN source_code VARCHAR(128) NULL AFTER name",
+    );
+  } catch {
+    /* column may already exist */
+  }
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kc_folders (
+      id VARCHAR(64) NOT NULL PRIMARY KEY,
+      item_class_id VARCHAR(64) NOT NULL,
+      parent_id VARCHAR(64) NULL,
+      name VARCHAR(255) NOT NULL,
+      kind VARCHAR(32) NOT NULL DEFAULT 'folder',
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_item_class (item_class_id),
+      KEY idx_parent (parent_id),
+      KEY idx_active_sort (is_active, sort_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kc_products (
+      id VARCHAR(64) NOT NULL PRIMARY KEY,
+      folder_id VARCHAR(64) NOT NULL,
+      name VARCHAR(512) NOT NULL,
+      sku VARCHAR(128) NOT NULL DEFAULT '',
+      description TEXT NULL,
+      file_url VARCHAR(1024) NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_folder (folder_id),
+      KEY idx_sku (sku),
+      KEY idx_active_sort (is_active, sort_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_action_logs (
+      id VARCHAR(64) NOT NULL PRIMARY KEY,
+      action VARCHAR(32) NOT NULL,
+      actor_id VARCHAR(128) NOT NULL DEFAULT '',
+      actor_name VARCHAR(255) NOT NULL DEFAULT '',
+      target_id VARCHAR(64) NOT NULL DEFAULT '',
+      target_name VARCHAR(512) NOT NULL DEFAULT '',
+      detail TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_created (created_at),
+      KEY idx_action (action),
+      KEY idx_actor (actor_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  for (const [cid, name, sort] of [
+    ["machine", "Machine", 1],
+    ["inks", "Inks", 2],
+    ["media", "Media", 3],
+    ["tools", "Tools", 4],
+  ] as const) {
+    await db.query(
+      `INSERT INTO kc_categories (id, name, sort_order, is_active) VALUES (?,?,?,1)
+       ON DUPLICATE KEY UPDATE name=VALUES(name), sort_order=VALUES(sort_order), is_active=1`,
+      [cid, name, sort],
+    );
+  }
+}
+
+type CatRow = RowDataPacket & { id: string; name: string };
+type IcRow = RowDataPacket & {
+  id: string;
+  category_id: string;
+  name: string;
+};
+type FolderRow = RowDataPacket & {
+  id: string;
+  item_class_id: string;
+  parent_id: string | null;
+  name: string;
+  kind: string;
+};
+type ProductRow = RowDataPacket & {
+  id: string;
+  folder_id: string;
+  name: string;
+  sku: string;
+  description: string | null;
+  file_url: string | null;
+};
+
+async function getCategory(id: string): Promise<CatRow | null> {
+  const [rows] = await getPool().query<CatRow[]>(
+    "SELECT id, name FROM kc_categories WHERE is_active=1 AND id=? LIMIT 1",
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+async function getItemClass(id: string): Promise<IcRow | null> {
+  const [rows] = await getPool().query<IcRow[]>(
+    "SELECT id, category_id, name FROM kc_item_classes WHERE is_active=1 AND id=? LIMIT 1",
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+async function getFolder(id: string): Promise<FolderRow | null> {
+  const [rows] = await getPool().query<FolderRow[]>(
+    "SELECT id, item_class_id, parent_id, name, kind FROM kc_folders WHERE is_active=1 AND id=? LIMIT 1",
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+async function folderPath(folder: FolderRow): Promise<string[]> {
+  const ic = await getItemClass(folder.item_class_id);
+  const cat = ic ? await getCategory(ic.category_id) : null;
+  const parts = [ROOT_NAME];
+  if (cat) parts.push(cat.name);
+  if (ic) parts.push(ic.name);
+  const chain: string[] = [];
+  let current: FolderRow | null = folder;
+  while (current) {
+    chain.push(current.name);
+    current = current.parent_id ? await getFolder(current.parent_id) : null;
+  }
+  return [...parts, ...chain.reverse()];
+}
+
+async function listCategories(): Promise<InventoryFolder[]> {
+  const [rows] = await getPool().query<CatRow[]>(
+    "SELECT id, name FROM kc_categories WHERE is_active=1 ORDER BY sort_order, name",
+  );
+  const out: InventoryFolder[] = [];
+  for (const row of rows) {
+    const [c] = await getPool().query<RowDataPacket[]>(
+      "SELECT COUNT(*) AS c FROM kc_item_classes WHERE is_active=1 AND category_id=?",
+      [row.id],
+    );
+    out.push({
+      id: row.id,
+      name: row.name,
+      parent_id: ROOT_ID,
+      kind: "category",
+      child_count: Number(c[0]?.c ?? 0),
+      path: [ROOT_NAME, row.name],
+    });
+  }
+  return out;
+}
+
+async function listItemClasses(
+  categoryId: string,
+  categoryName: string,
+): Promise<InventoryFolder[]> {
+  const [rows] = await getPool().query<IcRow[]>(
+    "SELECT id, category_id, name FROM kc_item_classes WHERE is_active=1 AND category_id=? ORDER BY sort_order, name",
+    [categoryId],
+  );
+  const out: InventoryFolder[] = [];
+  for (const row of rows) {
+    const path = [ROOT_NAME, categoryName, row.name];
+    const folders = await foldersForItemClass(row.id, path);
+    out.push({
+      id: row.id,
+      name: row.name,
+      parent_id: categoryId,
+      kind: "subcategory",
+      child_count: folders.length,
+      path,
+    });
+  }
+  return out;
+}
+
+async function listFolders(
+  itemClassId: string,
+  parentId: string | null,
+  parentPath: string[],
+): Promise<InventoryFolder[]> {
+  const [rows] = parentId
+    ? await getPool().query<FolderRow[]>(
+        `SELECT id, item_class_id, parent_id, name, kind FROM kc_folders
+         WHERE is_active=1 AND item_class_id=? AND parent_id=?
+         ORDER BY sort_order, name`,
+        [itemClassId, parentId],
+      )
+    : await getPool().query<FolderRow[]>(
+        `SELECT id, item_class_id, parent_id, name, kind FROM kc_folders
+         WHERE is_active=1 AND item_class_id=? AND parent_id IS NULL
+         ORDER BY sort_order, name`,
+        [itemClassId],
+      );
+  const out: InventoryFolder[] = [];
+  for (const row of rows) {
+    const [c] = await getPool().query<RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM kc_folders WHERE is_active=1 AND parent_id=?) +
+         (SELECT COUNT(*) FROM kc_products WHERE is_active=1 AND folder_id=?) AS c`,
+      [row.id, row.id],
+    );
+    out.push({
+      id: row.id,
+      name: row.name,
+      parent_id: parentId || itemClassId,
+      kind: row.kind || "folder",
+      child_count: Number(c[0]?.c ?? 0),
+      path: [...parentPath, row.name],
+    });
+  }
+  return out;
+}
+
+async function listProducts(
+  folderId: string,
+  path: string[],
+): Promise<InventoryProduct[]> {
+  const [rows] = await getPool().query<ProductRow[]>(
+    `SELECT id, folder_id, name, sku, description, file_url FROM kc_products
+     WHERE is_active=1 AND folder_id=? ORDER BY sort_order, name`,
+    [folderId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    sku: row.sku || "",
+    description: row.description || "",
+    file_url: row.file_url || "",
+    folder_id: row.folder_id,
+    folder_path: path,
+  }));
+}
+
+function isCatalogFolderId(id: string): boolean {
+  return id.startsWith("kc_fld_catalog_");
+}
+
+function catalogFolderId(itemClassId: string): string {
+  return `kc_fld_catalog_${itemClassId}`;
+}
+
+const PRODUCTS_CONTAINER_NAMES = new Set([
+  "products",
+  "machines",
+  "catalog",
+  "machine",
+]);
+
+async function findChildFolder(
+  parentFolderId: string,
+  folderName: string,
+): Promise<FolderRow | null> {
+  const [rows] = await getPool().query<FolderRow[]>(
+    `SELECT id, item_class_id, parent_id, name, kind FROM kc_folders
+     WHERE is_active=1 AND parent_id=? AND LOWER(TRIM(name))=LOWER(?)
+     ORDER BY sort_order, name LIMIT 1`,
+    [parentFolderId, folderName],
+  );
+  return rows[0] ?? null;
+}
+
+async function resolveProductsContainer(
+  itemClassId: string,
+): Promise<{ id: string; exists: boolean; row: FolderRow | null }> {
+  const catalogId = catalogFolderId(itemClassId);
+  const catalogRow = await getFolder(catalogId);
+  if (catalogRow) {
+    return { id: catalogId, exists: true, row: catalogRow };
+  }
+
+  for (const name of ["Products", "Machines", "Catalog"]) {
+    const row = await findFlowchartFolder(itemClassId, name);
+    if (row) return { id: row.id, exists: true, row };
+  }
+
+  const [rows] = await getPool().query<FolderRow[]>(
+    `SELECT id, item_class_id, parent_id, name, kind FROM kc_folders
+     WHERE is_active=1 AND item_class_id=? AND parent_id IS NULL
+       AND LOWER(TRIM(name)) IN ('products','machines','catalog','machine')
+     ORDER BY sort_order, name LIMIT 1`,
+    [itemClassId],
+  );
+  const row = rows[0] ?? null;
+  if (row) return { id: row.id, exists: true, row };
+  return { id: catalogId, exists: false, row: null };
+}
+
+function isProductsContainerName(name: string): boolean {
+  return PRODUCTS_CONTAINER_NAMES.has(name.trim().toLowerCase());
+}
+
+async function isProductsContainerFolder(folder: FolderRow): Promise<boolean> {
+  if (isCatalogFolderId(folder.id)) return true;
+  if (isProductsContainerName(folder.name)) return true;
+  const container = await resolveProductsContainer(folder.item_class_id);
+  return folder.id === container.id;
+}
+
+async function isModelFolder(folder: FolderRow): Promise<boolean> {
+  if (!folder.parent_id) return false;
+  const parent = await getFolder(folder.parent_id);
+  if (!parent) return false;
+  return isProductsContainerFolder(parent);
+}
+
+async function subfolderCount(parentFolderId: string): Promise<number> {
+  const [c] = await getPool().query<RowDataPacket[]>(
+    "SELECT COUNT(*) AS c FROM kc_folders WHERE is_active=1 AND parent_id=?",
+    [parentFolderId],
+  );
+  return Number(c[0]?.c ?? 0);
+}
+
+async function productsContainerChildCount(itemClassId: string): Promise<number> {
+  const container = await resolveProductsContainer(itemClassId);
+  if (!container.exists) {
+    return await productCount(container.id);
+  }
+  const models = await subfolderCount(container.id);
+  if (models > 0) return models;
+  return await productCount(container.id);
+}
+
+function filterProductsByMediaType(
+  products: InventoryProduct[],
+  folderLabel: string,
+): InventoryProduct[] {
+  const key = folderLabel.trim().toLowerCase();
+  if (key === "brochure") {
+    return products.filter((p) => {
+      const url = p.file_url.trim().toLowerCase();
+      if (!url) return true;
+      return (
+        url.includes(".pdf") ||
+        url.includes(".doc") ||
+        url.includes("brochure") ||
+        !url.includes(".mp4")
+      );
+    });
+  }
+  if (key === "images") {
+    return products.filter((p) => {
+      const url = p.file_url.trim().toLowerCase();
+      return (
+        url.includes(".png") ||
+        url.includes(".jpg") ||
+        url.includes(".jpeg") ||
+        url.includes(".webp") ||
+        url.includes(".gif") ||
+        url.includes("image")
+      );
+    });
+  }
+  if (key === "videos") {
+    return products.filter((p) => {
+      const url = p.file_url.trim().toLowerCase();
+      return (
+        url.includes(".mp4") ||
+        url.includes(".mov") ||
+        url.includes(".webm") ||
+        url.includes("video")
+      );
+    });
+  }
+  return products;
+}
+
+async function productCount(folderId: string): Promise<number> {
+  const [c] = await getPool().query<RowDataPacket[]>(
+    "SELECT COUNT(*) AS c FROM kc_products WHERE is_active=1 AND folder_id=?",
+    [folderId],
+  );
+  return Number(c[0]?.c ?? 0);
+}
+
+async function findFlowchartFolder(
+  itemClassId: string,
+  folderName: string,
+): Promise<FolderRow | null> {
+  const [rows] = await getPool().query<FolderRow[]>(
+    `SELECT id, item_class_id, parent_id, name, kind FROM kc_folders
+     WHERE is_active=1 AND item_class_id=? AND parent_id IS NULL
+       AND LOWER(TRIM(name))=LOWER(?)
+     ORDER BY sort_order, name LIMIT 1`,
+    [itemClassId, folderName],
+  );
+  return rows[0] ?? null;
+}
+
+async function folderContentCount(folderId: string): Promise<number> {
+  const [c] = await getPool().query<RowDataPacket[]>(
+    `SELECT
+       (SELECT COUNT(*) FROM kc_folders WHERE is_active=1 AND parent_id=?) +
+       (SELECT COUNT(*) FROM kc_products WHERE is_active=1 AND folder_id=?) AS c`,
+    [folderId, folderId],
+  );
+  return Number(c[0]?.c ?? 0);
+}
+
+async function virtualFlowchartBrowse(
+  itemClassId: string,
+  folderLabel: string,
+  mode: "products" | "folder",
+): Promise<BrowseResult> {
+  const icRow = await getItemClass(itemClassId);
+  if (!icRow) return { folders: [], products: [] };
+  const parentCat = await getCategory(icRow.category_id);
+  const path = [ROOT_NAME, parentCat?.name || "", icRow.name, folderLabel].filter(
+    Boolean,
+  );
+
+  if (mode === "products") {
+    const container = await resolveProductsContainer(itemClassId);
+    if (container.exists) {
+      const modelFolders = await listFolders(
+        itemClassId,
+        container.id,
+        path,
+      );
+      if (modelFolders.length > 0) {
+        return { folders: modelFolders, products: [] };
+      }
+    }
+    return {
+      folders: [],
+      products: await listProducts(container.id, path),
+    };
+  }
+
+  const real = await findFlowchartFolder(itemClassId, folderLabel);
+  if (!real) return { folders: [], products: [] };
+  return {
+    folders: await listFolders(itemClassId, real.id, path),
+    products: await listProducts(real.id, path),
+  };
+}
+
+async function foldersForModelFolder(
+  modelFolder: FolderRow,
+  path: string[],
+): Promise<InventoryFolder[]> {
+  let folders = (await listFolders(modelFolder.item_class_id, modelFolder.id, path))
+    .filter((f) => !isCatalogFolderId(f.id));
+
+  const ensure = async (
+    name: string,
+    suffix: string,
+    extraCount: number,
+  ): Promise<void> => {
+    const found = folders.find(
+      (f) => f.name.trim().toLowerCase() === name.toLowerCase(),
+    );
+    if (found) {
+      if (extraCount > 0) {
+        found.child_count = (found.child_count ?? 0) + extraCount;
+      }
+      return;
+    }
+    folders.push({
+      id: `kc_fld_m${suffix}_${modelFolder.id}`,
+      name,
+      parent_id: modelFolder.id,
+      kind: "folder",
+      child_count: extraCount,
+      path: [...path, name],
+    });
+  };
+
+  const brochureFolder = await findChildFolder(modelFolder.id, "Brochure");
+  const imagesFolder = await findChildFolder(modelFolder.id, "Images");
+  const videosFolder = await findChildFolder(modelFolder.id, "Videos");
+
+  await ensure(
+    "Brochure",
+    "brochure",
+    brochureFolder
+      ? await folderContentCount(brochureFolder.id)
+      : await productCount(modelFolder.id),
+  );
+  await ensure(
+    "Images",
+    "images",
+    imagesFolder ? await folderContentCount(imagesFolder.id) : 0,
+  );
+  await ensure(
+    "Videos",
+    "videos",
+    videosFolder ? await folderContentCount(videosFolder.id) : 0,
+  );
+
+  const rank = (name: string) => {
+    const key = name.trim().toLowerCase();
+    if (key === "brochure") return 0;
+    if (key === "images") return 1;
+    if (key === "videos") return 2;
+    return 10;
+  };
+  folders = folders.sort(
+    (a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name),
+  );
+  return folders;
+}
+
+async function virtualModelMediaBrowse(
+  modelFolderId: string,
+  folderLabel: string,
+): Promise<BrowseResult> {
+  const modelFolder = await getFolder(modelFolderId);
+  if (!modelFolder) return { folders: [], products: [] };
+  const path = await folderPath(modelFolder);
+  const mediaPath = [...path, folderLabel];
+
+  const real = await findChildFolder(modelFolder.id, folderLabel);
+  if (real) {
+    return {
+      folders: await listFolders(modelFolder.item_class_id, real.id, mediaPath),
+      products: await listProducts(real.id, mediaPath),
+    };
+  }
+
+  const direct = await listProducts(modelFolder.id, mediaPath);
+  return {
+    folders: [],
+    products: filterProductsByMediaType(direct, folderLabel),
+  };
+}
+
+async function foldersForItemClass(
+  itemClassId: string,
+  path: string[],
+): Promise<InventoryFolder[]> {
+  const catalogCount = await productsContainerChildCount(itemClassId);
+  let folders = (await listFolders(itemClassId, null, path)).filter(
+    (f) => !isCatalogFolderId(f.id) && f.name.trim().toLowerCase() !== "catalog",
+  );
+
+  const ensure = async (
+    name: string,
+    suffix: string,
+    extraCount: number,
+  ): Promise<void> => {
+    const found = folders.find(
+      (f) => f.name.trim().toLowerCase() === name.toLowerCase(),
+    );
+    if (found) {
+      if (extraCount > 0) {
+        found.child_count = (found.child_count ?? 0) + extraCount;
+      }
+      return;
+    }
+    folders.push({
+      id: `kc_fld_${suffix}_${itemClassId}`,
+      name,
+      parent_id: itemClassId,
+      kind: "folder",
+      child_count: extraCount,
+      path: [...path, name],
+    });
+  };
+
+  const brochureFolder = await findFlowchartFolder(itemClassId, "Brochure");
+  const imagesFolder = await findFlowchartFolder(itemClassId, "Images");
+  const videosFolder = await findFlowchartFolder(itemClassId, "Videos");
+
+  await ensure(
+    "Brochure",
+    "brochure",
+    brochureFolder ? await folderContentCount(brochureFolder.id) : 0,
+  );
+  await ensure("Products", "products", catalogCount);
+  await ensure(
+    "Images",
+    "images",
+    imagesFolder ? await folderContentCount(imagesFolder.id) : 0,
+  );
+  await ensure(
+    "Videos",
+    "videos",
+    videosFolder ? await folderContentCount(videosFolder.id) : 0,
+  );
+
+  const rank = (name: string) => {
+    const key = name.trim().toLowerCase();
+    if (key === "brochure") return 0;
+    if (key === "products") return 1;
+    if (key === "images") return 2;
+    if (key === "videos") return 3;
+    return 10;
+  };
+  folders = folders.sort(
+    (a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name),
+  );
+  return folders;
+}
+
+async function productsForFolder(
+  folder: FolderRow,
+  path: string[],
+): Promise<InventoryProduct[]> {
+  const own = await listProducts(folder.id, path);
+  const name = folder.name.trim().toLowerCase();
+  const isProducts =
+    name === "products" || folder.id.startsWith("kc_fld_products_");
+  if (!isProducts) return own;
+  const catalogId = catalogFolderId(folder.item_class_id);
+  const catalog = await listProducts(catalogId, path);
+  const seen = new Set(own.map((p) => p.id));
+  return [...own, ...catalog.filter((p) => !seen.has(p.id))];
+}
+
+export async function browse(folderId?: string | null): Promise<BrowseResult> {
+  await ensureTables();
+  const current =
+    !folderId || folderId === "" || folderId === "root" ? ROOT_ID : folderId;
+
+  if (current === ROOT_ID) {
+    return { folders: await listCategories(), products: [] };
+  }
+
+  const cat = await getCategory(current);
+  if (cat) {
+    return {
+      folders: await listItemClasses(current, cat.name),
+      products: [],
+    };
+  }
+
+  const ic = await getItemClass(current);
+  if (ic) {
+    const parentCat = await getCategory(ic.category_id);
+    const path = [ROOT_NAME, parentCat?.name || "", ic.name].filter(Boolean);
+    return {
+      folders: await foldersForItemClass(current, path),
+      products: [],
+    };
+  }
+
+  const folder = await getFolder(current);
+  if (folder) {
+    const path = await folderPath(folder);
+    if (await isProductsContainerFolder(folder)) {
+      const modelFolders = await listFolders(folder.item_class_id, folder.id, path);
+      if (modelFolders.length > 0) {
+        return { folders: modelFolders, products: [] };
+      }
+    }
+    if (await isModelFolder(folder)) {
+      return {
+        folders: await foldersForModelFolder(folder, path),
+        products: [],
+      };
+    }
+    return {
+      folders: (await listFolders(folder.item_class_id, current, path)).filter(
+        (f) => !isCatalogFolderId(f.id),
+      ),
+      products: await productsForFolder(folder, path),
+    };
+  }
+
+  const virtualModelMedia = current.match(
+    /^kc_fld_m(brochure|images|videos)_(.+)$/,
+  );
+  if (virtualModelMedia) {
+    const [, kind, modelFolderId] = virtualModelMedia;
+    const labels: Record<string, string> = {
+      brochure: "Brochure",
+      images: "Images",
+      videos: "Videos",
+    };
+    return virtualModelMediaBrowse(modelFolderId, labels[kind] ?? kind);
+  }
+
+  const virtualFlowchart = current.match(
+    /^kc_fld_(brochure|images|videos|products)_(.+)$/,
+  );
+  if (virtualFlowchart) {
+    const [, kind, itemClassId] = virtualFlowchart;
+    const labels: Record<string, string> = {
+      brochure: "Brochure",
+      images: "Images",
+      videos: "Videos",
+      products: "Products",
+    };
+    const label = labels[kind] ?? kind;
+    return virtualFlowchartBrowse(
+      itemClassId,
+      label,
+      kind === "products" ? "products" : "folder",
+    );
+  }
+
+  return { folders: [], products: [] };
+}
+
+export async function search(
+  query: string,
+  limit = 40,
+): Promise<BrowseResult> {
+  await ensureTables();
+  const q = query.trim();
+  if (!q) return { folders: [], products: [] };
+  const lim = Math.max(1, Math.min(limit, 200));
+  const like = `%${q}%`;
+  const folders: InventoryFolder[] = [];
+  const products: InventoryProduct[] = [];
+  const db = getPool();
+
+  const [cats] = await db.query<CatRow[]>(
+    "SELECT id, name FROM kc_categories WHERE is_active=1 AND name LIKE ? ORDER BY sort_order, name LIMIT ?",
+    [like, lim],
+  );
+  for (const row of cats) {
+    folders.push({
+      id: row.id,
+      name: row.name,
+      parent_id: ROOT_ID,
+      kind: "category",
+      child_count: null,
+      path: [ROOT_NAME, row.name],
+    });
+  }
+
+  const [ics] = await db.query<
+    (IcRow & { category_name: string })[]
+  >(
+    `SELECT ic.id, ic.name, ic.category_id, c.name AS category_name
+     FROM kc_item_classes ic
+     JOIN kc_categories c ON c.id = ic.category_id
+     WHERE ic.is_active=1 AND c.is_active=1 AND ic.name LIKE ?
+     ORDER BY ic.sort_order, ic.name LIMIT ?`,
+    [like, lim],
+  );
+  for (const row of ics) {
+    folders.push({
+      id: row.id,
+      name: row.name,
+      parent_id: row.category_id,
+      kind: "subcategory",
+      child_count: null,
+      path: [ROOT_NAME, row.category_name, row.name],
+    });
+  }
+
+  const [flds] = await db.query<FolderRow[]>(
+    `SELECT id, name, parent_id, item_class_id, kind FROM kc_folders
+     WHERE is_active=1 AND name LIKE ? ORDER BY sort_order, name LIMIT ?`,
+    [like, lim],
+  );
+  for (const row of flds) {
+    if (isCatalogFolderId(row.id)) continue;
+    folders.push({
+      id: row.id,
+      name: row.name,
+      parent_id: row.parent_id || row.item_class_id,
+      kind: row.kind || "folder",
+      child_count: null,
+      path: await folderPath(row),
+    });
+  }
+
+  const [prods] = await db.query<ProductRow[]>(
+    `SELECT id, folder_id, name, sku, description, file_url FROM kc_products
+     WHERE is_active=1 AND (name LIKE ? OR sku LIKE ? OR description LIKE ?)
+     ORDER BY sort_order, name LIMIT ?`,
+    [like, like, like, lim],
+  );
+  for (const row of prods) {
+    const folder = await getFolder(row.folder_id);
+    products.push({
+      id: row.id,
+      name: row.name,
+      sku: row.sku || "",
+      description: row.description || "",
+      file_url: row.file_url || "",
+      folder_id: row.folder_id,
+      folder_path: folder ? await folderPath(folder) : [ROOT_NAME],
+    });
+  }
+
+  const sliced = folders.slice(0, lim);
+  const rem = Math.max(0, lim - sliced.length);
+  return { folders: sliced, products: products.slice(0, rem) };
+}
+
+export async function getProduct(
+  productId: string,
+): Promise<InventoryProduct | null> {
+  await ensureTables();
+  const [rows] = await getPool().query<ProductRow[]>(
+    `SELECT id, folder_id, name, sku, description, file_url FROM kc_products
+     WHERE is_active=1 AND id=? LIMIT 1`,
+    [productId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const folder = await getFolder(row.folder_id);
+  return {
+    id: row.id,
+    name: row.name,
+    sku: row.sku || "",
+    description: row.description || "",
+    file_url: row.file_url || "",
+    folder_id: row.folder_id,
+    folder_path: folder ? await folderPath(folder) : [ROOT_NAME],
+  };
+}
+
+export async function itemClassMedia(
+  itemClassId: string,
+  mediaKind: string,
+): Promise<BrowseResult> {
+  await ensureTables();
+  const labels: Record<string, string> = {
+    brochure: "Brochure",
+    images: "Images",
+    videos: "Videos",
+    products: "Products",
+  };
+  const key = mediaKind.trim().toLowerCase();
+  const label = labels[key] ?? mediaKind.trim();
+  const mode = key === "products" ? "products" : "folder";
+  return virtualFlowchartBrowse(itemClassId, label, mode);
+}
+
+export async function createFolder(body: Record<string, unknown>) {
+  await ensureTables();
+  const name = String(body.name ?? "").trim();
+  if (!name) throw new Error("Folder name is required");
+  let parentId = String(body.parent_id ?? ROOT_ID).trim() || ROOT_ID;
+  if (parentId === "root") parentId = ROOT_ID;
+
+  if (parentId === ROOT_ID) {
+    const folderId = String(body.id || id("kc_cat_"));
+    await getPool().query(
+      "INSERT INTO kc_categories (id, name, sort_order, is_active) VALUES (?,?,0,1)",
+      [folderId, name],
+    );
+    return {
+      id: folderId,
+      name,
+      parent_id: ROOT_ID,
+      kind: "category",
+      child_count: 0,
+      path: [ROOT_NAME, name],
+    } satisfies InventoryFolder;
+  }
+
+  if (await getCategory(parentId)) {
+    const cat = await getCategory(parentId);
+    const folderId = String(body.id || id("kc_ic_"));
+    await getPool().query(
+      "INSERT INTO kc_item_classes (id, category_id, name, sort_order, is_active) VALUES (?,?,?,0,1)",
+      [folderId, parentId, name],
+    );
+    return {
+      id: folderId,
+      name,
+      parent_id: parentId,
+      kind: "subcategory",
+      child_count: 0,
+      path: [ROOT_NAME, cat!.name, name],
+    } satisfies InventoryFolder;
+  }
+
+  let itemClassId: string | null = null;
+  let parentFolderId: string | null = null;
+  if (await getItemClass(parentId)) {
+    itemClassId = parentId;
+  } else {
+    const parentFolder = await getFolder(parentId);
+    if (!parentFolder) throw new Error("Invalid parent for folder");
+    itemClassId = parentFolder.item_class_id;
+    parentFolderId = parentId;
+  }
+
+  const folderId = String(body.id || id("kc_fld_"));
+  const kind = String(body.kind ?? "folder").trim() || "folder";
+  await getPool().query(
+    `INSERT INTO kc_folders (id, item_class_id, parent_id, name, kind, sort_order, is_active)
+     VALUES (?,?,?,?,?,0,1)`,
+    [folderId, itemClassId, parentFolderId, name, kind],
+  );
+  const folder = await getFolder(folderId);
+  return {
+    id: folderId,
+    name,
+    parent_id: parentFolderId || itemClassId,
+    kind,
+    child_count: 0,
+    path: folder ? await folderPath(folder) : [ROOT_NAME, name],
+  } satisfies InventoryFolder;
+}
+
+export async function createProduct(body: Record<string, unknown>) {
+  await ensureTables();
+  const name = String(body.name ?? "").trim();
+  if (!name) throw new Error("Product name is required");
+  let folderId = String(body.folder_id ?? "").trim();
+  if (!folderId || folderId === ROOT_ID) {
+    throw new Error("Select a folder under a KC Item Class");
+  }
+  if (await getItemClass(folderId)) {
+    throw new Error("Upload into a CMS folder under the item class");
+  }
+  if (!(await getFolder(folderId))) {
+    throw new Error("Invalid folder for product");
+  }
+  const productId = String(body.id || id("kc_prd_"));
+  let sku = String(body.sku ?? "").trim();
+  if (!sku) sku = productId;
+  const description = String(body.description ?? "").trim();
+  const fileUrl = String(body.file_url ?? body.fileUrl ?? "").trim();
+  await getPool().query(
+    `INSERT INTO kc_products (id, folder_id, name, sku, description, file_url, sort_order, is_active)
+     VALUES (?,?,?,?,?,?,0,1)`,
+    [productId, folderId, name, sku, description, fileUrl || null],
+  );
+  return getProduct(productId);
+}
+
+export async function softDeleteFolder(folderId: string): Promise<void> {
+  await ensureTables();
+  const db = getPool();
+  await db.query("UPDATE kc_categories SET is_active=0 WHERE id=?", [folderId]);
+  await db.query("UPDATE kc_item_classes SET is_active=0 WHERE id=? OR category_id=?", [
+    folderId,
+    folderId,
+  ]);
+  await db.query("UPDATE kc_folders SET is_active=0 WHERE id=? OR item_class_id=?", [
+    folderId,
+    folderId,
+  ]);
+  // cascade children
+  let changed = true;
+  while (changed) {
+    const [res] = await db.query(
+      `UPDATE kc_folders child
+       JOIN kc_folders parent ON child.parent_id = parent.id
+       SET child.is_active = 0
+       WHERE parent.is_active = 0 AND child.is_active = 1`,
+    );
+    changed = (res as { affectedRows?: number }).affectedRows! > 0;
+  }
+  await db.query(
+    `UPDATE kc_products p
+     JOIN kc_folders f ON p.folder_id = f.id
+     SET p.is_active = 0
+     WHERE f.is_active = 0 AND p.is_active = 1`,
+  );
+  await db.query(
+    "UPDATE kc_products SET is_active=0 WHERE folder_id=? AND is_active=1",
+    [folderId],
+  );
+}
+
+export async function softDeleteProduct(productId: string): Promise<void> {
+  await ensureTables();
+  await getPool().query(
+    "UPDATE kc_products SET is_active=0 WHERE id=? AND is_active=1",
+    [productId],
+  );
+}
+
+const ALLOWED_ACTIONS = new Set(["opened_product", "searched", "downloaded"]);
+
+export async function writeActionLog(body: Record<string, unknown>) {
+  await ensureTables();
+  const action = String(body.action ?? "").trim();
+  if (!ALLOWED_ACTIONS.has(action)) throw new Error("Invalid action");
+  const logId = String(body.id || id("log_"));
+  await getPool().query(
+    `INSERT INTO inventory_action_logs
+     (id, action, actor_id, actor_name, target_id, target_name, detail)
+     VALUES (?,?,?,?,?,?,?)`,
+    [
+      logId,
+      action,
+      String(body.actor_id ?? "").slice(0, 128),
+      String(body.actor_name ?? "").slice(0, 255),
+      String(body.target_id ?? "").slice(0, 64),
+      String(body.target_name ?? "").slice(0, 512),
+      String(body.detail ?? "").slice(0, 2000),
+    ],
+  );
+  return { id: logId, ok: true };
+}
+
+export async function listActionLogs(limit = 200) {
+  await ensureTables();
+  const lim = Math.max(1, Math.min(Number(limit) || 200, 500));
+  const [rows] = await getPool().query<RowDataPacket[]>(
+    `SELECT id, action, actor_id, actor_name, target_id, target_name, detail, created_at
+     FROM inventory_action_logs ORDER BY created_at DESC LIMIT ?`,
+    [lim],
+  );
+  return {
+    logs: rows.map((r) => ({
+      id: r.id,
+      action: r.action,
+      actor_id: r.actor_id || "",
+      actor_name: r.actor_name || "",
+      target_id: r.target_id || "",
+      target_name: r.target_name || "",
+      detail: r.detail || "",
+      created_at: r.created_at
+        ? new Date(r.created_at).toISOString().replace("T", " ").slice(0, 19)
+        : "",
+    })),
+  };
+}
