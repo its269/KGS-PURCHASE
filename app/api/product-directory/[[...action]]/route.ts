@@ -12,7 +12,8 @@
  *   POST      .../browse | inventory_browse          { folder_id? }
  *   POST      .../search | inventory_search          { query, limit? }
  *   POST      .../product | inventory_product        { product_id }
- *   POST      .../item_class_media | inventory_item_class_media  { item_class_id, media_kind }
+ *   POST      .../item_class_media | inventory_item_class_media | cms_media | inventory_cms_media
+ *             { item_class_id, media_kind: brochure|images|videos }
  *   POST      .../folder_create | inventory_folder_create
  *   POST      .../product_create | inventory_product_create
  *   POST      .../folder_delete | inventory_folder_delete

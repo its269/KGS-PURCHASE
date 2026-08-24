@@ -122,6 +122,8 @@ export const PRODUCT_DIRECTORY_ACTIONS: Record<string, keyof typeof ProductDirec
     inventory_product: "product",
     item_class_media: "itemClassMedia",
     inventory_item_class_media: "itemClassMedia",
+    cms_media: "itemClassMedia",
+    inventory_cms_media: "itemClassMedia",
     folder_create: "folderCreate",
     inventory_folder_create: "folderCreate",
     product_create: "productCreate",
