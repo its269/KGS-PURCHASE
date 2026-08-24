@@ -152,6 +152,16 @@ async function getItemClass(id: string): Promise<IcRow | null> {
   return rows[0] ?? null;
 }
 
+function mapCmsMediaRows(rows: RowDataPacket[]): CmsMediaRow[] {
+  return rows.map((r) => ({
+    inventory_id: String(r.inventory_id),
+    inventory_name: String(r.inventory_name || r.inventory_id),
+    model_id: r.model_id,
+    model_name: r.model_name ? String(r.model_name) : null,
+    media_url: String(r.media_url || ""),
+  }));
+}
+
 async function loadCmsMediaRows(
   itemClassId: string,
   kind: string,
@@ -162,85 +172,77 @@ async function loadCmsMediaRows(
   const ic = await getItemClass(itemClassId);
   if (!ic) return [];
 
-  const params: unknown[] = [itemClassId];
-  let modelClause = "";
-  if (modelId !== undefined) {
-    modelClause = " AND p.model_id = ? ";
-    params.push(Number(modelId));
+  const modelClause =
+    modelId !== undefined ? " AND p.model_id = ? " : "";
+  const modelParam =
+    modelId !== undefined ? [Number(modelId)] : [];
+
+  try {
+    // BINARY avoids utf8mb4_0900 vs utf8mb4_unicode collation mismatch
+    // between product_inventory_items and kc_products / kc_folders.
+    const [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+              p.${column} AS media_url
+       FROM product_inventory_items p
+       INNER JOIN kc_products kp
+         ON BINARY kp.id = BINARY p.inventory_id AND kp.is_active = 1
+       INNER JOIN kc_folders f
+         ON BINARY f.id = BINARY kp.folder_id AND f.is_active = 1
+        AND BINARY f.item_class_id = BINARY ?
+       LEFT JOIN inventory_models m ON m.id = p.model_id
+       WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
+         AND COALESCE(p.${column}, '') <> ''
+         ${modelClause}
+       ORDER BY m.name, p.inventory_name`,
+      [itemClassId, ...modelParam],
+    );
+    if (rows.length > 0) return mapCmsMediaRows(rows);
+  } catch (err) {
+    console.error("[product-directory] CMS media via kc_products failed:", err);
   }
 
-  // Prefer products catalogued under this KC item class (via kc_products),
-  // so CMS uploads match Product Directory membership even when item_class
-  // text differs from kc_item_classes.source_code.
-  const [rows] = await getPool().query<RowDataPacket[]>(
-    `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-            p.${column} AS media_url
-     FROM product_inventory_items p
-     INNER JOIN kc_products kp ON kp.id = p.inventory_id AND kp.is_active = 1
-     INNER JOIN kc_folders f ON f.id = kp.folder_id AND f.is_active = 1
-       AND f.item_class_id = ?
-     LEFT JOIN inventory_models m ON m.id = p.model_id AND m.deleted_at IS NULL
-     WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
-       AND COALESCE(p.${column}, '') <> ''
-       ${modelClause}
-     ORDER BY m.name, p.inventory_name`,
-    params,
-  );
-
-  if (rows.length > 0) {
-    return rows.map((r) => ({
-      inventory_id: String(r.inventory_id),
-      inventory_name: String(r.inventory_name || r.inventory_id),
-      model_id: r.model_id,
-      model_name: r.model_name ? String(r.model_name) : null,
-      media_url: String(r.media_url || ""),
-    }));
+  try {
+    const [fallback] = await getPool().query<RowDataPacket[]>(
+      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+              p.${column} AS media_url
+       FROM product_inventory_items p
+       LEFT JOIN inventory_models m ON m.id = p.model_id
+       WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
+         AND COALESCE(p.${column}, '') <> ''
+         AND (
+           (TRIM(IFNULL(p.item_class,'')) <> ''
+             AND UPPER(TRIM(CONVERT(p.item_class USING utf8mb4))) = UPPER(CONVERT(? USING utf8mb4)))
+           OR (TRIM(IFNULL(p.kc_item_class,'')) <> ''
+             AND LOWER(TRIM(CONVERT(p.kc_item_class USING utf8mb4))) = LOWER(CONVERT(? USING utf8mb4)))
+         )
+         ${modelClause}
+       ORDER BY m.name, p.inventory_name`,
+      [ic.source_code || ic.name, ic.name, ...modelParam],
+    );
+    return mapCmsMediaRows(fallback);
+  } catch (err) {
+    console.error("[product-directory] CMS media fallback failed:", err);
+    return [];
   }
-
-  // Fallback: legacy item_class / kc_item_class name match.
-  const fallbackParams: unknown[] = [
-    ic.source_code || ic.name,
-    ic.name,
-    ...params.slice(1),
-  ];
-  const [fallback] = await getPool().query<RowDataPacket[]>(
-    `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-            p.${column} AS media_url
-     FROM product_inventory_items p
-     LEFT JOIN inventory_models m ON m.id = p.model_id AND m.deleted_at IS NULL
-     WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
-       AND COALESCE(p.${column}, '') <> ''
-       AND (
-         (TRIM(IFNULL(p.item_class,'')) <> '' AND UPPER(TRIM(p.item_class)) = UPPER(?))
-         OR (TRIM(IFNULL(p.kc_item_class,'')) <> '' AND LOWER(TRIM(p.kc_item_class)) = LOWER(?))
-       )
-       ${modelClause}
-     ORDER BY m.name, p.inventory_name`,
-    fallbackParams,
-  );
-
-  return fallback.map((r) => ({
-    inventory_id: String(r.inventory_id),
-    inventory_name: String(r.inventory_name || r.inventory_id),
-    model_id: r.model_id,
-    model_name: r.model_name ? String(r.model_name) : null,
-    media_url: String(r.media_url || ""),
-  }));
 }
 
 async function cmsMediaUrlForProduct(productId: string): Promise<string> {
-  const [rows] = await getPool().query<RowDataPacket[]>(
-    `SELECT image_url, brochure_url, youtube_url
-     FROM product_inventory_items
-     WHERE deleted_at IS NULL AND inventory_id = ?
-     LIMIT 1`,
-    [productId],
-  );
-  const row = rows[0];
-  if (!row) return "";
-  for (const col of ["image_url", "brochure_url", "youtube_url"] as const) {
-    const url = normalizeFileUrl(String(row[col] ?? ""));
-    if (url) return url;
+  try {
+    const [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT image_url, brochure_url, youtube_url
+       FROM product_inventory_items
+       WHERE deleted_at IS NULL AND BINARY inventory_id = BINARY ?
+       LIMIT 1`,
+      [productId],
+    );
+    const row = rows[0];
+    if (!row) return "";
+    for (const col of ["image_url", "brochure_url", "youtube_url"] as const) {
+      const url = normalizeFileUrl(String(row[col] ?? ""));
+      if (url) return url;
+    }
+  } catch (err) {
+    console.error("[product-directory] CMS product URL lookup failed:", err);
   }
   return "";
 }
@@ -805,9 +807,13 @@ async function foldersForItemClass(
   };
 
   const cmsCount = async (kind: string) => {
-    const rows = await loadCmsMediaRows(itemClassId, kind);
-    const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path);
-    return grouped.folders.length + grouped.products.length;
+    try {
+      const rows = await loadCmsMediaRows(itemClassId, kind);
+      const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path);
+      return grouped.folders.length + grouped.products.length;
+    } catch {
+      return 0;
+    }
   };
 
   await ensure("Brochure", "brochure", await cmsCount("brochure"));
