@@ -162,14 +162,48 @@ async function loadCmsMediaRows(
   const ic = await getItemClass(itemClassId);
   if (!ic) return [];
 
-  const params: unknown[] = [];
+  const params: unknown[] = [itemClassId];
   let modelClause = "";
   if (modelId !== undefined) {
     modelClause = " AND p.model_id = ? ";
     params.push(Number(modelId));
   }
 
+  // Prefer products catalogued under this KC item class (via kc_products),
+  // so CMS uploads match Product Directory membership even when item_class
+  // text differs from kc_item_classes.source_code.
   const [rows] = await getPool().query<RowDataPacket[]>(
+    `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+            p.${column} AS media_url
+     FROM product_inventory_items p
+     INNER JOIN kc_products kp ON kp.id = p.inventory_id AND kp.is_active = 1
+     INNER JOIN kc_folders f ON f.id = kp.folder_id AND f.is_active = 1
+       AND f.item_class_id = ?
+     LEFT JOIN inventory_models m ON m.id = p.model_id AND m.deleted_at IS NULL
+     WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
+       AND COALESCE(p.${column}, '') <> ''
+       ${modelClause}
+     ORDER BY m.name, p.inventory_name`,
+    params,
+  );
+
+  if (rows.length > 0) {
+    return rows.map((r) => ({
+      inventory_id: String(r.inventory_id),
+      inventory_name: String(r.inventory_name || r.inventory_id),
+      model_id: r.model_id,
+      model_name: r.model_name ? String(r.model_name) : null,
+      media_url: String(r.media_url || ""),
+    }));
+  }
+
+  // Fallback: legacy item_class / kc_item_class name match.
+  const fallbackParams: unknown[] = [
+    ic.source_code || ic.name,
+    ic.name,
+    ...params.slice(1),
+  ];
+  const [fallback] = await getPool().query<RowDataPacket[]>(
     `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
             p.${column} AS media_url
      FROM product_inventory_items p
@@ -182,16 +216,33 @@ async function loadCmsMediaRows(
        )
        ${modelClause}
      ORDER BY m.name, p.inventory_name`,
-    [ic.source_code || ic.name, ic.name, ...params],
+    fallbackParams,
   );
 
-  return rows.map((r) => ({
+  return fallback.map((r) => ({
     inventory_id: String(r.inventory_id),
     inventory_name: String(r.inventory_name || r.inventory_id),
     model_id: r.model_id,
     model_name: r.model_name ? String(r.model_name) : null,
     media_url: String(r.media_url || ""),
   }));
+}
+
+async function cmsMediaUrlForProduct(productId: string): Promise<string> {
+  const [rows] = await getPool().query<RowDataPacket[]>(
+    `SELECT image_url, brochure_url, youtube_url
+     FROM product_inventory_items
+     WHERE deleted_at IS NULL AND inventory_id = ?
+     LIMIT 1`,
+    [productId],
+  );
+  const row = rows[0];
+  if (!row) return "";
+  for (const col of ["image_url", "brochure_url", "youtube_url"] as const) {
+    const url = normalizeFileUrl(String(row[col] ?? ""));
+    if (url) return url;
+  }
+  return "";
 }
 
 async function getFolder(id: string): Promise<FolderRow | null> {
@@ -1000,12 +1051,16 @@ export async function search(
   );
   for (const row of prods) {
     const folder = await getFolder(row.folder_id);
+    let fileUrl = normalizeFileUrl(row.file_url);
+    if (!fileUrl) {
+      fileUrl = await cmsMediaUrlForProduct(row.id);
+    }
     products.push({
       id: row.id,
       name: row.name,
       sku: row.sku || "",
       description: row.description || "",
-      file_url: normalizeFileUrl(row.file_url),
+      file_url: fileUrl,
       folder_id: row.folder_id,
       folder_path: folder ? await folderPath(folder) : [ROOT_NAME],
     });
@@ -1028,12 +1083,16 @@ export async function getProduct(
   const row = rows[0];
   if (!row) return null;
   const folder = await getFolder(row.folder_id);
+  let fileUrl = normalizeFileUrl(row.file_url);
+  if (!fileUrl) {
+    fileUrl = await cmsMediaUrlForProduct(productId);
+  }
   return {
     id: row.id,
     name: row.name,
     sku: row.sku || "",
     description: row.description || "",
-    file_url: normalizeFileUrl(row.file_url),
+    file_url: fileUrl,
     folder_id: row.folder_id,
     folder_path: folder ? await folderPath(folder) : [ROOT_NAME],
   };
