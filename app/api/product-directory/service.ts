@@ -107,7 +107,8 @@ export const ProductDirectoryService = {
     async actionLogsList(body: JsonBody = {}, request?: Request) {
         requireAdmin(request);
         await ensureTables();
-        return listActionLogs(body.limit);
+        const limit = Number(body.limit);
+        return listActionLogs(Number.isFinite(limit) ? limit : undefined);
     },
 };
 
