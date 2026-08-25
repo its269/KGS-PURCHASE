@@ -106,7 +106,9 @@ export function groupCmsMediaBrowse(
   kind: string,
   itemClassId: string,
   basePath: string[],
+  options?: { groupByModel?: boolean },
 ): { folders: FolderOut[]; products: ProductOut[] } {
+  const groupByModel = options?.groupByModel === true;
   const folders: FolderOut[] = [];
   const products: ProductOut[] = [];
   const byModel = new Map<
@@ -119,6 +121,7 @@ export function groupCmsMediaBrowse(
     if (!url) continue;
     const mid = row.model_id;
     const hasModel =
+      groupByModel &&
       mid !== null &&
       mid !== undefined &&
       String(mid).trim() !== "" &&
@@ -146,18 +149,25 @@ export function groupCmsMediaBrowse(
     });
   }
 
-  for (const [modelId, info] of [...byModel.entries()].sort((a, b) =>
-    a[1].name.localeCompare(b[1].name),
-  )) {
-    folders.push({
-      id: buildCmsModelFolderId(kind, itemClassId, modelId),
-      name: info.name,
-      parent_id: `kc_fld_${kind}_${itemClassId}`,
-      kind: "folder",
-      child_count: info.count,
-      path: [...basePath, info.name],
-    });
+  if (groupByModel) {
+    for (const [modelId, info] of [...byModel.entries()].sort((a, b) =>
+      a[1].name.localeCompare(b[1].name),
+    )) {
+      folders.push({
+        id: buildCmsModelFolderId(kind, itemClassId, modelId),
+        name: info.name,
+        parent_id: `kc_fld_${kind}_${itemClassId}`,
+        kind: "folder",
+        child_count: info.count,
+        path: [...basePath, info.name],
+      });
+    }
   }
 
   return { folders, products };
+}
+
+/** Only Machine uses model folders under Brochure / Images / Videos. */
+export function shouldGroupMediaByModel(categoryId: string | null | undefined): boolean {
+  return (categoryId || "").trim().toLowerCase() === "machine";
 }

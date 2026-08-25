@@ -6,6 +6,7 @@ import {
   mediaKindToColumn,
   parseCmsModelFolderId,
   resolveCmsMediaUrl,
+  shouldGroupMediaByModel,
   type CmsMediaRow,
 } from "./cms-inventory-media";
 import type {
@@ -152,16 +153,6 @@ async function getItemClass(id: string): Promise<IcRow | null> {
   return rows[0] ?? null;
 }
 
-function mapCmsMediaRows(rows: RowDataPacket[]): CmsMediaRow[] {
-  return rows.map((r) => ({
-    inventory_id: String(r.inventory_id),
-    inventory_name: String(r.inventory_name || r.inventory_id),
-    model_id: r.model_id,
-    model_name: r.model_name ? String(r.model_name) : null,
-    media_url: String(r.media_url || ""),
-  }));
-}
-
 async function loadCmsMediaRows(
   itemClassId: string,
   kind: string,
@@ -172,79 +163,36 @@ async function loadCmsMediaRows(
   const ic = await getItemClass(itemClassId);
   if (!ic) return [];
 
-  const modelClause =
-    modelId !== undefined ? " AND p.model_id = ? " : "";
-  const modelParam =
-    modelId !== undefined ? [Number(modelId)] : [];
-
-  try {
-    // BINARY avoids utf8mb4_0900 vs utf8mb4_unicode collation mismatch
-    // between product_inventory_items and kc_products / kc_folders.
-    const [rows] = await getPool().query<RowDataPacket[]>(
-      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-              p.${column} AS media_url
-       FROM product_inventory_items p
-       INNER JOIN kc_products kp
-         ON BINARY kp.id = BINARY p.inventory_id AND kp.is_active = 1
-       INNER JOIN kc_folders f
-         ON BINARY f.id = BINARY kp.folder_id AND f.is_active = 1
-        AND BINARY f.item_class_id = BINARY ?
-       LEFT JOIN inventory_models m ON m.id = p.model_id
-       WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
-         AND COALESCE(p.${column}, '') <> ''
-         ${modelClause}
-       ORDER BY m.name, p.inventory_name`,
-      [itemClassId, ...modelParam],
-    );
-    if (rows.length > 0) return mapCmsMediaRows(rows);
-  } catch (err) {
-    console.error("[product-directory] CMS media via kc_products failed:", err);
+  const params: unknown[] = [];
+  let modelClause = "";
+  if (modelId !== undefined) {
+    modelClause = " AND p.model_id = ? ";
+    params.push(Number(modelId));
   }
 
-  try {
-    const [fallback] = await getPool().query<RowDataPacket[]>(
-      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-              p.${column} AS media_url
-       FROM product_inventory_items p
-       LEFT JOIN inventory_models m ON m.id = p.model_id
-       WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
-         AND COALESCE(p.${column}, '') <> ''
-         AND (
-           (TRIM(IFNULL(p.item_class,'')) <> ''
-             AND UPPER(TRIM(CONVERT(p.item_class USING utf8mb4))) = UPPER(CONVERT(? USING utf8mb4)))
-           OR (TRIM(IFNULL(p.kc_item_class,'')) <> ''
-             AND LOWER(TRIM(CONVERT(p.kc_item_class USING utf8mb4))) = LOWER(CONVERT(? USING utf8mb4)))
-         )
-         ${modelClause}
-       ORDER BY m.name, p.inventory_name`,
-      [ic.source_code || ic.name, ic.name, ...modelParam],
-    );
-    return mapCmsMediaRows(fallback);
-  } catch (err) {
-    console.error("[product-directory] CMS media fallback failed:", err);
-    return [];
-  }
-}
+  const [rows] = await getPool().query<RowDataPacket[]>(
+    `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+            p.${column} AS media_url
+     FROM product_inventory_items p
+     LEFT JOIN inventory_models m ON m.id = p.model_id AND m.deleted_at IS NULL
+     WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
+       AND COALESCE(p.${column}, '') <> ''
+       AND (
+         (TRIM(IFNULL(p.item_class,'')) <> '' AND UPPER(TRIM(p.item_class)) = UPPER(?))
+         OR (TRIM(IFNULL(p.kc_item_class,'')) <> '' AND LOWER(TRIM(p.kc_item_class)) = LOWER(?))
+       )
+       ${modelClause}
+     ORDER BY m.name, p.inventory_name`,
+    [ic.source_code || ic.name, ic.name, ...params],
+  );
 
-async function cmsMediaUrlForProduct(productId: string): Promise<string> {
-  try {
-    const [rows] = await getPool().query<RowDataPacket[]>(
-      `SELECT image_url, brochure_url, youtube_url
-       FROM product_inventory_items
-       WHERE deleted_at IS NULL AND BINARY inventory_id = BINARY ?
-       LIMIT 1`,
-      [productId],
-    );
-    const row = rows[0];
-    if (!row) return "";
-    for (const col of ["image_url", "brochure_url", "youtube_url"] as const) {
-      const url = normalizeFileUrl(String(row[col] ?? ""));
-      if (url) return url;
-    }
-  } catch (err) {
-    console.error("[product-directory] CMS product URL lookup failed:", err);
-  }
-  return "";
+  return rows.map((r) => ({
+    inventory_id: String(r.inventory_id),
+    inventory_name: String(r.inventory_name || r.inventory_id),
+    model_id: r.model_id,
+    model_name: r.model_name ? String(r.model_name) : null,
+    media_url: String(r.media_url || ""),
+  }));
 }
 
 async function getFolder(id: string): Promise<FolderRow | null> {
@@ -662,7 +610,10 @@ async function virtualFlowchartBrowse(
         ? "videos"
         : "brochure";
   const rows = await loadCmsMediaRows(itemClassId, kind);
-  const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path);
+  const ic = await getItemClass(itemClassId);
+  const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path, {
+    groupByModel: shouldGroupMediaByModel(ic?.category_id),
+  });
   if (grouped.folders.length > 0 || grouped.products.length > 0) {
     return grouped;
   }
@@ -809,7 +760,10 @@ async function foldersForItemClass(
   const cmsCount = async (kind: string) => {
     try {
       const rows = await loadCmsMediaRows(itemClassId, kind);
-      const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path);
+      const ic = await getItemClass(itemClassId);
+      const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path, {
+        groupByModel: shouldGroupMediaByModel(ic?.category_id),
+      });
       return grouped.folders.length + grouped.products.length;
     } catch {
       return 0;
@@ -918,11 +872,13 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
     );
     if (cmsKind) {
       const rows = await loadCmsMediaRows(folder.item_class_id, cmsKind);
+      const ic = await getItemClass(folder.item_class_id);
       const grouped = groupCmsMediaBrowse(
         rows,
         cmsKind,
         folder.item_class_id,
         path,
+        { groupByModel: shouldGroupMediaByModel(ic?.category_id) },
       );
       if (grouped.folders.length > 0 || grouped.products.length > 0) {
         return grouped;
@@ -1057,16 +1013,12 @@ export async function search(
   );
   for (const row of prods) {
     const folder = await getFolder(row.folder_id);
-    let fileUrl = normalizeFileUrl(row.file_url);
-    if (!fileUrl) {
-      fileUrl = await cmsMediaUrlForProduct(row.id);
-    }
     products.push({
       id: row.id,
       name: row.name,
       sku: row.sku || "",
       description: row.description || "",
-      file_url: fileUrl,
+      file_url: normalizeFileUrl(row.file_url),
       folder_id: row.folder_id,
       folder_path: folder ? await folderPath(folder) : [ROOT_NAME],
     });
@@ -1089,16 +1041,12 @@ export async function getProduct(
   const row = rows[0];
   if (!row) return null;
   const folder = await getFolder(row.folder_id);
-  let fileUrl = normalizeFileUrl(row.file_url);
-  if (!fileUrl) {
-    fileUrl = await cmsMediaUrlForProduct(productId);
-  }
   return {
     id: row.id,
     name: row.name,
     sku: row.sku || "",
     description: row.description || "",
-    file_url: fileUrl,
+    file_url: normalizeFileUrl(row.file_url),
     folder_id: row.folder_id,
     folder_path: folder ? await folderPath(folder) : [ROOT_NAME],
   };
@@ -1126,7 +1074,9 @@ export async function itemClassMedia(
     Boolean,
   );
   const rows = await loadCmsMediaRows(itemClassId, kind);
-  return groupCmsMediaBrowse(rows, kind, itemClassId, path);
+  return groupCmsMediaBrowse(rows, kind, itemClassId, path, {
+    groupByModel: shouldGroupMediaByModel(icRow.category_id),
+  });
 }
 
 export async function createFolder(body: Record<string, unknown>) {
