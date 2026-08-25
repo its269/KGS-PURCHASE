@@ -2,7 +2,9 @@ import { randomBytes } from "crypto";
 import { getPool, type RowDataPacket } from "./db";
 import {
   flowchartMediaKind,
+  flatCmsFilesFromRows,
   groupCmsMediaBrowse,
+  inventoryIdFromFlatCmsFileProductId,
   mediaKindToColumn,
   parseCmsModelFolderId,
   resolveCmsMediaUrl,
@@ -153,6 +155,45 @@ async function getItemClass(id: string): Promise<IcRow | null> {
   return rows[0] ?? null;
 }
 
+/** CMS uses longer names than Product Directory item-class folders. */
+function cmsItemClassNameAliases(itemClassName: string): string[] {
+  const name = itemClassName.trim();
+  if (!name) return [];
+  const key = name.toLowerCase();
+  const extra: Record<string, string[]> = {
+    "eco solvent": ["Ecosolvent Printer", "Eco-Solvent Printer", "Eco Solvent"],
+    solvent: ["Solvent Printer", "Solvent"],
+    "heat press": ["Heat Press Machine", "Heat Press"],
+    embroidery: ["Embroidery Machine", "Embroidery"],
+    laminator: ["Laminating machine", "Laminating Machine", "Laminator"],
+    "cnc router": ["Router Machine", "CNC Router"],
+    "cutter plotter": ["Digital Cutter Machine", "Cutter Plotter"],
+    "flatbed cutter": ["Digital Cutter Machine", "Flatbed Cutter"],
+    "uv printer": ["UV Printer"],
+    "laser machine": ["Laser Machine"],
+    "3d printer": ["3D Printer", "Signmaking machine", "Signmaking Machine"],
+    accessories: ["Accessories"],
+  };
+  const out = new Set<string>([name]);
+  for (const alias of extra[key] ?? []) out.add(alias);
+  return [...out];
+}
+
+/** CMS uses "Auxiliary"; Product Directory folder is "Tools". */
+function cmsCategoryAliases(categoryName: string): string[] {
+  const name = categoryName.trim();
+  const key = name.toLowerCase();
+  if (key === "tools" || key === "auxiliary") {
+    return ["Tools", "Auxiliary"];
+  }
+  return name ? [name] : [];
+}
+
+function sqlUtf8Eq(leftExpr: string): string {
+  return `LOWER(TRIM(CONVERT(${leftExpr} USING utf8mb4))) COLLATE utf8mb4_unicode_ci
+    = LOWER(TRIM(CONVERT(? USING utf8mb4))) COLLATE utf8mb4_unicode_ci`;
+}
+
 async function loadCmsMediaRows(
   itemClassId: string,
   kind: string,
@@ -162,37 +203,112 @@ async function loadCmsMediaRows(
   if (!column) return [];
   const ic = await getItemClass(itemClassId);
   if (!ic) return [];
+  const cat = await getCategory(ic.category_id);
+  const categoryAliases = cmsCategoryAliases(cat?.name || "");
+  const nameAliases = cmsItemClassNameAliases(ic.name);
+  const sourceCode = (ic.source_code || "").trim();
 
-  const params: unknown[] = [];
-  let modelClause = "";
-  if (modelId !== undefined) {
-    modelClause = " AND p.model_id = ? ";
-    params.push(Number(modelId));
+  const modelClause =
+    modelId !== undefined ? " AND p.model_id = ? " : "";
+  const modelParam =
+    modelId !== undefined ? [Number(modelId)] : [];
+
+  const mapRows = (rows: RowDataPacket[]): CmsMediaRow[] =>
+    rows.map((r) => ({
+      inventory_id: String(r.inventory_id),
+      inventory_name: String(r.inventory_name || r.inventory_id),
+      model_id: r.model_id,
+      model_name: r.model_name ? String(r.model_name) : null,
+      media_url: String(r.media_url || ""),
+    }));
+
+  // 1) Products already linked under this Product Directory item class.
+  try {
+    const [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+              p.${column} AS media_url
+       FROM product_inventory_items p
+       INNER JOIN kc_products kp
+         ON BINARY kp.id = BINARY p.inventory_id AND kp.is_active = 1
+       INNER JOIN kc_folders f
+         ON BINARY f.id = BINARY kp.folder_id AND f.is_active = 1
+        AND BINARY f.item_class_id = BINARY ?
+       LEFT JOIN inventory_models m ON m.id = p.model_id
+       WHERE p.deleted_at IS NULL
+         AND LOWER(TRIM(p.item_status)) = 'active'
+         AND COALESCE(p.${column}, '') <> ''
+         ${modelClause}
+       ORDER BY m.name, p.inventory_name`,
+      [itemClassId, ...modelParam],
+    );
+    if (rows.length > 0) return mapRows(rows);
+  } catch (err) {
+    console.error("[product-directory] CMS media via kc_products failed:", err);
   }
 
-  const [rows] = await getPool().query<RowDataPacket[]>(
-    `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-            p.${column} AS media_url
-     FROM product_inventory_items p
-     LEFT JOIN inventory_models m ON m.id = p.model_id AND m.deleted_at IS NULL
-     WHERE p.deleted_at IS NULL AND p.item_status = 'Active'
-       AND COALESCE(p.${column}, '') <> ''
-       AND (
-         (TRIM(IFNULL(p.item_class,'')) <> '' AND UPPER(TRIM(p.item_class)) = UPPER(?))
-         OR (TRIM(IFNULL(p.kc_item_class,'')) <> '' AND LOWER(TRIM(p.kc_item_class)) = LOWER(?))
-       )
-       ${modelClause}
-     ORDER BY m.name, p.inventory_name`,
-    [ic.source_code || ic.name, ic.name, ...params],
-  );
+  // 2) Primary: KC Category + KC Item Class (CMS grid), with name aliases.
+  if (nameAliases.length > 0 && categoryAliases.length > 0) {
+    try {
+      const nameIn = nameAliases
+        .map(
+          () =>
+            "LOWER(TRIM(CONVERT(? USING utf8mb4))) COLLATE utf8mb4_unicode_ci",
+        )
+        .join(", ");
+      const catIn = categoryAliases
+        .map(
+          () =>
+            "LOWER(TRIM(CONVERT(? USING utf8mb4))) COLLATE utf8mb4_unicode_ci",
+        )
+        .join(", ");
+      const [byKc] = await getPool().query<RowDataPacket[]>(
+        `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+                p.${column} AS media_url
+         FROM product_inventory_items p
+         LEFT JOIN inventory_models m ON m.id = p.model_id
+         WHERE p.deleted_at IS NULL
+           AND LOWER(TRIM(p.item_status)) = 'active'
+           AND COALESCE(p.${column}, '') <> ''
+           AND LOWER(TRIM(CONVERT(IFNULL(p.kc_item_class,'') USING utf8mb4))) COLLATE utf8mb4_unicode_ci
+               IN (${nameIn})
+           AND LOWER(TRIM(CONVERT(IFNULL(p.kc_category,'') USING utf8mb4))) COLLATE utf8mb4_unicode_ci
+               IN (${catIn})
+           ${modelClause}
+         ORDER BY m.name, p.inventory_name`,
+        [...nameAliases, ...categoryAliases, ...modelParam],
+      );
+      if (byKc.length > 0) return mapRows(byKc);
+    } catch (err) {
+      console.error(
+        "[product-directory] CMS media via kc_category/kc_item_class failed:",
+        err,
+      );
+    }
+  }
 
-  return rows.map((r) => ({
-    inventory_id: String(r.inventory_id),
-    inventory_name: String(r.inventory_name || r.inventory_id),
-    model_id: r.model_id,
-    model_name: r.model_name ? String(r.model_name) : null,
-    media_url: String(r.media_url || ""),
-  }));
+  // 3) Fallback: Acumatica item_class code (source_code) or exact KC name.
+  try {
+    const [fallback] = await getPool().query<RowDataPacket[]>(
+      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+              p.${column} AS media_url
+       FROM product_inventory_items p
+       LEFT JOIN inventory_models m ON m.id = p.model_id
+       WHERE p.deleted_at IS NULL
+         AND LOWER(TRIM(p.item_status)) = 'active'
+         AND COALESCE(p.${column}, '') <> ''
+         AND (
+           (TRIM(IFNULL(p.item_class,'')) <> '' AND ${sqlUtf8Eq("IFNULL(p.item_class,'')")})
+           OR (TRIM(IFNULL(p.kc_item_class,'')) <> '' AND ${sqlUtf8Eq("IFNULL(p.kc_item_class,'')")})
+         )
+         ${modelClause}
+       ORDER BY m.name, p.inventory_name`,
+      [sourceCode || ic.name, ic.name, ...modelParam],
+    );
+    return mapRows(fallback);
+  } catch (err) {
+    console.error("[product-directory] CMS media fallback failed:", err);
+    return [];
+  }
 }
 
 async function getFolder(id: string): Promise<FolderRow | null> {
@@ -249,15 +365,22 @@ async function listItemClasses(
     [categoryId],
   );
   const out: InventoryFolder[] = [];
+  const groupByModel = shouldGroupMediaByModel(categoryId);
   for (const row of rows) {
     const path = [ROOT_NAME, categoryName, row.name];
-    const folders = await foldersForItemClass(row.id, path);
+    let childCount = 0;
+    if (groupByModel) {
+      const folders = await foldersForItemClass(row.id, path, row.category_id);
+      childCount = folders.length;
+    } else {
+      childCount = (await loadFlatCmsFilesForItemClass(row.id, path)).length;
+    }
     out.push({
       id: row.id,
       name: row.name,
       parent_id: categoryId,
       kind: "subcategory",
-      child_count: folders.length,
+      child_count: childCount,
       path,
     });
   }
@@ -314,6 +437,27 @@ function normalizeFileUrl(url: string | null | undefined): string {
   if (value.startsWith("//")) return `http:${value}`;
   if (value.startsWith("/")) return `${CMS_PUBLIC_ORIGIN}${value}`;
   return `${CMS_PUBLIC_ORIGIN}/${value.replace(/^\/+/, "")}`;
+}
+
+async function cmsMediaUrlForProduct(productId: string): Promise<string> {
+  try {
+    const [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT image_url, brochure_url, youtube_url
+       FROM product_inventory_items
+       WHERE deleted_at IS NULL AND BINARY inventory_id = BINARY ?
+       LIMIT 1`,
+      [productId],
+    );
+    const row = rows[0];
+    if (!row) return "";
+    for (const col of ["image_url", "brochure_url", "youtube_url"] as const) {
+      const url = normalizeFileUrl(String(row[col] ?? ""));
+      if (url) return url;
+    }
+  } catch (err) {
+    console.error("[product-directory] CMS product URL lookup failed:", err);
+  }
+  return "";
 }
 
 async function listProducts(
@@ -722,9 +866,29 @@ async function virtualModelMediaBrowse(
   };
 }
 
+async function loadFlatCmsFilesForItemClass(
+  itemClassId: string,
+  basePath: string[],
+): Promise<InventoryProduct[]> {
+  const kinds = ["brochure", "images", "videos"] as const;
+  const rowsByKind: { kind: string; rows: CmsMediaRow[] }[] = [];
+  for (const kind of kinds) {
+    try {
+      rowsByKind.push({
+        kind,
+        rows: await loadCmsMediaRows(itemClassId, kind),
+      });
+    } catch {
+      rowsByKind.push({ kind, rows: [] });
+    }
+  }
+  return flatCmsFilesFromRows(rowsByKind, itemClassId, basePath);
+}
+
 async function foldersForItemClass(
   itemClassId: string,
   path: string[],
+  categoryId?: string | null,
 ): Promise<InventoryFolder[]> {
   let folders = (await listFolders(itemClassId, null, path)).filter(
     (f) =>
@@ -732,6 +896,15 @@ async function foldersForItemClass(
       f.name.trim().toLowerCase() !== "catalog" &&
       !isProductsContainerName(f.name.trim().toLowerCase()),
   );
+
+  const ic = categoryId
+    ? { category_id: categoryId }
+    : await getItemClass(itemClassId);
+  const groupByModel = shouldGroupMediaByModel(ic?.category_id);
+  if (!groupByModel) {
+    // Inks / Media / Tools: no Brochure/Images/Videos — files sit on the type folder.
+    return [];
+  }
 
   const ensure = async (
     name: string,
@@ -760,9 +933,8 @@ async function foldersForItemClass(
   const cmsCount = async (kind: string) => {
     try {
       const rows = await loadCmsMediaRows(itemClassId, kind);
-      const ic = await getItemClass(itemClassId);
       const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path, {
-        groupByModel: shouldGroupMediaByModel(ic?.category_id),
+        groupByModel: true,
       });
       return grouped.folders.length + grouped.products.length;
     } catch {
@@ -856,9 +1028,16 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
   if (ic) {
     const parentCat = await getCategory(ic.category_id);
     const path = [ROOT_NAME, parentCat?.name || "", ic.name].filter(Boolean);
+    if (shouldGroupMediaByModel(ic.category_id)) {
+      return {
+        folders: await foldersForItemClass(current, path, ic.category_id),
+        products: [],
+      };
+    }
+    // Inks / Media / Tools: type folder → files (Flowchart-path.svg)
     return {
-      folders: await foldersForItemClass(current, path),
-      products: [],
+      folders: [],
+      products: await loadFlatCmsFilesForItemClass(current, path),
     };
   }
 
@@ -872,13 +1051,13 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
     );
     if (cmsKind) {
       const rows = await loadCmsMediaRows(folder.item_class_id, cmsKind);
-      const ic = await getItemClass(folder.item_class_id);
+      const folderIc = await getItemClass(folder.item_class_id);
       const grouped = groupCmsMediaBrowse(
         rows,
         cmsKind,
         folder.item_class_id,
         path,
-        { groupByModel: shouldGroupMediaByModel(ic?.category_id) },
+        { groupByModel: shouldGroupMediaByModel(folderIc?.category_id) },
       );
       if (grouped.folders.length > 0 || grouped.products.length > 0) {
         return grouped;
@@ -1033,20 +1212,61 @@ export async function getProduct(
   productId: string,
 ): Promise<InventoryProduct | null> {
   await ensureTables();
+  const resolvedId = inventoryIdFromFlatCmsFileProductId(productId);
   const [rows] = await getPool().query<ProductRow[]>(
     `SELECT id, folder_id, name, sku, description, file_url FROM kc_products
      WHERE is_active=1 AND id=? LIMIT 1`,
-    [productId],
+    [resolvedId],
   );
   const row = rows[0];
-  if (!row) return null;
+  if (!row) {
+    // CMS-only flat file (Inks/Media/Tools) may not exist in kc_products.
+    const kindMatch = String(productId).match(
+      /__(brochure|images|videos)$/i,
+    );
+    if (kindMatch) {
+      const kind = kindMatch[1].toLowerCase();
+      const [cmsRows] = await getPool().query<RowDataPacket[]>(
+        `SELECT inventory_id, inventory_name, image_url, brochure_url, youtube_url
+         FROM product_inventory_items
+         WHERE deleted_at IS NULL AND inventory_id=? LIMIT 1`,
+        [resolvedId],
+      );
+      const cms = cmsRows[0];
+      if (cms) {
+        const rawUrl =
+          kind === "images"
+            ? cms.image_url
+            : kind === "videos"
+              ? cms.youtube_url
+              : cms.brochure_url;
+        const fileUrl = resolveCmsMediaUrl(String(rawUrl || ""));
+        if (fileUrl) {
+          return {
+            id: productId,
+            name: String(cms.inventory_name || resolvedId),
+            sku: resolvedId,
+            description: "",
+            file_url: fileUrl,
+            folder_id: "",
+            folder_path: [ROOT_NAME],
+          };
+        }
+      }
+    }
+    return null;
+  }
   const folder = await getFolder(row.folder_id);
+  let fileUrl = normalizeFileUrl(row.file_url);
+  if (!fileUrl) {
+    fileUrl = (await cmsMediaUrlForProduct(resolvedId)) || "";
+  }
   return {
     id: row.id,
     name: row.name,
     sku: row.sku || "",
     description: row.description || "",
-    file_url: normalizeFileUrl(row.file_url),
+    file_url: fileUrl,
     folder_id: row.folder_id,
     folder_path: folder ? await folderPath(folder) : [ROOT_NAME],
   };

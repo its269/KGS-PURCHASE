@@ -168,6 +168,49 @@ export function groupCmsMediaBrowse(
 }
 
 /** Only Machine uses model folders under Brochure / Images / Videos. */
-export function shouldGroupMediaByModel(categoryId: string | null | undefined): boolean {
+export function shouldGroupMediaByModel(
+  categoryId: string | null | undefined,
+): boolean {
   return (categoryId || "").trim().toLowerCase() === "machine";
+}
+
+/** Inks / Media / Tools: files live directly under the type (item class) folder. */
+export function flatCmsFileProductId(inventoryId: string, kind: string): string {
+  return `${inventoryId}__${kind}`;
+}
+
+export function inventoryIdFromFlatCmsFileProductId(productId: string): string {
+  const m = String(productId || "").match(
+    /^(.*)__(brochure|images|videos)$/i,
+  );
+  return m ? m[1] : productId;
+}
+
+export function flatCmsFilesFromRows(
+  rowsByKind: { kind: string; rows: CmsMediaRow[] }[],
+  itemClassId: string,
+  basePath: string[],
+): ProductOut[] {
+  const products: ProductOut[] = [];
+  const seen = new Set<string>();
+  for (const { kind, rows } of rowsByKind) {
+    for (const row of rows) {
+      const url = resolveCmsMediaUrl(row.media_url);
+      if (!url) continue;
+      const id = flatCmsFileProductId(row.inventory_id, kind);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      products.push({
+        id,
+        name: row.inventory_name,
+        sku: row.inventory_id,
+        description: "",
+        file_url: url,
+        folder_id: itemClassId,
+        folder_path: basePath,
+      });
+    }
+  }
+  products.sort((a, b) => a.name.localeCompare(b.name));
+  return products;
 }
