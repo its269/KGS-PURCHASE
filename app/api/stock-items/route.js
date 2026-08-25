@@ -12,6 +12,9 @@ export async function GET(request) {
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "10", 10)));
     const search = searchParams.get("search") || "";
+    const itemClass = String(searchParams.get("itemClass") || "").trim();
+    const dimsStatusRaw = String(searchParams.get("dimsStatus") || "").trim().toLowerCase();
+    const dimsStatus = dimsStatusRaw === "set" || dimsStatusRaw === "unset" ? dimsStatusRaw : "";
     const cursor = searchParams.get("cursor") || "";
     const companyId = getActiveCompanyFromRequest(request) || "main";
 
@@ -19,8 +22,18 @@ export async function GET(request) {
         const cookie = getSessionFromRequest(request);
         if (!cookie) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-        console.log(`[Stock Items API] MySQL — company: ${companyId}, page: ${page}${cursor ? `, cursor: ${cursor}` : ""}`);
-        const result = await MySqlService.getStockItems({ page, pageSize, search, companyId, cursor });
+        console.log(
+            `[Stock Items API] MySQL — company: ${companyId}, page: ${page}${itemClass ? `, itemClass: ${itemClass}` : ""}${dimsStatus ? `, dimsStatus: ${dimsStatus}` : ""}${cursor ? `, cursor: ${cursor}` : ""}`
+        );
+        const result = await MySqlService.getStockItems({
+            page,
+            pageSize,
+            search,
+            itemClass,
+            dimsStatus,
+            companyId,
+            cursor,
+        });
         console.log(
             `[Stock Items API] mode=${result.dataMode || "warehouse"} totalCount=${result.totalCount} totalStock=${result.totalStock}`
         );

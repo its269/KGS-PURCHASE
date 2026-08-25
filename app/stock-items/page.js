@@ -36,6 +36,11 @@ const IconInfo = () => (
         <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
     </svg>
 );
+const IconChevronDown = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="6 9 12 15 18 9" />
+    </svg>
+);
 
 /* ── Main Page ──────────────────────────────────────────── */
 export default function StockItemsPage() {
@@ -46,6 +51,11 @@ export default function StockItemsPage() {
     const [page, setPage] = useState(1);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [selectedItemClass, setSelectedItemClass] = useState("");
+    const [itemClasses, setItemClasses] = useState([]);
+    const [dimsStatus, setDimsStatus] = useState(""); // '' | 'set' | 'unset'
+    const [dimsSetCount, setDimsSetCount] = useState(0);
+    const [dimsUnsetCount, setDimsUnsetCount] = useState(0);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [selectedId, setSelectedId] = useState(null);
@@ -166,7 +176,19 @@ export default function StockItemsPage() {
 
     useEffect(() => {
         Promise.resolve().then(() => setPage(1));
-    }, [debouncedSearch]);
+    }, [debouncedSearch, selectedItemClass, dimsStatus]);
+
+    const handleItemClassChange = (value) => {
+        setSelectedItemClass(value);
+        setPage(1);
+        setSelectedId(null);
+    };
+
+    const handleDimsStatusChange = (value) => {
+        setDimsStatus(value === "set" || value === "unset" ? value : "");
+        setPage(1);
+        setSelectedId(null);
+    };
 
     const fetchItems = useCallback(async () => {
         setLoading(true);
@@ -174,6 +196,8 @@ export default function StockItemsPage() {
         try {
             const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
             if (debouncedSearch) params.set("search", debouncedSearch);
+            if (selectedItemClass) params.set("itemClass", selectedItemClass);
+            if (dimsStatus) params.set("dimsStatus", dimsStatus);
 
             const res = await fetchWithAuth(`/api/stock-items?${params}`);
             if (!res.ok) {
@@ -185,13 +209,18 @@ export default function StockItemsPage() {
             setDataSource(data.source || "mysql");
             setTotalCount(data.totalCount ?? 0);
             setTotalStock(data.totalStock ?? 0);
+            setDimsSetCount(Number(data.dimsSetCount) || 0);
+            setDimsUnsetCount(Number(data.dimsUnsetCount) || 0);
+            if (Array.isArray(data.itemClasses)) {
+                setItemClasses(data.itemClasses);
+            }
         } catch (err) {
             if (err.message === "Unauthorized") return;
             setError(err.message || "Failed to load stock items. Please try again.");
         } finally {
             setLoading(false);
         }
-    }, [page, debouncedSearch]);
+    }, [page, debouncedSearch, selectedItemClass, dimsStatus]);
 
     useEffect(() => {
         fetchItems();
@@ -238,7 +267,15 @@ export default function StockItemsPage() {
                                     ? "…"
                                     : (totalCount || 0).toLocaleString()}
                             </span>
-                            <span className="si-metric-hint">Distinct inventory IDs</span>
+                            <span className="si-metric-hint">
+                                {dimsStatus === "set"
+                                    ? "With dimensions set"
+                                    : dimsStatus === "unset"
+                                    ? "Without dimensions"
+                                    : selectedItemClass
+                                    ? `In ${selectedItemClass}`
+                                    : "Distinct inventory IDs"}
+                            </span>
                         </div>
                         <div className="si-metric si-metric-accent">
                             <span className="si-metric-label">On-hand stock</span>
@@ -247,12 +284,80 @@ export default function StockItemsPage() {
                                     ? "…"
                                     : (totalStock || 0).toLocaleString()}
                             </span>
-                            <span className="si-metric-hint">Sum of all warehouse units</span>
+                            <span className="si-metric-hint">
+                                {selectedItemClass
+                                    ? `Warehouse units for ${selectedItemClass}`
+                                    : "Sum of all warehouse units"}
+                            </span>
                         </div>
+                        <button
+                            type="button"
+                            className={`si-metric si-metric-btn si-metric-dims-set${dimsStatus === "set" ? " is-active" : ""}`}
+                            onClick={() => handleDimsStatusChange(dimsStatus === "set" ? "" : "set")}
+                            aria-pressed={dimsStatus === "set"}
+                            title={dimsStatus === "set" ? "Show all items again" : "Show only items with dimensions set"}
+                        >
+                            <span className="si-metric-label">Dims set</span>
+                            <span className="si-metric-value">
+                                {loading && dimsSetCount === 0 && dimsUnsetCount === 0
+                                    ? "…"
+                                    : dimsSetCount.toLocaleString()}
+                            </span>
+                            <span className="si-metric-hint">
+                                {dimsStatus === "set" ? "Showing set only — click to show all" : "Click to show only set"}
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            className={`si-metric si-metric-btn si-metric-dims-unset${dimsStatus === "unset" ? " is-active" : ""}`}
+                            onClick={() => handleDimsStatusChange(dimsStatus === "unset" ? "" : "unset")}
+                            aria-pressed={dimsStatus === "unset"}
+                            title={dimsStatus === "unset" ? "Show all items again" : "Show only items without dimensions"}
+                        >
+                            <span className="si-metric-label">Dims not set</span>
+                            <span className="si-metric-value">
+                                {loading && dimsSetCount === 0 && dimsUnsetCount === 0
+                                    ? "…"
+                                    : dimsUnsetCount.toLocaleString()}
+                            </span>
+                            <span className="si-metric-hint">
+                                {dimsStatus === "unset" ? "Showing unset only — click to show all" : "Click to show only unset"}
+                            </span>
+                        </button>
                     </div>
                 </header>
 
                 <div className="si-toolbar" data-tour="toolbar">
+                    <div className="si-toolbar-left">
+                    <div className="si-class-wrap" data-tour="item-class-filter">
+                        <select
+                            className="si-class-select"
+                            value={selectedItemClass}
+                            onChange={(e) => handleItemClassChange(e.target.value)}
+                            aria-label="Item class filter"
+                        >
+                            <option value="">All Item Classes</option>
+                            {itemClasses.map((cls) => (
+                                <option key={cls} value={cls}>
+                                    {cls}
+                                </option>
+                            ))}
+                        </select>
+                        <IconChevronDown />
+                    </div>
+                    <div className="si-class-wrap" data-tour="dims-status-filter">
+                        <select
+                            className="si-class-select"
+                            value={dimsStatus}
+                            onChange={(e) => handleDimsStatusChange(e.target.value)}
+                            aria-label="Dimensions status filter"
+                        >
+                            <option value="">All dims status</option>
+                            <option value="set">Dims set</option>
+                            <option value="unset">Dims not set</option>
+                        </select>
+                        <IconChevronDown />
+                    </div>
                     <div className="si-search-wrap">
                         <IconSearch />
                         <input
@@ -273,6 +378,7 @@ export default function StockItemsPage() {
                                 ×
                             </button>
                         ) : null}
+                    </div>
                     </div>
 
                     <div className="si-actions">
@@ -487,9 +593,9 @@ export default function StockItemsPage() {
                                                 </td>
                                                 <td className="si-col-dim">
                                                     {item.hasDimensions ? (
-                                                        <span className="si-dim-badge">Set</span>
+                                                        <span className="si-dim-badge is-set">Set</span>
                                                     ) : (
-                                                        <span className="si-muted">—</span>
+                                                        <span className="si-dim-badge is-unset">Not set</span>
                                                     )}
                                                 </td>
                                                 <td className="si-col-action">
