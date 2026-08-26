@@ -158,8 +158,8 @@ export function groupCmsMediaBrowse(
     for (const [modelId, info] of [...byModel.entries()].sort((a, b) =>
       a[1].name.localeCompare(b[1].name),
     )) {
-      // Skip models with no files for this media kind (Brochure/Videos empty).
-      if (info.count <= 0 && !allowEmptyUrl) continue;
+      // Never show empty model folders (avoids duplicate "Uv" with No items).
+      if (info.count <= 0) continue;
       folders.push({
         id: buildCmsModelFolderId(kind, itemClassId, modelId),
         name: info.name,

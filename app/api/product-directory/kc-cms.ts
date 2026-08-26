@@ -200,14 +200,12 @@ function sqlUtf8Eq(leftExpr: string): string {
   return `${sqlNormLabel(leftExpr)} = ${sqlNormLabel("?")}`;
 }
 
-/** Brochure/Videos require a URL. Images for non-Machine also list catalog rows. */
+/** Brochure / Images / Videos only include rows that have that media URL. */
 function requireMediaUrl(
   kind: string,
-  categoryId: string | null | undefined,
+  _categoryId: string | null | undefined,
 ): boolean {
-  const k = kind.trim().toLowerCase();
-  if (k !== "images" && k !== "image") return true;
-  return (categoryId || "").trim().toLowerCase() === "machine";
+  return true;
 }
 
 async function loadCmsMediaRows(
