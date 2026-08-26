@@ -25,7 +25,7 @@ export type ProductOut = {
   folder_path: string[];
 };
 
-const DEFAULT_ORIGIN = "http://190.92.233.232";
+const DEFAULT_ORIGIN = "https://kelinconnect.com";
 
 export function mediaKindToColumn(
   kind: string,
@@ -106,9 +106,10 @@ export function groupCmsMediaBrowse(
   kind: string,
   itemClassId: string,
   basePath: string[],
-  options?: { groupByModel?: boolean },
+  options?: { groupByModel?: boolean; allowEmptyUrl?: boolean },
 ): { folders: FolderOut[]; products: ProductOut[] } {
   const groupByModel = options?.groupByModel === true;
+  const allowEmptyUrl = options?.allowEmptyUrl === true;
   const folders: FolderOut[] = [];
   const products: ProductOut[] = [];
   const byModel = new Map<
@@ -118,7 +119,7 @@ export function groupCmsMediaBrowse(
 
   for (const row of rows) {
     const url = resolveCmsMediaUrl(row.media_url);
-    if (!url) continue;
+    if (!url && !allowEmptyUrl) continue;
     const mid = row.model_id;
     const hasModel =
       groupByModel &&

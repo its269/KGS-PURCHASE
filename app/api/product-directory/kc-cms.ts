@@ -192,11 +192,22 @@ function cmsCategoryAliases(categoryName: string): string[] {
 
 /** Collapse tabs/spaces so CMS values like "Solvent\\t Inks" match folder names. */
 function sqlNormLabel(expr: string): string {
-  return `LOWER(TRIM(REGEXP_REPLACE(CONVERT(IFNULL(${expr},'') USING utf8mb4), '[[:space:]]+', ' '))) COLLATE utf8mb4_unicode_ci`;
+  // Avoid REGEXP_REPLACE (slow on large scans). Tabs + trim cover CMS quirks.
+  return `LOWER(TRIM(REPLACE(CONVERT(IFNULL(${expr},'') USING utf8mb4), CHAR(9), ' '))) COLLATE utf8mb4_unicode_ci`;
 }
 
 function sqlUtf8Eq(leftExpr: string): string {
   return `${sqlNormLabel(leftExpr)} = ${sqlNormLabel("?")}`;
+}
+
+/** Brochure/Videos require a URL. Images for non-Machine also list catalog rows. */
+function requireMediaUrl(
+  kind: string,
+  categoryId: string | null | undefined,
+): boolean {
+  const k = kind.trim().toLowerCase();
+  if (k !== "images" && k !== "image") return true;
+  return (categoryId || "").trim().toLowerCase() === "machine";
 }
 
 async function loadCmsMediaRows(
@@ -212,6 +223,9 @@ async function loadCmsMediaRows(
   const categoryAliases = cmsCategoryAliases(cat?.name || "");
   const nameAliases = cmsItemClassNameAliases(ic.name);
   const sourceCode = (ic.source_code || "").trim();
+  const mustHaveUrl = requireMediaUrl(kind, ic.category_id);
+  const urlClause = mustHaveUrl ? `AND COALESCE(p.${column}, '') <> ''` : "";
+  const orderBy = `ORDER BY (COALESCE(p.${column}, '') = '') ASC, m.name, p.inventory_name`;
 
   const modelClause =
     modelId !== undefined ? " AND p.model_id = ? " : "";
@@ -241,9 +255,9 @@ async function loadCmsMediaRows(
        LEFT JOIN inventory_models m ON m.id = p.model_id
        WHERE p.deleted_at IS NULL
          AND LOWER(TRIM(p.item_status)) = 'active'
-         AND COALESCE(p.${column}, '') <> ''
+         ${urlClause}
          ${modelClause}
-       ORDER BY m.name, p.inventory_name`,
+       ${orderBy}`,
       [itemClassId, ...modelParam],
     );
     if (rows.length > 0) return mapRows(rows);
@@ -263,11 +277,11 @@ async function loadCmsMediaRows(
          LEFT JOIN inventory_models m ON m.id = p.model_id
          WHERE p.deleted_at IS NULL
            AND LOWER(TRIM(p.item_status)) = 'active'
-           AND COALESCE(p.${column}, '') <> ''
+           ${urlClause}
            AND ${sqlNormLabel("p.kc_item_class")} IN (${nameIn})
            AND ${sqlNormLabel("p.kc_category")} IN (${catIn})
            ${modelClause}
-         ORDER BY m.name, p.inventory_name`,
+         ${orderBy}`,
         [...nameAliases, ...categoryAliases, ...modelParam],
       );
       if (byKc.length > 0) return mapRows(byKc);
@@ -288,13 +302,13 @@ async function loadCmsMediaRows(
        LEFT JOIN inventory_models m ON m.id = p.model_id
        WHERE p.deleted_at IS NULL
          AND LOWER(TRIM(p.item_status)) = 'active'
-         AND COALESCE(p.${column}, '') <> ''
+         ${urlClause}
          AND (
            (TRIM(IFNULL(p.item_class,'')) <> '' AND ${sqlUtf8Eq("IFNULL(p.item_class,'')")})
            OR (TRIM(IFNULL(p.kc_item_class,'')) <> '' AND ${sqlUtf8Eq("IFNULL(p.kc_item_class,'')")})
          )
          ${modelClause}
-       ORDER BY m.name, p.inventory_name`,
+       ${orderBy}`,
       [sourceCode || ic.name, ic.name, ...modelParam],
     );
     return mapRows(fallback);
@@ -413,7 +427,7 @@ async function listFolders(
 }
 
 const CMS_PUBLIC_ORIGIN =
-  process.env.CMS_PUBLIC_ORIGIN?.trim() || "http://190.92.233.232";
+  process.env.CMS_PUBLIC_ORIGIN?.trim() || "https://kelinconnect.com";
 
 function normalizeFileUrl(url: string | null | undefined): string {
   const value = String(url ?? "").trim();
@@ -744,6 +758,7 @@ async function virtualFlowchartBrowse(
   const ic = await getItemClass(itemClassId);
   const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path, {
     groupByModel: shouldGroupMediaByModel(ic?.category_id),
+    allowEmptyUrl: !requireMediaUrl(kind, ic?.category_id),
   });
   if (grouped.folders.length > 0 || grouped.products.length > 0) {
     return grouped;
@@ -919,6 +934,7 @@ async function foldersForItemClass(
       const rows = await loadCmsMediaRows(itemClassId, kind);
       const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path, {
         groupByModel,
+        allowEmptyUrl: !requireMediaUrl(kind, ic?.category_id),
       });
       return grouped.folders.length + grouped.products.length;
     } catch {
@@ -1035,7 +1051,10 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
         cmsKind,
         folder.item_class_id,
         path,
-        { groupByModel: shouldGroupMediaByModel(folderIc?.category_id) },
+        {
+          groupByModel: shouldGroupMediaByModel(folderIc?.category_id),
+          allowEmptyUrl: !requireMediaUrl(cmsKind, folderIc?.category_id),
+        },
       );
       if (grouped.folders.length > 0 || grouped.products.length > 0) {
         return grouped;
@@ -1274,6 +1293,7 @@ export async function itemClassMedia(
   const rows = await loadCmsMediaRows(itemClassId, kind);
   return groupCmsMediaBrowse(rows, kind, itemClassId, path, {
     groupByModel: shouldGroupMediaByModel(icRow.category_id),
+    allowEmptyUrl: !requireMediaUrl(kind, icRow.category_id),
   });
 }
 
