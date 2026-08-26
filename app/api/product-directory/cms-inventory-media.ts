@@ -134,10 +134,14 @@ export function groupCmsMediaBrowse(
       const prev = byModel.get(key);
       byModel.set(key, {
         name,
-        count: (prev?.count ?? 0) + 1,
+        // Count only rows that have a file for this media kind.
+        count: (prev?.count ?? 0) + (url ? 1 : 0),
       });
       continue;
     }
+
+    // When grouping by model, keep only uncategorized files at this level.
+    if (groupByModel) continue;
 
     products.push({
       id: row.inventory_id,
@@ -154,6 +158,8 @@ export function groupCmsMediaBrowse(
     for (const [modelId, info] of [...byModel.entries()].sort((a, b) =>
       a[1].name.localeCompare(b[1].name),
     )) {
+      // Skip models with no files for this media kind (Brochure/Videos empty).
+      if (info.count <= 0 && !allowEmptyUrl) continue;
       folders.push({
         id: buildCmsModelFolderId(kind, itemClassId, modelId),
         name: info.name,

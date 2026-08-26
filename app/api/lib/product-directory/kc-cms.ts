@@ -1004,15 +1004,18 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
       cmsModel.kind,
       cmsModel.modelId,
     );
-    const products = rows.map((row) => ({
-      id: row.inventory_id,
-      name: row.inventory_name,
-      sku: row.inventory_id,
-      description: "",
-      file_url: resolveCmsMediaUrl(row.media_url),
-      folder_id: current,
-      folder_path: [...path, row.model_name || "Model"],
-    }));
+    // Only files for this media kind + model (skip empty URLs).
+    const products = rows
+      .map((row) => ({
+        id: row.inventory_id,
+        name: row.inventory_name,
+        sku: row.inventory_id,
+        description: "",
+        file_url: resolveCmsMediaUrl(row.media_url),
+        folder_id: current,
+        folder_path: [...path, row.model_name || "Model"],
+      }))
+      .filter((p) => p.file_url.trim() !== "");
     return { folders: [], products };
   }
 
