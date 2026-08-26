@@ -102,11 +102,12 @@ export async function ensureTables(): Promise<void> {
       KEY idx_actor (actor_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
+  // Display: Auxiliary, Inks, Machine, Media (id `tools` = Auxiliary).
   for (const [cid, name, sort] of [
-    ["machine", "Machine", 1],
+    ["tools", "Auxiliary", 1],
     ["inks", "Inks", 2],
-    ["media", "Media", 3],
-    ["tools", "Tools", 4],
+    ["machine", "Machine", 3],
+    ["media", "Media", 4],
   ] as const) {
     await db.query(
       `INSERT INTO kc_categories (id, name, sort_order, is_active) VALUES (?,?,?,1)
