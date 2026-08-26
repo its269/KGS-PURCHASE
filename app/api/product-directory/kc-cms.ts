@@ -1220,41 +1220,38 @@ export async function getProduct(
   );
   const row = rows[0];
   if (!row) {
-    // CMS-only flat file (Inks/Media/Tools) may not exist in kc_products.
+    // CMS Product Database rows may exist only in product_inventory_items.
     const kindMatch = String(productId).match(
       /__(brochure|images|videos)$/i,
     );
-    if (kindMatch) {
-      const kind = kindMatch[1].toLowerCase();
-      const [cmsRows] = await getPool().query<RowDataPacket[]>(
-        `SELECT inventory_id, inventory_name, image_url, brochure_url, youtube_url
-         FROM product_inventory_items
-         WHERE deleted_at IS NULL AND inventory_id=? LIMIT 1`,
-        [resolvedId],
-      );
-      const cms = cmsRows[0];
-      if (cms) {
-        const rawUrl =
-          kind === "images"
-            ? cms.image_url
-            : kind === "videos"
-              ? cms.youtube_url
-              : cms.brochure_url;
-        const fileUrl = resolveCmsMediaUrl(String(rawUrl || ""));
-        if (fileUrl) {
-          return {
-            id: productId,
-            name: String(cms.inventory_name || resolvedId),
-            sku: resolvedId,
-            description: "",
-            file_url: fileUrl,
-            folder_id: "",
-            folder_path: [ROOT_NAME],
-          };
-        }
-      }
-    }
-    return null;
+    const kind = kindMatch ? kindMatch[1].toLowerCase() : "images";
+    const [cmsRows] = await getPool().query<RowDataPacket[]>(
+      `SELECT inventory_id, inventory_name, image_url, brochure_url, youtube_url,
+              kc_category, kc_item_class
+       FROM product_inventory_items
+       WHERE deleted_at IS NULL AND inventory_id=? LIMIT 1`,
+      [resolvedId],
+    );
+    const cms = cmsRows[0];
+    if (!cms) return null;
+    const rawUrl =
+      kind === "videos"
+        ? cms.youtube_url
+        : kind === "brochure"
+          ? cms.brochure_url
+          : cms.image_url || cms.brochure_url || cms.youtube_url;
+    const fileUrl = resolveCmsMediaUrl(String(rawUrl || ""));
+    const cat = String(cms.kc_category || "").trim();
+    const ic = String(cms.kc_item_class || "").trim();
+    return {
+      id: productId,
+      name: String(cms.inventory_name || resolvedId),
+      sku: resolvedId,
+      description: [cat, ic].filter(Boolean).join(" · "),
+      file_url: fileUrl,
+      folder_id: "",
+      folder_path: [ROOT_NAME, cat, ic].filter(Boolean),
+    };
   }
   const folder = await getFolder(row.folder_id);
   let fileUrl = normalizeFileUrl(row.file_url);
