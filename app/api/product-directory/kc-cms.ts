@@ -190,9 +190,13 @@ function cmsCategoryAliases(categoryName: string): string[] {
   return name ? [name] : [];
 }
 
+/** Collapse tabs/spaces so CMS values like "Solvent\\t Inks" match folder names. */
+function sqlNormLabel(expr: string): string {
+  return `LOWER(TRIM(REGEXP_REPLACE(CONVERT(IFNULL(${expr},'') USING utf8mb4), '[[:space:]]+', ' '))) COLLATE utf8mb4_unicode_ci`;
+}
+
 function sqlUtf8Eq(leftExpr: string): string {
-  return `LOWER(TRIM(CONVERT(${leftExpr} USING utf8mb4))) COLLATE utf8mb4_unicode_ci
-    = LOWER(TRIM(CONVERT(? USING utf8mb4))) COLLATE utf8mb4_unicode_ci`;
+  return `${sqlNormLabel(leftExpr)} = ${sqlNormLabel("?")}`;
 }
 
 async function loadCmsMediaRows(
@@ -250,18 +254,8 @@ async function loadCmsMediaRows(
   // 2) Primary: KC Category + KC Item Class (CMS grid), with name aliases.
   if (nameAliases.length > 0 && categoryAliases.length > 0) {
     try {
-      const nameIn = nameAliases
-        .map(
-          () =>
-            "LOWER(TRIM(CONVERT(? USING utf8mb4))) COLLATE utf8mb4_unicode_ci",
-        )
-        .join(", ");
-      const catIn = categoryAliases
-        .map(
-          () =>
-            "LOWER(TRIM(CONVERT(? USING utf8mb4))) COLLATE utf8mb4_unicode_ci",
-        )
-        .join(", ");
+      const nameIn = nameAliases.map(() => sqlNormLabel("?")).join(", ");
+      const catIn = categoryAliases.map(() => sqlNormLabel("?")).join(", ");
       const [byKc] = await getPool().query<RowDataPacket[]>(
         `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
                 p.${column} AS media_url
@@ -270,10 +264,8 @@ async function loadCmsMediaRows(
          WHERE p.deleted_at IS NULL
            AND LOWER(TRIM(p.item_status)) = 'active'
            AND COALESCE(p.${column}, '') <> ''
-           AND LOWER(TRIM(CONVERT(IFNULL(p.kc_item_class,'') USING utf8mb4))) COLLATE utf8mb4_unicode_ci
-               IN (${nameIn})
-           AND LOWER(TRIM(CONVERT(IFNULL(p.kc_category,'') USING utf8mb4))) COLLATE utf8mb4_unicode_ci
-               IN (${catIn})
+           AND ${sqlNormLabel("p.kc_item_class")} IN (${nameIn})
+           AND ${sqlNormLabel("p.kc_category")} IN (${catIn})
            ${modelClause}
          ORDER BY m.name, p.inventory_name`,
         [...nameAliases, ...categoryAliases, ...modelParam],
@@ -366,16 +358,10 @@ async function listItemClasses(
     [categoryId],
   );
   const out: InventoryFolder[] = [];
-  const groupByModel = shouldGroupMediaByModel(categoryId);
   for (const row of rows) {
     const path = [ROOT_NAME, categoryName, row.name];
-    let childCount = 0;
-    if (groupByModel) {
-      const folders = await foldersForItemClass(row.id, path, row.category_id);
-      childCount = folders.length;
-    } else {
-      childCount = (await loadFlatCmsFilesForItemClass(row.id, path)).length;
-    }
+    const folders = await foldersForItemClass(row.id, path, row.category_id);
+    const childCount = folders.length;
     out.push({
       id: row.id,
       name: row.name,
@@ -901,11 +887,8 @@ async function foldersForItemClass(
   const ic = categoryId
     ? { category_id: categoryId }
     : await getItemClass(itemClassId);
+  // All categories: Brochure / Images / Videos (same path as Machine).
   const groupByModel = shouldGroupMediaByModel(ic?.category_id);
-  if (!groupByModel) {
-    // Inks / Media / Tools: no Brochure/Images/Videos — files sit on the type folder.
-    return [];
-  }
 
   const ensure = async (
     name: string,
@@ -935,7 +918,7 @@ async function foldersForItemClass(
     try {
       const rows = await loadCmsMediaRows(itemClassId, kind);
       const grouped = groupCmsMediaBrowse(rows, kind, itemClassId, path, {
-        groupByModel: true,
+        groupByModel,
       });
       return grouped.folders.length + grouped.products.length;
     } catch {
@@ -1029,16 +1012,10 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
   if (ic) {
     const parentCat = await getCategory(ic.category_id);
     const path = [ROOT_NAME, parentCat?.name || "", ic.name].filter(Boolean);
-    if (shouldGroupMediaByModel(ic.category_id)) {
-      return {
-        folders: await foldersForItemClass(current, path, ic.category_id),
-        products: [],
-      };
-    }
-    // Inks / Media / Tools: type folder → files (Flowchart-path.svg)
+    // Auxiliary / Inks / Machine / Media: same path → Brochure | Images | Videos
     return {
-      folders: [],
-      products: await loadFlatCmsFilesForItemClass(current, path),
+      folders: await foldersForItemClass(current, path, ic.category_id),
+      products: [],
     };
   }
 

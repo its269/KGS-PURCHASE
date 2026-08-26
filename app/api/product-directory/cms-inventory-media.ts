@@ -167,11 +167,21 @@ export function groupCmsMediaBrowse(
   return { folders, products };
 }
 
-/** Only Machine uses model folders under Brochure / Images / Videos. */
+/**
+ * All KC categories use Machine-style path:
+ * Category → Item Class → Brochure | Images | Videos → model folder → file.
+ */
 export function shouldGroupMediaByModel(
   categoryId: string | null | undefined,
 ): boolean {
-  return (categoryId || "").trim().toLowerCase() === "machine";
+  const id = (categoryId || "").trim().toLowerCase();
+  return (
+    id === "machine" ||
+    id === "inks" ||
+    id === "media" ||
+    id === "tools" ||
+    id === "auxiliary"
+  );
 }
 
 /** Inks / Media / Tools: files live directly under the type (item class) folder. */
