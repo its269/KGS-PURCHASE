@@ -1014,8 +1014,9 @@ export default function ReplenishmentPage() {
                                             Sells / day = Net units sold in the last 90 days{isMain ? " (network-wide)" : ` at ${selectedBranch}`} ÷ 90
                                         </p>
                                         <p>
-                                            Sales velocity is loaded from <strong>Acumatica</strong> when you are signed in (Sales Invoices + memos, last 90 days).
-                                            If Acumatica is unavailable, synced database sales are used instead. Stock on hand comes from synced inventory.
+                                            Uses branch invoice sales first (credit memos subtracted). Network-wide
+                                            invoice totals are only used when that branch has no sales for a product.
+                                            Stock on hand comes from synced inventory.
                                         </p>
                                         <p className="repl-col-info-note">
                                             <strong>Days left</strong> uses this rate: Branch stock ÷ Sells / day (e.g. 462 ÷ 70.9 ≈ 6 days).

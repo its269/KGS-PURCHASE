@@ -16,7 +16,7 @@ import {
     getStockWarehouseIdsForBranch,
     EXCLUDED_BRANCH_KEYWORDS,
 } from "@/lib/companies.js";
-import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold } from "@/lib/sales-velocity.js";
+import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold, mergeBranchFirstSalesMaps } from "@/lib/sales-velocity.js";
 import { getCached, invalidateCache } from "@/lib/server-cache";
 import { FORECAST_ALL_BRANCH, forecastBranchKey, forecastSoldQty, listMonthsInRange, monthInvoiceCoverageComplete, normalizeInvKey } from "@/lib/forecast-generator.js";
 import {
@@ -2412,7 +2412,7 @@ export const MySqlService = {
                     totalAvailable: onHand,
                     totalQtySold: sales.qty_sold,
                     totalSales: sales.total_sales,
-                    salesScope: isMainWarehouse ? "network" : "branch",
+                    salesScope: sales.salesScope || (isMainWarehouse ? "network" : "branch"),
                     stockSource: onHandMap.has(key) ? "forecast_item_stock" : "inventory_items",
                 });
             }
@@ -2456,7 +2456,7 @@ export const MySqlService = {
                         totalAvailable: onHand,
                         totalQtySold: sales.qty_sold,
                         totalSales: sales.total_sales,
-                        salesScope: isMainWarehouse ? "network" : "branch",
+                        salesScope: sales.salesScope || (isMainWarehouse ? "network" : "branch"),
                         stockSource: onHandMap.has(key) ? "forecast_item_stock" : "catalog",
                     });
                 }
@@ -4540,65 +4540,76 @@ export const MySqlService = {
     },
 
     async getReplenishmentSalesSummary({ branch = "", lookbackDays = SALES_LOOKBACK_DAYS } = {}) {
-        const filterPositiveSalesMap = (map) => {
-            const filtered = new Map();
-            for (const [key, val] of map) {
-                const qty = Number(val?.qty_sold) || 0;
-                if (qty > 0) {
-                    filtered.set(key, {
-                        qty_sold: qty,
-                        total_sales: Math.max(0, Number(val?.total_sales) || 0),
-                    });
-                }
-            }
-            return filtered;
-        };
-
-        const netMap = filterPositiveSalesMap(await this.getPeriodicSalesSummary({ branch, lookbackDays }));
-        if (netMap.size > 0) return { map: netMap, mode: "net" };
+        if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
+            return { map: new Map(), mode: "net" };
+        }
 
         try {
-            if (branch && branch !== "All Branches" && isExcludedBranchAlias(branch)) {
-                return { map: new Map(), mode: "gross" };
+            const netMap = await this.getPeriodicSalesSummary({ branch, lookbackDays });
+            const grossMap = await this._queryBranchGrossSalesSummary(branch, lookbackDays);
+            const map = new Map();
+            const keys = new Set([...netMap.keys(), ...grossMap.keys()]);
+            let netItems = 0;
+            let grossItems = 0;
+
+            for (const key of keys) {
+                const netQty = netQtySold(netMap.get(key)?.qty_sold);
+                const grossQty = netQtySold(grossMap.get(key)?.qty_sold);
+                const qty = netQty > 0 ? netQty : grossQty;
+                if (qty <= 0) continue;
+
+                const source = netQty > 0 ? netMap.get(key) : grossMap.get(key);
+                map.set(key, {
+                    qty_sold: qty,
+                    total_sales: Math.max(0, Number(source?.total_sales) || 0),
+                    salesScope: branch ? "branch" : "network",
+                });
+                if (netQty > 0) netItems++;
+                else grossItems++;
             }
 
-            const whereClauses = [salesLookbackSql(lookbackDays)];
-            const params = [];
-            const salesEx = sqlExcludeSalesBranches("branch_name");
-            whereClauses.push(salesEx.clause);
-            params.push(...salesEx.params);
-
-            if (branch && branch !== "All Branches") {
-                const branchNames = await this.resolveSalesBranchNames(branch);
-                whereClauses.push(`branch_name IN (${branchNames.map(() => "?").join(", ")})`);
-                params.push(...branchNames);
-            }
-
-            const [rows] = await purchasePool.query(
-                `SELECT UPPER(TRIM(inventory_id)) AS inventory_id,
-                        SUM(${SQL_GROSS_QTY}) AS qty_sold,
-                        SUM(CASE WHEN order_type IN ('Invoice','Debit Memo') THEN ABS(total_amount) ELSE 0 END) AS total_sales
-                 FROM product_periodic_sales
-                 WHERE ${whereClauses.join(" AND ")}
-                 GROUP BY UPPER(TRIM(inventory_id))
-                 HAVING SUM(${SQL_GROSS_QTY}) > 0`,
-                params
-            );
-
-            const grossMap = new Map();
-            for (const r of rows) {
-                if (r.inventory_id) {
-                    grossMap.set(r.inventory_id, {
-                        qty_sold: Number(r.qty_sold) || 0,
-                        total_sales: Math.max(0, Number(r.total_sales) || 0),
-                    });
-                }
-            }
-            return { map: grossMap, mode: "gross" };
+            const mode = netItems >= grossItems ? "net" : "gross";
+            return { map, mode };
         } catch (err) {
             console.error("[MySQL getReplenishmentSalesSummary Error]", err);
             return { map: new Map(), mode: "net" };
         }
+    },
+
+    async _queryBranchGrossSalesSummary(branch = "", lookbackDays = SALES_LOOKBACK_DAYS) {
+        const whereClauses = [salesLookbackSql(lookbackDays)];
+        const params = [];
+        const salesEx = sqlExcludeSalesBranches("branch_name");
+        whereClauses.push(salesEx.clause);
+        params.push(...salesEx.params);
+
+        if (branch && branch !== "All Branches") {
+            const branchNames = await this.resolveSalesBranchNames(branch);
+            whereClauses.push(`branch_name IN (${branchNames.map(() => "?").join(", ")})`);
+            params.push(...branchNames);
+        }
+
+        const [rows] = await purchasePool.query(
+            `SELECT UPPER(TRIM(inventory_id)) AS inventory_id,
+                    SUM(${SQL_GROSS_QTY}) AS qty_sold,
+                    SUM(CASE WHEN order_type IN ('Invoice','Debit Memo') THEN ABS(total_amount) ELSE 0 END) AS total_sales
+             FROM product_periodic_sales
+             WHERE ${whereClauses.join(" AND ")}
+             GROUP BY UPPER(TRIM(inventory_id))
+             HAVING SUM(${SQL_GROSS_QTY}) > 0`,
+            params
+        );
+
+        const map = new Map();
+        for (const r of rows) {
+            if (r.inventory_id) {
+                map.set(r.inventory_id, {
+                    qty_sold: Number(r.qty_sold) || 0,
+                    total_sales: Math.max(0, Number(r.total_sales) || 0),
+                });
+            }
+        }
+        return map;
     },
 
     /** Extended lookback gross sales when 90-day window has no invoice rows for a branch. */
@@ -4612,7 +4623,7 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `replSalesMap:${companyKey}:${branchKey}:${watermark}`;
+        const cacheKey = `replSalesMap:v2:${companyKey}:${branchKey}:${watermark}`;
         return getCached(cacheKey, 300_000, () =>
             this._getAccurateReplenishmentSalesMapUncached({ branch, companyId })
         );
@@ -4623,34 +4634,22 @@ export const MySqlService = {
         const effectiveCompanyId = isMain ? companyId : resolveCompanyIdForBranch(companyId, branch);
         let lookbackDays = SALES_LOOKBACK_DAYS;
 
-        const mergeSalesMaps = (a, b) => {
-            const merged = new Map();
-            for (const [key, val] of a) {
-                const qty = Number(val?.qty_sold) || 0;
-                if (qty > 0) {
-                    merged.set(key, {
-                        qty_sold: qty,
-                        total_sales: Math.max(0, Number(val?.total_sales) || 0),
-                    });
-                }
-            }
-            for (const [key, val] of b) {
-                const existing = merged.get(key);
-                const qty = Math.max(existing?.qty_sold ?? 0, Number(val?.qty_sold) || 0);
-                if (qty > 0) {
-                    merged.set(key, {
-                        qty_sold: qty,
-                        total_sales: Math.max(existing?.total_sales ?? 0, Number(val?.total_sales) || 0),
-                    });
-                }
-            }
-            return merged;
-        };
-
         const countPositive = (map) => {
             let n = 0;
             for (const v of map.values()) if ((v.qty_sold ?? 0) > 0) n++;
             return n;
+        };
+
+        const finalizeBranchMap = (branchMap, catalogMap) => {
+            const merged = mergeBranchFirstSalesMaps(branchMap, catalogMap);
+            let catalogItems = 0;
+            for (const val of merged.values()) {
+                if (val.salesScope === "catalog-network") catalogItems++;
+            }
+            const salesScope = catalogItems > 0 && catalogItems >= countPositive(merged)
+                ? "catalog-network"
+                : "branch";
+            return { map: merged, salesScope };
         };
 
         if (isMain) {
@@ -4658,7 +4657,6 @@ export const MySqlService = {
             let map = result.map;
             let count = countPositive(map);
 
-            // Only widen lookback when 90-day coverage is sparse
             if (count < 20) {
                 for (const days of [180, 365]) {
                     const extended = await this.getRetailNetworkSalesSummary({ companyId, lookbackDays: days });
@@ -4667,6 +4665,7 @@ export const MySqlService = {
                         map = extended.map;
                         lookbackDays = days;
                         count = extCount;
+                        result = extended;
                     }
                     if (count >= 20) break;
                 }
@@ -4676,31 +4675,36 @@ export const MySqlService = {
                 map,
                 salesScope: "network",
                 lookbackDays,
-                salesMode: result.mode || "gross",
+                salesMode: result.mode || "net",
             };
         }
 
         let strict = await this.getReplenishmentSalesSummary({ branch, lookbackDays });
-        let catalog = await this.getBranchCatalogNetworkSalesSummary({ branch, companyId: effectiveCompanyId, lookbackDays });
-        let map = mergeSalesMaps(strict.map, catalog.map);
+        let catalog = await this.getBranchCatalogNetworkSalesSummary({
+            branch,
+            companyId: effectiveCompanyId,
+            lookbackDays,
+        });
+        let { map, salesScope } = finalizeBranchMap(strict.map, catalog.map);
         let count = countPositive(map);
-        let salesScope = countPositive(catalog.map) >= countPositive(strict.map) ? "catalog-network" : "branch";
-        let salesMode = countPositive(catalog.map) >= countPositive(strict.map) ? "gross" : strict.mode;
+        let salesMode = strict.mode;
 
         if (count < 20) {
             for (const days of [180, 365]) {
                 const extStrict = await this.getReplenishmentSalesSummary({ branch, lookbackDays: days });
-                const extCatalog = await this.getBranchCatalogNetworkSalesSummary({ branch, companyId: effectiveCompanyId, lookbackDays: days });
-                const extMap = mergeSalesMaps(extStrict.map, extCatalog.map);
-                const extCount = countPositive(extMap);
+                const extCatalog = await this.getBranchCatalogNetworkSalesSummary({
+                    branch,
+                    companyId: effectiveCompanyId,
+                    lookbackDays: days,
+                });
+                const finalized = finalizeBranchMap(extStrict.map, extCatalog.map);
+                const extCount = countPositive(finalized.map);
                 if (extCount > count) {
-                    map = extMap;
+                    map = finalized.map;
                     lookbackDays = days;
                     count = extCount;
-                    salesScope = countPositive(extCatalog.map) >= countPositive(extStrict.map)
-                        ? "catalog-network" : "branch";
-                    salesMode = countPositive(extCatalog.map) >= countPositive(extStrict.map)
-                        ? "gross" : extStrict.mode;
+                    salesScope = finalized.salesScope;
+                    salesMode = extStrict.mode;
                 }
                 if (count >= 20) break;
             }
@@ -4709,13 +4713,10 @@ export const MySqlService = {
         return { map, salesScope, lookbackDays, salesMode };
     },
 
-    /** Network-wide gross sales for retail invoice branches only (MAIN warehouse demand). */
+    /** Network-wide sales for retail invoice branches (MAIN warehouse demand). Net first, gross fallback. */
     async getRetailNetworkSalesSummary({ companyId = "main", lookbackDays = SALES_LOOKBACK_DAYS } = {}) {
         try {
-            const whereClauses = [
-                salesLookbackSql(lookbackDays),
-                `order_type IN ('Invoice', 'Debit Memo')`,
-            ];
+            const whereClauses = [salesLookbackSql(lookbackDays)];
             const params = [];
 
             const salesEx = sqlExcludeSalesBranches("branch_name");
@@ -4728,12 +4729,40 @@ export const MySqlService = {
                 params.push(...ecomEx.params);
             }
 
+            const wherePart = whereClauses.join(" AND ");
+
+            const [netRows] = await purchasePool.query(
+                `SELECT UPPER(TRIM(inventory_id)) AS inventory_id,
+                        SUM(${SQL_NET_QTY}) AS qty_sold,
+                        SUM(${SQL_NET_AMOUNT}) AS total_sales
+                 FROM product_periodic_sales
+                 WHERE ${wherePart}
+                 GROUP BY UPPER(TRIM(inventory_id))`,
+                params
+            );
+
+            const netMap = new Map();
+            for (const r of netRows) {
+                const qty = netQtySold(r.qty_sold);
+                if (qty > 0 && r.inventory_id) {
+                    netMap.set(r.inventory_id, {
+                        qty_sold: qty,
+                        total_sales: Math.max(0, Number(r.total_sales) || 0),
+                        salesScope: "network",
+                    });
+                }
+            }
+            if (netMap.size > 0) {
+                return { map: netMap, mode: "net", lookbackDays };
+            }
+
             const [rows] = await purchasePool.query(
                 `SELECT UPPER(TRIM(inventory_id)) AS inventory_id,
                         SUM(${SQL_GROSS_QTY}) AS qty_sold,
                         SUM(CASE WHEN order_type IN ('Invoice','Debit Memo') THEN ABS(total_amount) ELSE 0 END) AS total_sales
                  FROM product_periodic_sales
-                 WHERE ${whereClauses.join(" AND ")}
+                 WHERE ${wherePart}
+                   AND order_type IN ('Invoice', 'Debit Memo')
                  GROUP BY UPPER(TRIM(inventory_id))
                  HAVING SUM(${SQL_GROSS_QTY}) > 0`,
                 params
@@ -4745,13 +4774,14 @@ export const MySqlService = {
                     map.set(r.inventory_id, {
                         qty_sold: Number(r.qty_sold) || 0,
                         total_sales: Math.max(0, Number(r.total_sales) || 0),
+                        salesScope: "network",
                     });
                 }
             }
             return { map, mode: "gross", lookbackDays };
         } catch (err) {
             console.error("[MySQL getRetailNetworkSalesSummary Error]", err);
-            return { map: new Map(), mode: "gross", lookbackDays };
+            return { map: new Map(), mode: "net", lookbackDays };
         }
     },
 
@@ -4887,6 +4917,7 @@ export const MySqlService = {
             lookbackDays: rec.lookbackDays,
             qtySold90: rec.qtySold90,
             salesScope: rec.salesScope || rec.aiInsights?.salesScope,
+            salesLogicVersion: rec.salesLogicVersion,
         };
         const ads = Number(ai.salesVelocity) || 0;
         const isMain = !!rec.isMainWarehouseView;
@@ -4980,7 +5011,8 @@ export const MySqlService = {
                 SUM(CASE WHEN priority_level = 'High' THEN 1 ELSE 0 END) AS urgentCount,
                 SUM(CASE WHEN priority_level = 'Medium' THEN 1 ELSE 0 END) AS soonCount,
                 SUM(COALESCE(suggested_qty, 0)) AS totalSuggested,
-                MAX(sales_scope) AS salesScope
+                MAX(sales_scope) AS salesScope,
+                MAX(CAST(JSON_UNQUOTE(JSON_EXTRACT(ai_insights_json, '$.salesLogicVersion')) AS UNSIGNED)) AS salesLogicVersion
              FROM replenishment_cache
              WHERE company_id = ? AND branch_id = ?`,
             [companyId, branchId]
@@ -4992,6 +5024,7 @@ export const MySqlService = {
             soonCount: Number(row?.soonCount) || 0,
             totalSuggested: Number(row?.totalSuggested) || 0,
             salesScope: row?.salesScope || null,
+            salesLogicVersion: Number(row?.salesLogicVersion) || 1,
         };
     },
 
@@ -5067,6 +5100,7 @@ export const MySqlService = {
                         soon: stats.soonCount,
                         totalSuggested: stats.totalSuggested,
                     },
+                    salesLogicVersion: stats.salesLogicVersion,
                 },
             };
         } catch (err) {

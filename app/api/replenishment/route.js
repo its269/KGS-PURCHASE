@@ -12,6 +12,7 @@ import {
     rebuildAllReplenishmentCache,
     applyLiveComingPo,
     TARGET_DAYS_OF_COVER,
+    REPLENISHMENT_SALES_LOGIC_VERSION,
 } from "@/lib/replenishment-engine";
 import { buildBranchBrief } from "@/lib/replenishment-insights";
 import { getCached, invalidateCache } from "@/lib/server-cache";
@@ -147,7 +148,10 @@ export async function GET(request) {
         if (!forceRefresh) {
             const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize });
 
-            if (cachedPage?.recommendations) {
+            if (
+                cachedPage?.recommendations
+                && cachedPage.meta?.salesLogicVersion === REPLENISHMENT_SALES_LOGIC_VERSION
+            ) {
                 // Watermark check non-blocking for stale rebuild
                 MySqlService.getReplenishmentDataWatermark()
                     .then((wm) => {
