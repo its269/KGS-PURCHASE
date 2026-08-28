@@ -143,16 +143,17 @@ export async function GET(request) {
     }
 
     try {
-        // Fast path: serve from MySQL replenishment_cache (includes multi-warehouse
-        // branches — stock was aggregated at cache write time via getStockWarehouseIdsForBranch).
-        if (!forceRefresh) {
-            const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize });
+        // Prefer cache for all normal loads. Full recompute is background-only unless
+        // there is no cache at all (cold start) — prevents MySQL pool exhaustion.
+        const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize });
 
-            if (
-                cachedPage?.recommendations
-                && cachedPage.meta?.salesLogicVersion === REPLENISHMENT_SALES_LOGIC_VERSION
-            ) {
-                // Watermark check non-blocking for stale rebuild
+        if (cachedPage?.recommendations) {
+            const cacheVersion = Number(cachedPage.meta?.salesLogicVersion) || 0;
+            const versionOk = cacheVersion === REPLENISHMENT_SALES_LOGIC_VERSION;
+
+            if (forceRefresh || !versionOk) {
+                scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId);
+            } else {
                 MySqlService.getReplenishmentDataWatermark()
                     .then((wm) => {
                         if (!isCacheFresh(cachedPage.meta?.generatedAt, wm)) {
@@ -160,47 +161,51 @@ export async function GET(request) {
                         }
                     })
                     .catch(() => {});
-
-                const recommendations = cachedPage.recommendations;
-                const stats = {
-                    urgent: cachedPage.meta?.stats?.urgent
-                        ?? recommendations.filter((r) => r.priorityLevel === "High").length,
-                    soon: cachedPage.meta?.stats?.soon
-                        ?? recommendations.filter((r) => r.priorityLevel === "Medium").length,
-                    totalSuggested: cachedPage.meta?.stats?.totalSuggested
-                        ?? recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0),
-                    itemCount: cachedPage.meta?.itemCount ?? recommendations.length,
-                };
-
-                // For full loads, recompute suggested totals after live Coming PO overlay
-                if (pageSize === 0) {
-                    stats.urgent = recommendations.filter((r) => r.priorityLevel === "High").length;
-                    stats.soon = recommendations.filter((r) => r.priorityLevel === "Medium").length;
-                    stats.totalSuggested = recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0);
-                }
-
-                return NextResponse.json({
-                    recommendations,
-                    brief: briefFromStats(
-                        { ...stats, itemCount: cachedPage.meta?.itemCount ?? stats.itemCount },
-                        branch
-                    ),
-                    meta: {
-                        ...cachedPage.meta,
-                        targetDaysOfCover: TARGET_DAYS_OF_COVER,
-                        stockSource: "mysql",
-                        salesSource: "mysql",
-                        isMainWarehouseView: String(branch).trim().toUpperCase() === "MAIN",
-                        servedFrom: "cache",
-                        comingPoScope: String(branch).trim().toUpperCase() || "MAIN",
-                        stockWarehouses: getStockWarehouseIdsForBranch(branch),
-                        stockMetric: "qty_on_hand",
-                    },
-                });
             }
+
+            const recommendations = cachedPage.recommendations;
+            const stats = {
+                urgent: cachedPage.meta?.stats?.urgent
+                    ?? recommendations.filter((r) => r.priorityLevel === "High").length,
+                soon: cachedPage.meta?.stats?.soon
+                    ?? recommendations.filter((r) => r.priorityLevel === "Medium").length,
+                totalSuggested: cachedPage.meta?.stats?.totalSuggested
+                    ?? recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0),
+                itemCount: cachedPage.meta?.itemCount ?? recommendations.length,
+            };
+
+            if (pageSize === 0) {
+                stats.urgent = recommendations.filter((r) => r.priorityLevel === "High").length;
+                stats.soon = recommendations.filter((r) => r.priorityLevel === "Medium").length;
+                stats.totalSuggested = recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0);
+            }
+
+            return NextResponse.json({
+                recommendations,
+                brief: briefFromStats(
+                    { ...stats, itemCount: cachedPage.meta?.itemCount ?? stats.itemCount },
+                    branch
+                ),
+                meta: {
+                    ...cachedPage.meta,
+                    targetDaysOfCover: TARGET_DAYS_OF_COVER,
+                    stockSource: "mysql",
+                    salesSource: "mysql",
+                    isMainWarehouseView: String(branch).trim().toUpperCase() === "MAIN",
+                    servedFrom: forceRefresh
+                        ? "cache-refreshing"
+                        : versionOk
+                            ? "cache"
+                            : "cache-stale-rebuilding",
+                    salesLogicVersion: cacheVersion || cachedPage.meta?.salesLogicVersion,
+                    comingPoScope: String(branch).trim().toUpperCase() || "MAIN",
+                    stockWarehouses: getStockWarehouseIdsForBranch(branch),
+                    stockMetric: "qty_on_hand",
+                },
+            });
         }
 
-        // Cold path / forced refresh: compute once, cache, return requested page
+        // Cold path only when no cache exists
         const computed = await computeReplenishmentForBranch(branch, companyId);
         await MySqlService.upsertReplenishmentCache(effectiveCompanyId, branch, computed.recommendations);
         invalidateCache(`replenishment:api:${effectiveCompanyId}:${String(branch).trim().toUpperCase()}`);

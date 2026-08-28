@@ -347,7 +347,6 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                 </td>
                 {isMain ? (
                     <>
-                        <td className="repl-num">{fmtNum(rec.branchOrderQty ?? 0)}</td>
                         <td className="repl-num">{fmtNum(rec.mainInventory ?? rec.currentStock)}</td>
                         <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
                         <td className="repl-num">{fmtNum(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0)}</td>
@@ -358,7 +357,9 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                         <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
                     </>
                 )}
-                <td className="repl-num">{hasSales ? fmtNum(ads) : "—"}</td>
+                {!isMain ? (
+                    <td className="repl-num">{hasSales ? fmtNum(ads) : "—"}</td>
+                ) : null}
                 <td className="repl-num">{hasSales ? `${fmtNum(days)} days` : "—"}</td>
                 <td className="repl-num">{leadTime > 0 ? `${fmtNum(leadTime)} days` : "—"}</td>
                 <td className="repl-num repl-order-qty">
@@ -747,7 +748,7 @@ export default function ReplenishmentPage() {
         if (!rows.length) return;
 
         const headers = isMain
-            ? ["Status", "Product ID", "Description", "Item Class", "Branch Order Qty", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"]
+            ? ["Status", "Product ID", "Description", "Item Class", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"]
             : ["Status", "Product ID", "Description", "Item Class", "Branch Stock", "Coming PO", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"];
 
         const csvRows = rows.map((rec) => {
@@ -761,7 +762,6 @@ export default function ReplenishmentPage() {
             ];
             if (isMain) {
                 base.push(
-                    rec.branchOrderQty ?? 0,
                     rec.mainInventory ?? rec.currentStock ?? 0,
                     rec.comingPO ?? 0,
                     rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0
@@ -769,8 +769,10 @@ export default function ReplenishmentPage() {
             } else {
                 base.push(rec.currentStock ?? 0, rec.comingPO ?? 0);
             }
+            if (!isMain) {
+                base.push(ai.salesVelocity ?? "");
+            }
             base.push(
-                ai.salesVelocity ?? "",
                 ai.daysRemaining ?? "",
                 leadTime || "",
                 orderQtyDrafts[rec.itemId] !== undefined
@@ -984,10 +986,29 @@ export default function ReplenishmentPage() {
                                 <th>Product</th>
                                 {isMain ? (
                                     <>
-                                        <th style={{ width: "110px", textAlign: "right" }}>Branch order qty</th>
                                         <th style={{ width: "100px", textAlign: "right" }}>Main inventory</th>
                                         <th style={{ width: "100px", textAlign: "right" }}>Coming PO</th>
-                                        <th style={{ width: "120px", textAlign: "right" }}>Total branch repl.</th>
+                                        <th className="repl-col-th" style={{ width: "140px", textAlign: "right" }}>
+                                            <ColumnInfoHeader
+                                                label="Total branch repl."
+                                                panelId="total-branch-repl"
+                                                openId={openColumnInfo}
+                                                setOpenId={setOpenColumnInfo}
+                                                align="right"
+                                            >
+                                                <strong>How &quot;Total branch repl.&quot; is calculated</strong>
+                                                <p>
+                                                    Sum of what each <strong>retail</strong> branch still needs from MAIN
+                                                    for this product, using that branch&apos;s own sales rate (not company-wide sales).
+                                                </p>
+                                                <p className="repl-col-info-formula">
+                                                    Per retail branch: max(0, ceil(branch Sells/day × 60) − live stock − Coming PO), then sum
+                                                </p>
+                                                <p className="repl-col-info-note">
+                                                    TECH / Office sites are excluded. Vendor Order qty = this total − MAIN inventory − MAIN Coming PO.
+                                                </p>
+                                            </ColumnInfoHeader>
+                                        </th>
                                     </>
                                 ) : (
                                     <>
@@ -995,35 +1016,36 @@ export default function ReplenishmentPage() {
                                         <th style={{ width: "100px", textAlign: "right" }}>Coming PO</th>
                                     </>
                                 )}
-                                <th className="repl-col-th" style={{ width: "128px", textAlign: "right" }}>
-                                    <ColumnInfoHeader
-                                        label="Sells / day"
-                                        panelId="sells-per-day"
-                                        openId={openColumnInfo}
-                                        setOpenId={setOpenColumnInfo}
-                                        align="right"
-                                    >
-                                        <strong>How &quot;Sells / day&quot; is calculated</strong>
-                                        <p>
-                                            This is the <strong>average number of units sold per day</strong> for each product
-                                            {isMain ? " across all retail branches (network demand)" : (
-                                                <> at branch <strong>{selectedBranch}</strong></>
-                                            )} — not today&apos;s sales alone.
-                                        </p>
-                                        <p className="repl-col-info-formula">
-                                            Sells / day = Net units sold in the last 90 days{isMain ? " (network-wide)" : ` at ${selectedBranch}`} ÷ 90
-                                        </p>
-                                        <p>
-                                            Uses branch invoice sales first (credit memos subtracted). Network-wide
-                                            invoice totals are only used when that branch has no sales for a product.
-                                            Stock on hand comes from synced inventory.
-                                        </p>
-                                        <p className="repl-col-info-note">
-                                            <strong>Days left</strong> uses this rate: Branch stock ÷ Sells / day (e.g. 462 ÷ 70.9 ≈ 6 days).
-                                            Tap <strong>Explain</strong> on any row for that product&apos;s exact numbers.
-                                        </p>
-                                    </ColumnInfoHeader>
-                                </th>
+                                {!isMain ? (
+                                    <th className="repl-col-th" style={{ width: "128px", textAlign: "right" }}>
+                                        <ColumnInfoHeader
+                                            label="Sells / day"
+                                            panelId="sells-per-day"
+                                            openId={openColumnInfo}
+                                            setOpenId={setOpenColumnInfo}
+                                            align="right"
+                                        >
+                                            <strong>How &quot;Sells / day&quot; is calculated</strong>
+                                            <p>
+                                                This is the <strong>average number of units sold per day</strong> for each product
+                                                at branch <strong>{selectedBranch}</strong> — not today&apos;s sales alone.
+                                            </p>
+                                            <p className="repl-col-info-formula">
+                                                Sells / day = Net units sold in the last 90 days at {selectedBranch} ÷ 90
+                                            </p>
+                                            <p>
+                                                Uses this branch’s invoice sales first (credit memos subtracted). Network-wide
+                                                invoice totals are only used when this branch has no sales for a product.
+                                                Stock on hand comes from synced inventory.
+                                            </p>
+                                            <p className="repl-col-info-note">
+                                                <strong>Days left</strong> uses this rate: Branch stock (+ Coming PO) ÷ Sells / day
+                                                (e.g. 462 ÷ 70.9 ≈ 6 days).
+                                                Tap <strong>Explain</strong> on any row for that product&apos;s exact numbers.
+                                            </p>
+                                        </ColumnInfoHeader>
+                                    </th>
+                                ) : null}
                                 <th style={{ width: "110px", textAlign: "right" }}>Days left</th>
                                 <th style={{ width: "100px", textAlign: "right" }}>Avg. lead time</th>
                                 <th style={{ width: "110px", textAlign: "right" }}>Order qty</th>
@@ -1038,14 +1060,14 @@ export default function ReplenishmentPage() {
                         <tbody>
                             {loading && recs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 11 : 10} className="repl-table-empty">
+                                    <td colSpan={isMain ? 10 : 10} className="repl-table-empty">
                                         <div className="db-spinner db-spinner-lg" style={{ margin: "0 auto 0.75rem" }} />
                                         Loading recommendations for {scopeLabel}...
                                     </td>
                                 </tr>
                             ) : filteredRecs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 11 : 10} className="repl-table-empty">
+                                    <td colSpan={isMain ? 10 : 10} className="repl-table-empty">
                                         {priorityFilter === "urgent"
                                             ? "No urgent items right now."
                                             : priorityFilter === "soon"
@@ -1086,9 +1108,12 @@ export default function ReplenishmentPage() {
                         Updated {new Date(meta.generatedAt).toLocaleString("en-PH")}
                         {meta.salesSource === "acumatica" && " · Sales from Acumatica (live)"}
                         {meta.servedFrom === "cache" && " · Loaded from replenishment cache"}
-                        {meta.salesScope === "network" && " · Velocity from all branches"}
+                        {meta.salesScope === "network" && " · Branch demand from live stock + velocity"}
                         {meta.salesScope === "catalog-network" &&
                             " · Sales velocity from network invoices for this branch's catalog"}
+                        {meta.servedFrom === "cache-refreshing" && " · Refresh running in background — reload in a minute for updated totals"}
+                        {meta.servedFrom === "cache-stale-rebuilding" && " · Updating branch demand in background"}
+                        {meta.salesMode === "live-branch-demand" && " · Total Branch Repl. from retail branch demand"}
                         {qtySaveHint ? ` · ${qtySaveHint}` : ""}
                     </p>
                 )}

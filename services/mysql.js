@@ -6,6 +6,7 @@ import {
     isEcomBranchAlias,
     isExcludedBranchAlias,
     isWarehouseLikeAlias,
+    isRetailReplenishmentBranch,
     sqlOnlyEcomBranches,
     sqlExcludeBranches,
     sqlOnlyDamageBranches,
@@ -17,6 +18,7 @@ import {
     EXCLUDED_BRANCH_KEYWORDS,
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold, mergeBranchFirstSalesMaps } from "@/lib/sales-velocity.js";
+import { TARGET_DAYS_OF_COVER } from "@/lib/replenishment-insights.js";
 import { getCached, invalidateCache } from "@/lib/server-cache";
 import { FORECAST_ALL_BRANCH, forecastBranchKey, forecastSoldQty, listMonthsInRange, monthInvoiceCoverageComplete, normalizeInvKey } from "@/lib/forecast-generator.js";
 import {
@@ -4545,31 +4547,40 @@ export const MySqlService = {
         }
 
         try {
-            const netMap = await this.getPeriodicSalesSummary({ branch, lookbackDays });
-            const grossMap = await this._queryBranchGrossSalesSummary(branch, lookbackDays);
-            const map = new Map();
-            const keys = new Set([...netMap.keys(), ...grossMap.keys()]);
-            let netItems = 0;
-            let grossItems = 0;
-
-            for (const key of keys) {
-                const netQty = netQtySold(netMap.get(key)?.qty_sold);
-                const grossQty = netQtySold(grossMap.get(key)?.qty_sold);
-                const qty = netQty > 0 ? netQty : grossQty;
-                if (qty <= 0) continue;
-
-                const source = netQty > 0 ? netMap.get(key) : grossMap.get(key);
-                map.set(key, {
-                    qty_sold: qty,
-                    total_sales: Math.max(0, Number(source?.total_sales) || 0),
-                    salesScope: branch ? "branch" : "network",
-                });
-                if (netQty > 0) netItems++;
-                else grossItems++;
+            const netRaw = await this.getPeriodicSalesSummary({ branch, lookbackDays });
+            const netMap = new Map();
+            for (const [key, val] of netRaw) {
+                const qty = netQtySold(val?.qty_sold);
+                if (qty > 0) {
+                    netMap.set(key, {
+                        qty_sold: qty,
+                        total_sales: Math.max(0, Number(val?.total_sales) || 0),
+                        salesScope: branch ? "branch" : "network",
+                    });
+                }
             }
 
-            const mode = netItems >= grossItems ? "net" : "gross";
-            return { map, mode };
+            // Only fall back to gross when the branch has no usable net sales at all
+            // (e.g. credit-memo sync noise zeroing everything). Never replace a
+            // per-SKU net of 0 with gross — that inflates Sells / day when returns
+            // exceed invoices for that product.
+            if (netMap.size > 0) {
+                return { map: netMap, mode: "net" };
+            }
+
+            const grossMap = await this._queryBranchGrossSalesSummary(branch, lookbackDays);
+            const map = new Map();
+            for (const [key, val] of grossMap) {
+                const qty = netQtySold(val?.qty_sold);
+                if (qty > 0) {
+                    map.set(key, {
+                        qty_sold: qty,
+                        total_sales: Math.max(0, Number(val?.total_sales) || 0),
+                        salesScope: branch ? "branch" : "network",
+                    });
+                }
+            }
+            return { map, mode: "gross" };
         } catch (err) {
             console.error("[MySQL getReplenishmentSalesSummary Error]", err);
             return { map: new Map(), mode: "net" };
@@ -4623,7 +4634,7 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `replSalesMap:v2:${companyKey}:${branchKey}:${watermark}`;
+        const cacheKey = `replSalesMap:v3:${companyKey}:${branchKey}:${watermark}`;
         return getCached(cacheKey, 300_000, () =>
             this._getAccurateReplenishmentSalesMapUncached({ branch, companyId })
         );
@@ -4685,7 +4696,15 @@ export const MySqlService = {
             companyId: effectiveCompanyId,
             lookbackDays,
         });
-        let { map, salesScope } = finalizeBranchMap(strict.map, catalog.map);
+        // Catalog-network is only for SKUs with no invoice/memo activity at this branch.
+        // If the branch has credit memos that zero net sales, do NOT replace with network qty.
+        const activityIds = await this.getBranchSalesDocumentIds(branch, lookbackDays);
+        const catalogFallback = new Map();
+        for (const [key, val] of catalog.map) {
+            if (activityIds.has(key) || strict.map.has(key)) continue;
+            catalogFallback.set(key, val);
+        }
+        let { map, salesScope } = finalizeBranchMap(strict.map, catalogFallback);
         let count = countPositive(map);
         let salesMode = strict.mode;
 
@@ -4697,7 +4716,13 @@ export const MySqlService = {
                     companyId: effectiveCompanyId,
                     lookbackDays: days,
                 });
-                const finalized = finalizeBranchMap(extStrict.map, extCatalog.map);
+                const extActivity = await this.getBranchSalesDocumentIds(branch, days);
+                const extCatalogFallback = new Map();
+                for (const [key, val] of extCatalog.map) {
+                    if (extActivity.has(key) || extStrict.map.has(key)) continue;
+                    extCatalogFallback.set(key, val);
+                }
+                const finalized = finalizeBranchMap(extStrict.map, extCatalogFallback);
                 const extCount = countPositive(finalized.map);
                 if (extCount > count) {
                     map = finalized.map;
@@ -4711,6 +4736,35 @@ export const MySqlService = {
         }
 
         return { map, salesScope, lookbackDays, salesMode };
+    },
+
+    /** Inventory IDs with any sales document at this branch in the lookback window. */
+    async getBranchSalesDocumentIds(branch = "", lookbackDays = SALES_LOOKBACK_DAYS) {
+        if (!branch || branch === "All Branches" || isExcludedBranchAlias(branch)) {
+            return new Set();
+        }
+        try {
+            const whereClauses = [salesLookbackSql(lookbackDays)];
+            const params = [];
+            const salesEx = sqlExcludeSalesBranches("branch_name");
+            whereClauses.push(salesEx.clause);
+            params.push(...salesEx.params);
+            const branchNames = await this.resolveSalesBranchNames(branch);
+            whereClauses.push(`branch_name IN (${branchNames.map(() => "?").join(", ")})`);
+            params.push(...branchNames);
+
+            const [rows] = await purchasePool.query(
+                `SELECT DISTINCT UPPER(TRIM(inventory_id)) AS inventory_id
+                 FROM product_periodic_sales
+                 WHERE ${whereClauses.join(" AND ")}
+                   AND order_type IN ('Invoice', 'Debit Memo', 'Credit Memo')`,
+                params
+            );
+            return new Set(rows.map((r) => r.inventory_id).filter(Boolean));
+        } catch (err) {
+            console.error("[MySQL getBranchSalesDocumentIds Error]", err);
+            return new Set();
+        }
     },
 
     /** Network-wide sales for retail invoice branches (MAIN warehouse demand). Net first, gross fallback. */
@@ -4869,7 +4923,196 @@ export const MySqlService = {
         });
     },
 
-    /** Fast SQL rollup of branch demand for MAIN warehouse planning. */
+    /**
+     * Fast MAIN page-load rollup: retail branches only, one SQL read from cache.
+     * Recomputes need from cached ads + cached stock/PO (excludes TECH/Office).
+     * Heavy live sales recompute belongs only in full MAIN rebuild / Refresh.
+     */
+    async getRetailBranchDemandRollupFromCache(companyId = "main") {
+        await this.ensureReplenishmentCacheTable();
+        const qtyByItem = new Map();
+        const salesByItem = new Map();
+        const branchesNeedingByItem = new Map();
+
+        try {
+            const [rows] = await purchasePool.query(
+                `SELECT branch_id AS branchId,
+                        UPPER(TRIM(inventory_id)) AS inventoryId,
+                        COALESCE(sales_velocity, 0) AS ads,
+                        COALESCE(qty_sold_90, 0) AS qtySold,
+                        COALESCE(current_stock, 0) AS stock,
+                        COALESCE(coming_po, 0) AS coming
+                 FROM replenishment_cache
+                 WHERE company_id = ?
+                   AND UPPER(TRIM(branch_id)) != 'MAIN'`,
+                [companyId]
+            );
+
+            for (const r of rows) {
+                const branchId = String(r.branchId || "").trim();
+                const inventoryId = String(r.inventoryId || "").trim();
+                if (!branchId || !inventoryId) continue;
+                if (!isRetailReplenishmentBranch(branchId)) continue;
+
+                const ads = Number(r.ads) || 0;
+                const qtySold = Number(r.qtySold) || 0;
+                const stock = Number(r.stock) || 0;
+                const coming = Number(r.coming) || 0;
+                const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
+                const suggested = ads > 0 ? Math.max(0, targetStock - stock - coming) : 0;
+
+                if (qtySold > 0 || ads > 0) {
+                    const prev = salesByItem.get(inventoryId) || {
+                        qty_sold: 0,
+                        total_sales: 0,
+                        salesScope: "network",
+                        ads: 0,
+                    };
+                    salesByItem.set(inventoryId, {
+                        ...prev,
+                        qty_sold: (Number(prev.qty_sold) || 0) + qtySold,
+                        ads: (Number(prev.ads) || 0) + ads,
+                        salesScope: "network",
+                    });
+                }
+
+                if (suggested > 0) {
+                    qtyByItem.set(inventoryId, (qtyByItem.get(inventoryId) || 0) + suggested);
+                    branchesNeedingByItem.set(
+                        inventoryId,
+                        (branchesNeedingByItem.get(inventoryId) || 0) + 1
+                    );
+                }
+            }
+
+            return { qtyByItem, salesByItem, branchesNeedingByItem };
+        } catch (err) {
+            console.error("[MySQL getRetailBranchDemandRollupFromCache Error]", err);
+            return { qtyByItem, salesByItem, branchesNeedingByItem };
+        }
+    },
+
+    async getLiveBranchDemandByItem(companyId = "main") {
+        let watermark = "0";
+        try {
+            const wm = await this.getReplenishmentDataWatermark();
+            watermark = wm ? new Date(wm).toISOString() : "0";
+        } catch { /* ignore */ }
+
+        const cacheKey = `liveBranchDemand:v5:${companyId}:${watermark}`;
+        return getCached(cacheKey, 60_000, () =>
+            this._getLiveBranchDemandByItemUncached(companyId)
+        );
+    },
+
+    /**
+     * Live Total Branch Replenishment for MAIN.
+     *
+     * IMPORTANT: Do NOT trust cached sales_velocity — stale branch caches often
+     * still hold catalog-network rates (~full company velocity per branch), which
+     * multiplies Total Branch Repl when summed.
+     *
+     * For each retail branch: live sales map + live on-hand + live Coming PO →
+     * suggested = max(0, ceil(ads × 60) − stock − coming PO), then sum.
+     */
+    async _getLiveBranchDemandByItemUncached(companyId = "main") {
+        const qtyByItem = new Map();
+        const salesByItem = new Map();
+        const branchesNeedingByItem = new Map();
+
+        try {
+            const branchList = await this.getReplenishmentBranches(companyId);
+            const retailBranches = [...new Set(
+                (branchList || [])
+                    .map((b) => String(b.SiteID || b.branch_id || "").trim())
+                    .filter((id) => id && id.toUpperCase() !== "MAIN" && isRetailReplenishmentBranch(id))
+            )];
+
+            if (!retailBranches.length) {
+                return { qtyByItem, salesByItem, branchesNeedingByItem };
+            }
+
+            const CONCURRENCY = 1;
+            for (let i = 0; i < retailBranches.length; i += CONCURRENCY) {
+                const batch = retailBranches.slice(i, i + CONCURRENCY);
+                await Promise.all(
+                    batch.map(async (branchId) => {
+                        const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branchId);
+                        try {
+                            const [salesBundle, onHandMap, comingPoMap] = await Promise.all([
+                                this.getAccurateReplenishmentSalesMap({
+                                    branch: branchId,
+                                    companyId: effectiveCompanyId,
+                                }),
+                                this.getBranchOnHandMap({ branch: branchId, companyId: effectiveCompanyId }),
+                                this.getOpenPoQtyByItem({ warehouseId: branchId }),
+                            ]);
+
+                            const lookbackDays = Number(salesBundle.lookbackDays) || SALES_LOOKBACK_DAYS;
+                            const salesMap = salesBundle.map || new Map();
+                            const keys = new Set([
+                                ...salesMap.keys(),
+                                ...onHandMap.keys(),
+                                ...comingPoMap.keys(),
+                            ]);
+
+                            for (const inventoryId of keys) {
+                                const sales = salesMap.get(inventoryId);
+                                const qtySold = netQtySold(sales?.qty_sold);
+                                const ads = qtySold > 0 ? qtySold / lookbackDays : 0;
+                                const stock = Number(onHandMap.get(inventoryId)) || 0;
+                                const coming = Number(comingPoMap.get(inventoryId)) || 0;
+                                const available = stock + coming;
+                                const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
+                                const suggested = ads > 0 ? Math.max(0, targetStock - available) : 0;
+
+                                if (qtySold > 0 || ads > 0) {
+                                    const prevSales = salesByItem.get(inventoryId) || {
+                                        qty_sold: 0,
+                                        total_sales: 0,
+                                        salesScope: "network",
+                                        ads: 0,
+                                    };
+                                    salesByItem.set(inventoryId, {
+                                        ...prevSales,
+                                        qty_sold: (Number(prevSales.qty_sold) || 0) + qtySold,
+                                        ads: (Number(prevSales.ads) || 0) + ads,
+                                        total_sales:
+                                            (Number(prevSales.total_sales) || 0) +
+                                            Math.max(0, Number(sales?.total_sales) || 0),
+                                        salesScope: "network",
+                                    });
+                                }
+
+                                if (suggested > 0) {
+                                    qtyByItem.set(
+                                        inventoryId,
+                                        (qtyByItem.get(inventoryId) || 0) + suggested
+                                    );
+                                    branchesNeedingByItem.set(
+                                        inventoryId,
+                                        (branchesNeedingByItem.get(inventoryId) || 0) + 1
+                                    );
+                                }
+                            }
+                        } catch (err) {
+                            console.error(
+                                `[MySQL getLiveBranchDemandByItem] branch ${branchId}:`,
+                                err.message
+                            );
+                        }
+                    })
+                );
+            }
+
+            return { qtyByItem, salesByItem, branchesNeedingByItem };
+        } catch (err) {
+            console.error("[MySQL getLiveBranchDemandByItem Error]", err);
+            return { qtyByItem, salesByItem, branchesNeedingByItem };
+        }
+    },
+
+    /** Fast SQL rollup of branch demand for MAIN warehouse planning (stale — prefer getLiveBranchDemandByItem). */
     async getBranchOrderQtyFromCache(companyId = "main") {
         await this.ensureReplenishmentCacheTable();
         try {
@@ -4895,6 +5138,49 @@ export const MySqlService = {
         }
     },
 
+    /**
+     * Sum retail-branch sales qty / velocity for MAIN Sells / day.
+     * Matches the same branches that feed Total Branch Replenishment (excludes MAIN itself).
+     */
+    async getBranchSalesRollupFromCache(companyId = "main") {
+        await this.ensureReplenishmentCacheTable();
+        try {
+            const [rows] = await purchasePool.query(
+                `SELECT UPPER(TRIM(inventory_id)) AS inventoryId,
+                        SUM(GREATEST(0, COALESCE(qty_sold_90, 0))) AS qtySold,
+                        SUM(GREATEST(0, COALESCE(sales_velocity, 0))) AS ads
+                 FROM replenishment_cache
+                 WHERE company_id = ?
+                   AND UPPER(TRIM(branch_id)) != 'MAIN'
+                 GROUP BY UPPER(TRIM(inventory_id))
+                 HAVING SUM(GREATEST(0, COALESCE(qty_sold_90, 0))) > 0
+                     OR SUM(GREATEST(0, COALESCE(sales_velocity, 0))) > 0`,
+                [companyId]
+            );
+            const map = new Map();
+            for (const r of rows) {
+                const key = String(r.inventoryId || "").trim();
+                if (!key) continue;
+                const ads = Number(r.ads) || 0;
+                const qtySold = Number(r.qtySold) || 0;
+                // Prefer summed qty; if only velocity was stored, reconstruct period qty at 90 days
+                const qty = qtySold > 0 ? qtySold : ads * SALES_LOOKBACK_DAYS;
+                if (qty > 0) {
+                    map.set(key, {
+                        qty_sold: qty,
+                        total_sales: 0,
+                        salesScope: "network",
+                        ads,
+                    });
+                }
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getBranchSalesRollupFromCache Error]", err);
+            return new Map();
+        }
+    },
+
     async getCachedReplenishmentBranchIds(companyId = "main") {
         await this.ensureReplenishmentCacheTable();
         try {
@@ -4907,6 +5193,30 @@ export const MySqlService = {
             return new Set(rows.map((r) => String(r.branchId || "").trim()).filter(Boolean));
         } catch (err) {
             console.error("[MySQL getCachedReplenishmentBranchIds Error]", err);
+            return new Set();
+        }
+    },
+
+    /**
+     * Retail branches whose cached sales velocity predates the branch-first sales fix.
+     * MAIN rollup must not sum stale inflated branch Sells / day values.
+     */
+    async getStaleSalesLogicBranchIds(companyId = "main", minVersion = 3) {
+        await this.ensureReplenishmentCacheTable();
+        try {
+            const [rows] = await purchasePool.query(
+                `SELECT branch_id AS branchId,
+                        MAX(CAST(JSON_UNQUOTE(JSON_EXTRACT(ai_insights_json, '$.salesLogicVersion')) AS UNSIGNED)) AS ver
+                 FROM replenishment_cache
+                 WHERE company_id = ?
+                   AND UPPER(TRIM(branch_id)) != 'MAIN'
+                 GROUP BY branch_id
+                 HAVING ver IS NULL OR ver < ?`,
+                [companyId, minVersion]
+            );
+            return new Set(rows.map((r) => String(r.branchId || "").trim()).filter(Boolean));
+        } catch (err) {
+            console.error("[MySQL getStaleSalesLogicBranchIds Error]", err);
             return new Set();
         }
     },
