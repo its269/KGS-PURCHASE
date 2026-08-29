@@ -2398,10 +2398,13 @@ export const MySqlService = {
 
             const itemMap = new Map();
             for (const r of rows) {
-                const key = (r.inventoryId || "").toUpperCase().trim();
+                const key = normalizeInvKey(r.inventoryId);
                 if (!key) continue;
-                const sales = resolvedSales.get(key) || { qty_sold: 0, total_sales: 0 };
-                // Prefer live Acumatica-synced on-hand when present.
+                const sales =
+                    resolvedSales.get(key) ||
+                    resolvedSales.get(String(r.inventoryId || "").toUpperCase().trim()) ||
+                    { qty_sold: 0, total_sales: 0 };
+                // Prefer live Acumatica-synced on-hand when present (space-normalized keys).
                 const onHand = onHandMap.has(key)
                     ? Number(onHandMap.get(key)) || 0
                     : Number(r.totalOnHand) || 0;
@@ -2423,11 +2426,15 @@ export const MySqlService = {
             // writes only to product_inventory_items / forecast_item_stock).
             const missingStockKeys = [];
             for (const [key, qty] of onHandMap.entries()) {
-                if (!itemMap.has(key) && (Number(qty) || 0) > 0) missingStockKeys.push(key);
+                const norm = normalizeInvKey(key);
+                if (!norm) continue;
+                if (!itemMap.has(norm) && (Number(qty) || 0) > 0) missingStockKeys.push(norm);
             }
             // Include items with branch sales but no on-hand stock at this branch (stockout risk).
             const missingSalesKeys = [];
-            for (const [key, sales] of resolvedSales) {
+            for (const [rawKey, sales] of resolvedSales) {
+                const key = normalizeInvKey(rawKey);
+                if (!key) continue;
                 if (!itemMap.has(key) && sales.qty_sold > 0) missingSalesKeys.push(key);
             }
             const missingKeys = [...new Set([...missingStockKeys, ...missingSalesKeys])];
@@ -2438,15 +2445,23 @@ export const MySqlService = {
                     `SELECT TRIM(inventory_id) AS inventoryId, inventory_name AS description, item_class AS itemClass
                      FROM inventory_items
                      WHERE company_id = ? AND default_warehouse = '__catalog__'
-                       AND UPPER(TRIM(inventory_id)) IN (${placeholders})`,
+                       AND UPPER(REPLACE(TRIM(inventory_id), ' ', '')) IN (${placeholders})`,
                     [catalogCompanyId, ...missingKeys]
                 );
                 const catalogByKey = new Map(
-                    catalogRows.map((c) => [(c.inventoryId || "").toUpperCase().trim(), c])
+                    catalogRows.map((c) => [normalizeInvKey(c.inventoryId), c])
                 );
                 for (const key of missingKeys) {
                     if (itemMap.has(key)) continue;
-                    const sales = resolvedSales.get(key) || { qty_sold: 0, total_sales: 0 };
+                    let salesRow = resolvedSales.get(key) || { qty_sold: 0, total_sales: 0 };
+                    if (!(Number(salesRow.qty_sold) > 0)) {
+                        for (const [sk, sv] of resolvedSales) {
+                            if (normalizeInvKey(sk) === key && (Number(sv?.qty_sold) || 0) > 0) {
+                                salesRow = sv;
+                                break;
+                            }
+                        }
+                    }
                     const cat = catalogByKey.get(key);
                     const onHand = Number(onHandMap.get(key)) || 0;
                     itemMap.set(key, {
@@ -2456,9 +2471,9 @@ export const MySqlService = {
                         itemClass: cat?.itemClass || "",
                         totalOnHand: onHand,
                         totalAvailable: onHand,
-                        totalQtySold: sales.qty_sold,
-                        totalSales: sales.total_sales,
-                        salesScope: sales.salesScope || (isMainWarehouse ? "network" : "branch"),
+                        totalQtySold: salesRow.qty_sold,
+                        totalSales: salesRow.total_sales,
+                        salesScope: salesRow.salesScope || (isMainWarehouse ? "network" : "branch"),
                         stockSource: onHandMap.has(key) ? "forecast_item_stock" : "catalog",
                     });
                 }

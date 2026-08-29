@@ -353,7 +353,6 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                 </td>
                 {isMain ? (
                     <>
-                        <td className="repl-num">{fmtNum(rec.branchOrderQty ?? rec.totalBranchReplenishment ?? 0)}</td>
                         <td className="repl-num">{fmtNum(rec.mainInventory ?? rec.currentStock)}</td>
                         <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
                         <td className="repl-num">{fmtNum(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0)}</td>
@@ -758,7 +757,7 @@ export default function ReplenishmentPage() {
         if (!rows.length) return;
 
         const headers = isMain
-            ? ["Status", "Product ID", "Description", "Item Class", "Branch Order Qty", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Days Left", "Avg Lead Time", "Order Qty", "Order Qty with Lead Time", "What To Do"]
+            ? ["Status", "Product ID", "Description", "Item Class", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Days Left", "Avg Lead Time", "Order Qty", "Order Qty with Lead Time", "What To Do"]
             : ["Status", "Product ID", "Description", "Item Class", "Branch Stock", "Coming PO", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "Order Qty with Lead Time", "What To Do"];
 
         const csvRows = rows.map((rec) => {
@@ -776,7 +775,6 @@ export default function ReplenishmentPage() {
             ];
             if (isMain) {
                 base.push(
-                    rec.branchOrderQty ?? rec.totalBranchReplenishment ?? 0,
                     rec.mainInventory ?? rec.currentStock ?? 0,
                     rec.comingPO ?? 0,
                     rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0
@@ -1000,25 +998,6 @@ export default function ReplenishmentPage() {
                                 <th style={{ width: "160px" }}>Product</th>
                                 {isMain ? (
                                     <>
-                                        <th className="repl-col-th" style={{ width: "112px", textAlign: "right" }}>
-                                            <ColumnInfoHeader
-                                                label={<>Branch<br />order qty</>}
-                                                title="Branch order qty"
-                                                panelId="branch-order-qty"
-                                                openId={openColumnInfo}
-                                                setOpenId={setOpenColumnInfo}
-                                                align="right"
-                                            >
-                                                <strong>How &quot;Branch order qty&quot; is calculated</strong>
-                                                <p>
-                                                    Total units retail branches still need transferred from MAIN for this product
-                                                    (same total as <strong>Total branch repl.</strong>).
-                                                </p>
-                                                <p className="repl-col-info-formula">
-                                                    Sum of each retail branch&apos;s transfer need (60-day target − stock − Coming PO)
-                                                </p>
-                                            </ColumnInfoHeader>
-                                        </th>
                                         <th style={{ width: "88px", textAlign: "right" }}>Main inventory</th>
                                         <th style={{ width: "88px", textAlign: "right" }}>Coming PO</th>
                                         <th className="repl-col-th" style={{ width: "112px", textAlign: "right" }}>
@@ -1113,14 +1092,14 @@ export default function ReplenishmentPage() {
                         <tbody>
                             {loading && recs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 12 : 11} className="repl-table-empty">
+                                    <td colSpan={11} className="repl-table-empty">
                                         <div className="db-spinner db-spinner-lg" style={{ margin: "0 auto 0.75rem" }} />
                                         Loading recommendations for {scopeLabel}...
                                     </td>
                                 </tr>
                             ) : filteredRecs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 12 : 11} className="repl-table-empty">
+                                    <td colSpan={11} className="repl-table-empty">
                                         {priorityFilter === "urgent"
                                             ? "No urgent items right now."
                                             : priorityFilter === "soon"
