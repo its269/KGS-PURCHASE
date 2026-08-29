@@ -1061,7 +1061,47 @@ export default function ReplenishmentPage() {
                                 ) : null}
                                 <th style={{ width: "88px", textAlign: "right" }}>Days left</th>
                                 <th style={{ width: "88px", textAlign: "right" }}>Avg. lead time</th>
-                                <th style={{ width: "100px", textAlign: "right" }}>Order qty</th>
+                                <th className="repl-col-th" style={{ width: "108px", textAlign: "right" }}>
+                                    <ColumnInfoHeader
+                                        label="Order qty"
+                                        panelId="order-qty"
+                                        openId={openColumnInfo}
+                                        setOpenId={setOpenColumnInfo}
+                                        align="right"
+                                    >
+                                        <strong>How &quot;Order qty&quot; is calculated</strong>
+                                        {isMain ? (
+                                            <>
+                                                <p>
+                                                    Units to buy from the vendor so MAIN can cover retail branch demand.
+                                                </p>
+                                                <p className="repl-col-info-formula">
+                                                    Order qty = max(0, Total branch repl. − Main inventory − Coming PO)
+                                                </p>
+                                                <p className="repl-col-info-note">
+                                                    <strong>Why it can be 0:</strong> MAIN stock plus MAIN Coming PO already
+                                                    covers what branches need — no vendor order required for that product.
+                                                </p>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <p>
+                                                    Units to transfer from MAIN to <strong>{selectedBranch || "this branch"}</strong>{" "}
+                                                    to keep about 60 days of stock.
+                                                </p>
+                                                <p className="repl-col-info-formula">
+                                                    Target = ceil(Sells/day × 60)<br />
+                                                    Order qty = max(0, Target − Branch stock − Coming PO)
+                                                </p>
+                                                <p className="repl-col-info-note">
+                                                    <strong>Why it can be 0:</strong> Branch stock plus Coming PO already meets
+                                                    the 60-day target (enough cover), or there are no recent sales to plan from.
+                                                    That is normal — not a missing value.
+                                                </p>
+                                            </>
+                                        )}
+                                    </ColumnInfoHeader>
+                                </th>
                                 <th className="repl-col-th" style={{ width: "112px", textAlign: "right" }}>
                                     <ColumnInfoHeader
                                         label={<>Order ×<br />lead time</>}
