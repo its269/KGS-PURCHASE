@@ -57,11 +57,12 @@ const IconClose = () => (
     </svg>
 );
 
-function ColumnInfoHeader({ label, panelId, openId, setOpenId, align = "left", children }) {
+function ColumnInfoHeader({ label, title, panelId, openId, setOpenId, align = "left", children }) {
     const open = openId === panelId;
     const wrapRef = useRef(null);
     const btnRef = useRef(null);
     const [panelPos, setPanelPos] = useState(null);
+    const accessibleName = title || (typeof label === "string" ? label : panelId);
 
     const updatePanelPos = useCallback(() => {
         if (!btnRef.current) return;
@@ -109,7 +110,7 @@ function ColumnInfoHeader({ label, panelId, openId, setOpenId, align = "left", c
                     ref={btnRef}
                     type="button"
                     className="repl-col-info-btn"
-                    aria-label={`How ${label} is calculated`}
+                    aria-label={`How ${accessibleName} is calculated`}
                     aria-expanded={open}
                     onClick={(e) => {
                         e.stopPropagation();
@@ -333,6 +334,11 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
         const hasSales = days !== "N/A" && days != null;
         const isOpen = explainId === rec.recommendationId;
         const leadTime = rec.leadTimeDays ?? ai.leadTimeDays;
+        const orderQty = drafts[rec.itemId] !== undefined
+            ? (Number(drafts[rec.itemId]) || 0)
+            : (Number(rec.suggestedQty) || 0);
+        const ltNum = Number(leadTime) || 0;
+        const orderQtyWithLeadTime = ltNum > 0 && orderQty > 0 ? ltNum * orderQty : 0;
 
         return (
             <tr key={rec.recommendationId} className={`repl-row ${priorityClass(rec.priorityLevel)}`}>
@@ -347,6 +353,7 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                 </td>
                 {isMain ? (
                     <>
+                        <td className="repl-num">{fmtNum(rec.branchOrderQty ?? rec.totalBranchReplenishment ?? 0)}</td>
                         <td className="repl-num">{fmtNum(rec.mainInventory ?? rec.currentStock)}</td>
                         <td className="repl-num">{fmtNum(rec.comingPO ?? 0)}</td>
                         <td className="repl-num">{fmtNum(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0)}</td>
@@ -361,7 +368,7 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                     <td className="repl-num">{hasSales ? fmtNum(ads) : "—"}</td>
                 ) : null}
                 <td className="repl-num">{hasSales ? `${fmtNum(days)} days` : "—"}</td>
-                <td className="repl-num">{leadTime > 0 ? `${fmtNum(leadTime)} days` : "—"}</td>
+                <td className="repl-num">{ltNum > 0 ? `${fmtNum(ltNum)} days` : "—"}</td>
                 <td className="repl-num repl-order-qty">
                     <input
                         className="repl-qty-input"
@@ -375,6 +382,9 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                     {Number(rec.suggestedQty) > 0 ? (
                         <span className="repl-qty-suggested">Suggested {fmtNum(rec.suggestedQty)}</span>
                     ) : null}
+                </td>
+                <td className="repl-num">
+                    {orderQtyWithLeadTime > 0 ? fmtNum(orderQtyWithLeadTime) : "—"}
                 </td>
                 <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
                 <td className="repl-ai-cell">
@@ -748,12 +758,16 @@ export default function ReplenishmentPage() {
         if (!rows.length) return;
 
         const headers = isMain
-            ? ["Status", "Product ID", "Description", "Item Class", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"]
-            : ["Status", "Product ID", "Description", "Item Class", "Branch Stock", "Coming PO", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "What To Do"];
+            ? ["Status", "Product ID", "Description", "Item Class", "Branch Order Qty", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Days Left", "Avg Lead Time", "Order Qty", "Order Qty with Lead Time", "What To Do"]
+            : ["Status", "Product ID", "Description", "Item Class", "Branch Stock", "Coming PO", "Sells Per Day", "Days Left", "Avg Lead Time", "Order Qty", "Order Qty with Lead Time", "What To Do"];
 
         const csvRows = rows.map((rec) => {
             const ai = rec.aiInsights || {};
-            const leadTime = rec.leadTimeDays ?? ai.leadTimeDays ?? "";
+            const leadTime = Number(rec.leadTimeDays ?? ai.leadTimeDays) || 0;
+            const orderQty = orderQtyDrafts[rec.itemId] !== undefined
+                ? (Number(orderQtyDrafts[rec.itemId]) || 0)
+                : (Number(rec.suggestedQty) || 0);
+            const orderQtyWithLeadTime = leadTime > 0 && orderQty > 0 ? leadTime * orderQty : "";
             const base = [
                 priorityLabel(rec.priorityLevel),
                 rec.itemId,
@@ -762,6 +776,7 @@ export default function ReplenishmentPage() {
             ];
             if (isMain) {
                 base.push(
+                    rec.branchOrderQty ?? rec.totalBranchReplenishment ?? 0,
                     rec.mainInventory ?? rec.currentStock ?? 0,
                     rec.comingPO ?? 0,
                     rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0
@@ -775,9 +790,8 @@ export default function ReplenishmentPage() {
             base.push(
                 ai.daysRemaining ?? "",
                 leadTime || "",
-                orderQtyDrafts[rec.itemId] !== undefined
-                    ? (Number(orderQtyDrafts[rec.itemId]) || 0)
-                    : (rec.suggestedQty ?? 0),
+                orderQty,
+                orderQtyWithLeadTime,
                 ai.whatToDo || rec.restockSource || ""
             );
             return base.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
@@ -982,15 +996,35 @@ export default function ReplenishmentPage() {
                     <table className="db-table db-table--fit repl-table">
                         <thead>
                             <tr>
-                                <th style={{ width: "90px" }}>Status</th>
-                                <th>Product</th>
+                                <th style={{ width: "72px" }}>Status</th>
+                                <th style={{ width: "160px" }}>Product</th>
                                 {isMain ? (
                                     <>
-                                        <th style={{ width: "100px", textAlign: "right" }}>Main inventory</th>
-                                        <th style={{ width: "100px", textAlign: "right" }}>Coming PO</th>
-                                        <th className="repl-col-th" style={{ width: "140px", textAlign: "right" }}>
+                                        <th className="repl-col-th" style={{ width: "112px", textAlign: "right" }}>
                                             <ColumnInfoHeader
-                                                label="Total branch repl."
+                                                label={<>Branch<br />order qty</>}
+                                                title="Branch order qty"
+                                                panelId="branch-order-qty"
+                                                openId={openColumnInfo}
+                                                setOpenId={setOpenColumnInfo}
+                                                align="right"
+                                            >
+                                                <strong>How &quot;Branch order qty&quot; is calculated</strong>
+                                                <p>
+                                                    Total units retail branches still need transferred from MAIN for this product
+                                                    (same total as <strong>Total branch repl.</strong>).
+                                                </p>
+                                                <p className="repl-col-info-formula">
+                                                    Sum of each retail branch&apos;s transfer need (60-day target − stock − Coming PO)
+                                                </p>
+                                            </ColumnInfoHeader>
+                                        </th>
+                                        <th style={{ width: "88px", textAlign: "right" }}>Main inventory</th>
+                                        <th style={{ width: "88px", textAlign: "right" }}>Coming PO</th>
+                                        <th className="repl-col-th" style={{ width: "112px", textAlign: "right" }}>
+                                            <ColumnInfoHeader
+                                                label={<>Total branch<br />repl.</>}
+                                                title="Total branch repl."
                                                 panelId="total-branch-repl"
                                                 openId={openColumnInfo}
                                                 setOpenId={setOpenColumnInfo}
@@ -1012,12 +1046,12 @@ export default function ReplenishmentPage() {
                                     </>
                                 ) : (
                                     <>
-                                        <th style={{ width: "100px", textAlign: "right" }}>Branch stock</th>
-                                        <th style={{ width: "100px", textAlign: "right" }}>Coming PO</th>
+                                        <th style={{ width: "88px", textAlign: "right" }}>Branch stock</th>
+                                        <th style={{ width: "88px", textAlign: "right" }}>Coming PO</th>
                                     </>
                                 )}
                                 {!isMain ? (
-                                    <th className="repl-col-th" style={{ width: "128px", textAlign: "right" }}>
+                                    <th className="repl-col-th" style={{ width: "100px", textAlign: "right" }}>
                                         <ColumnInfoHeader
                                             label="Sells / day"
                                             panelId="sells-per-day"
@@ -1046,11 +1080,30 @@ export default function ReplenishmentPage() {
                                         </ColumnInfoHeader>
                                     </th>
                                 ) : null}
-                                <th style={{ width: "110px", textAlign: "right" }}>Days left</th>
-                                <th style={{ width: "100px", textAlign: "right" }}>Avg. lead time</th>
-                                <th style={{ width: "110px", textAlign: "right" }}>Order qty</th>
-                                <th>What to do</th>
-                                <th style={{ width: "200px" }}>
+                                <th style={{ width: "88px", textAlign: "right" }}>Days left</th>
+                                <th style={{ width: "88px", textAlign: "right" }}>Avg. lead time</th>
+                                <th style={{ width: "100px", textAlign: "right" }}>Order qty</th>
+                                <th className="repl-col-th" style={{ width: "112px", textAlign: "right" }}>
+                                    <ColumnInfoHeader
+                                        label={<>Order ×<br />lead time</>}
+                                        title="Order qty with lead time"
+                                        panelId="order-qty-lead-time"
+                                        openId={openColumnInfo}
+                                        setOpenId={setOpenColumnInfo}
+                                        align="right"
+                                    >
+                                        <strong>How &quot;Order qty with lead time&quot; is calculated</strong>
+                                        <p>
+                                            Multiplies the current <strong>Order qty</strong> by the vendor&apos;s
+                                            <strong> Avg. lead time</strong> (days).
+                                        </p>
+                                        <p className="repl-col-info-formula">
+                                            Order qty with lead time = Avg. lead time × Order qty
+                                        </p>
+                                    </ColumnInfoHeader>
+                                </th>
+                                <th style={{ width: "140px" }}>What to do</th>
+                                <th style={{ width: "168px" }}>
                                     <span className="repl-ai-col-head">
                                         <IconSparkles /> AI Explanation
                                     </span>
@@ -1060,14 +1113,14 @@ export default function ReplenishmentPage() {
                         <tbody>
                             {loading && recs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 10 : 10} className="repl-table-empty">
+                                    <td colSpan={isMain ? 12 : 11} className="repl-table-empty">
                                         <div className="db-spinner db-spinner-lg" style={{ margin: "0 auto 0.75rem" }} />
                                         Loading recommendations for {scopeLabel}...
                                     </td>
                                 </tr>
                             ) : filteredRecs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isMain ? 10 : 10} className="repl-table-empty">
+                                    <td colSpan={isMain ? 12 : 11} className="repl-table-empty">
                                         {priorityFilter === "urgent"
                                             ? "No urgent items right now."
                                             : priorityFilter === "soon"

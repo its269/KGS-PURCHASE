@@ -80,6 +80,8 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     background: var(--bg-surface);
+    height: 38px;
+    box-sizing: border-box;
 }
 
 .repl-view-btn {
@@ -88,7 +90,8 @@
     color: var(--text-secondary);
     font-size: 0.8rem;
     font-weight: 700;
-    padding: 0.55rem 0.9rem;
+    padding: 0 0.9rem;
+    height: 100%;
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
     white-space: nowrap;
@@ -161,6 +164,7 @@
 
 .repl-branch-select {
     align-self: flex-end;
+    height: 38px;
 }
 
 .repl-priority-field .db-select,
@@ -176,8 +180,8 @@
     flex-direction: column;
     gap: 0.35rem;
     min-width: 0;
-    flex: 1 1 160px;
-    max-width: 220px;
+    flex: 0 1 160px;
+    max-width: 180px;
 }
 
 .repl-item-class-field label {
@@ -193,10 +197,49 @@
     max-width: 100%;
 }
 
+.repl-item-class-field .db-select-wrapper {
+    height: 38px;
+    width: 100%;
+    max-width: 100%;
+}
+
+/* Align search with View / Item Class control row (not floating mid-label) */
+.repl-main .db-toolbar-left {
+    align-items: flex-end;
+    max-width: none;
+}
+
 .repl-search {
-    min-width: 0;
-    flex: 1 1 160px;
-    max-width: 280px;
+    min-width: 280px;
+    flex: 1 1 360px;
+    max-width: 520px;
+    align-self: flex-end;
+    height: 38px;
+    border-radius: var(--radius-md);
+    box-sizing: border-box;
+}
+
+.repl-main .db-search-wrapper.repl-search {
+    max-width: 520px;
+    height: 38px;
+}
+
+.repl-main .repl-search .db-search {
+    height: 38px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding-left: 2.35rem;
+    padding-right: 0.85rem;
+}
+
+.repl-main .repl-search > svg:first-child {
+    left: 0.75rem;
+    width: 16px;
+    height: 16px;
+}
+
+.repl-main .repl-search:has(.db-search-clear) .db-search {
+    padding-right: 2.35rem;
 }
 
 .repl-branch-hint {
@@ -207,15 +250,64 @@
 
 .repl-table {
     table-layout: fixed !important;
-    width: 100% !important;
-    min-width: 0 !important;
-    max-width: 100%;
+    width: max(100%, 1420px) !important;
+    min-width: 1420px !important;
+    max-width: none;
 }
 
 .repl-table thead th,
 .repl-table tbody td {
     overflow: hidden;
     word-break: break-word;
+}
+
+/* Keep info-header labels fully visible via controlled 2-line wraps */
+.repl-table thead th.repl-col-th {
+    overflow: hidden;
+    word-break: normal;
+    white-space: normal !important;
+}
+
+.repl-table.db-table--fit thead th.repl-col-th {
+    word-break: normal;
+    white-space: normal !important;
+}
+
+/* Column header info (i) */
+.repl-col-th {
+    white-space: normal !important;
+    overflow: hidden;
+    vertical-align: bottom;
+}
+
+.repl-col-head {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    align-items: flex-end;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+}
+
+.repl-col-head-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.2;
+    text-align: right;
+    white-space: normal;
+}
+
+.repl-col-head-right {
+    justify-content: flex-end;
+}
+
+.repl-col-info-wrap {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-self: flex-end;
 }
 
 .repl-table tbody tr.repl-row.repl-status-urgent {
@@ -531,35 +623,7 @@
     line-height: 1.55;
 }
 
-/* Column header info (i) */
-.repl-col-th {
-    white-space: nowrap !important;
-    overflow: visible;
-    vertical-align: bottom;
-}
-
-.repl-col-head {
-    display: inline-flex;
-    align-items: center;
-    flex-wrap: nowrap;
-    gap: 0.25rem;
-    white-space: nowrap;
-}
-
-.repl-col-head-label {
-    line-height: 1.3;
-}
-
-.repl-col-head-right {
-    justify-content: flex-end;
-}
-
-.repl-col-info-wrap {
-    position: relative;
-    display: inline-flex;
-    flex-shrink: 0;
-}
-
+/* Column header info button (panel styles continue below) */
 .repl-col-info-btn {
     display: inline-flex;
     align-items: center;
