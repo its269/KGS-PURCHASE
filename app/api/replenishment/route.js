@@ -85,11 +85,17 @@ function scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId) {
  * Full-branch results are memory-cached briefly so first-page + follow-up full
  * loads (and filter/export) share one open-PO query.
  */
-async function loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize }) {
+async function loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize, bypassMemCache = false }) {
     const memKey = `replenishment:api:${effectiveCompanyId}:${String(branch).trim().toUpperCase()}`;
 
+    if (bypassMemCache) {
+        invalidateCache(memKey);
+        invalidateCache(`accurateRetailDemand:`);
+        invalidateCache(`liveBranchDemand:`);
+    }
+
     if (pageSize === 0) {
-        return getCached(memKey, 45_000, async () => {
+        return getCached(memKey, bypassMemCache ? 0 : 45_000, async () => {
             const cached = await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch);
             if (!cached?.recommendations) return null;
             const recommendations = await applyLiveComingPo(cached.recommendations, branch);
@@ -145,11 +151,27 @@ export async function GET(request) {
     try {
         // Prefer cache for all normal loads. Full recompute is background-only unless
         // there is no cache at all (cold start) — prevents MySQL pool exhaustion.
-        const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize });
+        const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, {
+            page,
+            pageSize,
+            bypassMemCache: forceRefresh,
+        });
 
         if (cachedPage?.recommendations) {
             const cacheVersion = Number(cachedPage.meta?.salesLogicVersion) || 0;
             const versionOk = cacheVersion === REPLENISHMENT_SALES_LOGIC_VERSION;
+
+            // Stale sales-logic version: bust mem cache and re-overlay with current demand math
+            if (!versionOk && !forceRefresh) {
+                const refreshed = await loadCachedWithLivePo(effectiveCompanyId, branch, {
+                    page,
+                    pageSize,
+                    bypassMemCache: true,
+                });
+                if (refreshed?.recommendations) {
+                    Object.assign(cachedPage, refreshed);
+                }
+            }
 
             if (forceRefresh || !versionOk) {
                 scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId);

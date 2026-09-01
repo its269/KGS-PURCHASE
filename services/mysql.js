@@ -4955,10 +4955,23 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `accurateRetailDemand:v1:${companyId}:${watermark}`;
-        return getCached(cacheKey, 120_000, () =>
-            this._getAccurateRetailBranchDemandRollupUncached(companyId)
-        );
+        const cacheKey = `accurateRetailDemand:v2:${companyId}:${watermark}`;
+        return getCached(cacheKey, 120_000, async () => {
+            const live = await this._getAccurateRetailBranchDemandRollupUncached(companyId);
+            // Never poison the TTL cache with an empty rollup — fall back to
+            // per-branch replenishment_cache so Total Branch Repl does not show 0
+            // for items that clearly have shelf gaps (e.g. Papijet across ILOILO/CEBU).
+            if (live?.qtyByItem?.size > 0) return live;
+            console.warn(
+                "[MySQL accurateRetailDemand] live rollup empty — falling back to cache rollup"
+            );
+            const cached = await this.getRetailBranchDemandRollupFromCache(companyId);
+            return {
+                ...cached,
+                lookbackDays: live?.lookbackDays || SALES_LOOKBACK_DAYS,
+                source: cached?.qtyByItem?.size ? "cache-fallback" : "empty",
+            };
+        });
     },
 
     async _getAccurateRetailBranchDemandRollupUncached(companyId = "main") {
@@ -4976,7 +4989,8 @@ export const MySqlService = {
             )];
 
             if (!retailBranches.length) {
-                return { qtyByItem, salesByItem, branchesNeedingByItem, lookbackDays };
+                console.warn("[MySQL accurateRetailDemand] no retail branches for", companyId);
+                return { qtyByItem, salesByItem, branchesNeedingByItem, lookbackDays, source: "empty-branches" };
             }
 
             const salesNameToSite = new Map();
@@ -5076,42 +5090,20 @@ export const MySqlService = {
                 }
             }
 
-            const comingBySite = new Map();
-            const CONCURRENCY = 3;
-            for (let i = 0; i < retailBranches.length; i += CONCURRENCY) {
-                const batch = retailBranches.slice(i, i + CONCURRENCY);
-                await Promise.all(
-                    batch.map(async (branchId) => {
-                        const siteKey = String(branchId).trim().toUpperCase();
-                        try {
-                            const poMap = await this.getOpenPoQtyByItem({ warehouseId: branchId });
-                            comingBySite.set(siteKey, poMap);
-                        } catch (err) {
-                            console.error(
-                                `[MySQL accurateRetailDemand] Coming PO ${branchId}:`,
-                                err.message
-                            );
-                            comingBySite.set(siteKey, new Map());
-                        }
-                    })
-                );
-            }
-
             for (const site of retailBranches) {
                 const siteKey = String(site).trim().toUpperCase();
                 const salesMap = salesBySite.get(siteKey) || new Map();
                 const stockMap = stockBySite.get(siteKey) || new Map();
-                const comingMap = comingBySite.get(siteKey) || new Map();
-                const keys = new Set([...salesMap.keys(), ...stockMap.keys(), ...comingMap.keys()]);
+                const keys = new Set([...salesMap.keys(), ...stockMap.keys()]);
 
                 for (const inventoryId of keys) {
                     const sales = salesMap.get(inventoryId);
                     const qtySold = netQtySold(sales?.qty_sold);
                     const ads = qtySold > 0 ? qtySold / lookbackDays : 0;
                     const stock = Number(stockMap.get(inventoryId)) || 0;
-                    const coming = Number(comingMap.get(inventoryId)) || 0;
                     const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
-                    const suggested = ads > 0 ? Math.max(0, targetStock - stock - coming) : 0;
+                    // Shelf gap only — Coming PO is tracked separately and must not hide transfer need.
+                    const suggested = ads > 0 ? Math.max(0, targetStock - stock) : 0;
 
                     if (qtySold > 0 || ads > 0) {
                         const prev = salesByItem.get(inventoryId) || {
@@ -5144,10 +5136,17 @@ export const MySqlService = {
                 }
             }
 
-            return { qtyByItem, salesByItem, branchesNeedingByItem, lookbackDays };
+            return {
+                qtyByItem,
+                salesByItem,
+                branchesNeedingByItem,
+                lookbackDays,
+                source: "live",
+                retailBranchCount: retailBranches.length,
+            };
         } catch (err) {
             console.error("[MySQL getAccurateRetailBranchDemandRollup Error]", err);
-            return { qtyByItem, salesByItem, branchesNeedingByItem, lookbackDays };
+            return { qtyByItem, salesByItem, branchesNeedingByItem, lookbackDays, source: "error" };
         }
     },
 
@@ -5165,7 +5164,7 @@ export const MySqlService = {
         try {
             const [rows] = await purchasePool.query(
                 `SELECT branch_id AS branchId,
-                        UPPER(TRIM(inventory_id)) AS inventoryId,
+                        UPPER(REPLACE(TRIM(inventory_id), ' ', '')) AS inventoryId,
                         COALESCE(sales_velocity, 0) AS ads,
                         COALESCE(qty_sold_90, 0) AS qtySold,
                         COALESCE(current_stock, 0) AS stock,
@@ -5178,16 +5177,16 @@ export const MySqlService = {
 
             for (const r of rows) {
                 const branchId = String(r.branchId || "").trim();
-                const inventoryId = String(r.inventoryId || "").trim();
+                const inventoryId = normalizeInvKey(r.inventoryId) || String(r.inventoryId || "").trim();
                 if (!branchId || !inventoryId) continue;
                 if (!isRetailReplenishmentBranch(branchId)) continue;
 
                 const ads = Number(r.ads) || 0;
                 const qtySold = Number(r.qtySold) || 0;
                 const stock = Number(r.stock) || 0;
-                const coming = Number(r.coming) || 0;
                 const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
-                const suggested = ads > 0 ? Math.max(0, targetStock - stock - coming) : 0;
+                // Shelf gap only — Coming PO must not hide branch transfer need.
+                const suggested = ads > 0 ? Math.max(0, targetStock - stock) : 0;
 
                 if (qtySold > 0 || ads > 0) {
                     const prev = salesByItem.get(inventoryId) || {
@@ -5240,8 +5239,9 @@ export const MySqlService = {
      * still hold catalog-network rates (~full company velocity per branch), which
      * multiplies Total Branch Repl when summed.
      *
-     * For each retail branch: live sales map + live on-hand + live Coming PO →
-     * suggested = max(0, ceil(ads × 60) − stock − coming PO), then sum.
+     * For each retail branch: live sales map + live on-hand →
+     * suggested = max(0, ceil(ads × 60) − stock), then sum.
+     * Coming PO is not subtracted (shown separately; must not hide shelf gap).
      */
     async _getLiveBranchDemandByItemUncached(companyId = "main") {
         const qtyByItem = new Map();
@@ -5289,10 +5289,9 @@ export const MySqlService = {
                                 const qtySold = netQtySold(sales?.qty_sold);
                                 const ads = qtySold > 0 ? qtySold / lookbackDays : 0;
                                 const stock = Number(onHandMap.get(inventoryId)) || 0;
-                                const coming = Number(comingPoMap.get(inventoryId)) || 0;
-                                const available = stock + coming;
                                 const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
-                                const suggested = ads > 0 ? Math.max(0, targetStock - available) : 0;
+                                // Shelf gap only — Coming PO must not hide branch transfer need.
+                                const suggested = ads > 0 ? Math.max(0, targetStock - stock) : 0;
 
                                 if (qtySold > 0 || ads > 0) {
                                     const prevSales = salesByItem.get(inventoryId) || {

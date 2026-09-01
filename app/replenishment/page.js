@@ -137,9 +137,11 @@ function ColumnInfoHeader({ label, title, panelId, openId, setOpenId, align = "l
     );
 }
 
-function priorityLabel(level) {
+function priorityLabel(level, suggestedQty = null) {
     if (level === "High") return "Urgent";
     if (level === "Medium") return "Soon";
+    // "Low" was read as "low stock" when Order qty is 0 — use OK when no order is needed.
+    if (suggestedQty != null && Number(suggestedQty) <= 0) return "OK";
     return "Low";
 }
 
@@ -343,8 +345,8 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
         return (
             <tr key={rec.recommendationId} className={`repl-row ${priorityClass(rec.priorityLevel)}`}>
                 <td>
-                    <span className={`repl-badge ${priorityClass(rec.priorityLevel)}`}>
-                        {priorityLabel(rec.priorityLevel)}
+                    <span className={`repl-badge ${priorityClass(rec.priorityLevel)} ${Number(rec.suggestedQty) <= 0 ? "repl-badge-ok" : ""}`}>
+                        {priorityLabel(rec.priorityLevel, rec.suggestedQty)}
                     </span>
                 </td>
                 <td>
@@ -452,7 +454,13 @@ export default function ReplenishmentPage() {
     const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = activeBranch, forceRefresh = false) => {
         if (!branchToFetch) return;
         const gen = ++fetchGenRef.current;
-        if (!isBackground) setLoading(true);
+        if (!isBackground) {
+            setLoading(true);
+            // Drop previous branch rows immediately so MAIN headers never show BACOLOD stock, etc.
+            setRecs([]);
+            setBrief(null);
+            setMeta(null);
+        }
         setError(null);
 
         const load = async (qs) => {
@@ -768,7 +776,7 @@ export default function ReplenishmentPage() {
                 : (Number(rec.suggestedQty) || 0);
             const orderQtyWithLeadTime = leadTime > 0 && orderQty > 0 ? leadTime * orderQty : "";
             const base = [
-                priorityLabel(rec.priorityLevel),
+                priorityLabel(rec.priorityLevel, rec.suggestedQty),
                 rec.itemId,
                 rec.description || "",
                 rec.itemClass || "",
@@ -1015,10 +1023,11 @@ export default function ReplenishmentPage() {
                                                     for this product, using that branch&apos;s own sales rate (not company-wide sales).
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    Per retail branch: max(0, ceil(branch Sells/day × 60) − live stock − Coming PO), then sum
+                                                    Per retail branch: max(0, ceil(branch Sells/day × 60) − live stock), then sum
                                                 </p>
                                                 <p className="repl-col-info-note">
-                                                    TECH / Office sites are excluded. Vendor Order qty = this total − MAIN inventory − MAIN Coming PO.
+                                                    TECH / Office sites are excluded. Vendor Order qty = this total − MAIN inventory.
+                                                    Coming PO is shown separately and is not subtracted.
                                                 </p>
                                             </ColumnInfoHeader>
                                         </th>
@@ -1073,30 +1082,35 @@ export default function ReplenishmentPage() {
                                         {isMain ? (
                                             <>
                                                 <p>
-                                                    Units to buy from the vendor so MAIN can cover retail branch demand.
+                                                    Units to buy from the vendor when MAIN is short, or the branch
+                                                    replenishment total when MAIN already has enough stock (so Order qty
+                                                    is not stuck at 0 while branches still need transfers).
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    Order qty = max(0, Total branch repl. − Main inventory − Coming PO)
+                                                    Vendor shortfall = max(0, Total branch repl. − Main inventory)<br />
+                                                    Order qty = Vendor shortfall if &gt; 0, else Total branch repl.
                                                 </p>
                                                 <p className="repl-col-info-note">
-                                                    <strong>Why it can be 0:</strong> MAIN stock plus MAIN Coming PO already
-                                                    covers what branches need — no vendor order required for that product.
+                                                    <strong>Coming PO</strong> is shown separately and is not subtracted.
+                                                    Order qty is <strong>0</strong> only when no retail branch needs a
+                                                    transfer for that product.
                                                 </p>
                                             </>
                                         ) : (
                                             <>
                                                 <p>
                                                     Units to transfer from MAIN to <strong>{selectedBranch || "this branch"}</strong>{" "}
-                                                    to keep about 60 days of stock.
+                                                    to keep about 60 days of stock on the shelf.
                                                 </p>
                                                 <p className="repl-col-info-formula">
                                                     Target = ceil(Sells/day × 60)<br />
-                                                    Order qty = max(0, Target − Branch stock − Coming PO)
+                                                    Order qty = max(0, Target − Branch stock)
                                                 </p>
                                                 <p className="repl-col-info-note">
-                                                    <strong>Why it can be 0:</strong> Branch stock plus Coming PO already meets
-                                                    the 60-day target (enough cover), or there are no recent sales to plan from.
-                                                    That is normal — not a missing value.
+                                                    <strong>Coming PO</strong> is shown separately for awareness and is not
+                                                    subtracted from Order qty (so open vendor POs do not hide a shelf gap).
+                                                    <strong>0 is correct</strong> when on-hand already meets the 60-day
+                                                    target, or there are no recent sales.
                                                 </p>
                                             </>
                                         )}
