@@ -242,6 +242,31 @@
     padding-right: 2.35rem;
 }
 
+.repl-search.is-search-loading .db-search {
+    padding-left: 2.35rem;
+}
+
+.repl-search-spinner {
+    position: absolute;
+    left: 0.75rem;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin-top: -8px;
+    border: 2px solid var(--border-medium);
+    border-top-color: var(--accent-primary);
+    border-radius: 50%;
+    animation: repl-search-spin 0.65s linear infinite;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+
+@keyframes repl-search-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 .repl-branch-hint {
     margin: -0.5rem 0 0;
     font-size: 0.8rem;

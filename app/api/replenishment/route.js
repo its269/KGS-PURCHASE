@@ -80,43 +80,74 @@ function scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId) {
     rebuildInFlight.set(key, job);
 }
 
+function scheduleBackgroundRebuildAll(companyId) {
+    const key = `${companyId}:__ALL__`;
+    if (rebuildInFlight.has(key)) return;
+    const job = rebuildAllReplenishmentCache(companyId)
+        .then(() => {
+            invalidateCache("replenishment:");
+            invalidateCache("accurateRetailDemand:");
+            invalidateCache("liveBranchDemand:");
+        })
+        .catch((err) => console.error("[Replenishment full rebuild]", err))
+        .finally(() => rebuildInFlight.delete(key));
+    rebuildInFlight.set(key, job);
+}
+
 /**
- * Load cache rows + overlay live Coming PO.
+ * Load cache rows + overlay live Coming PO and demand.
  * Full-branch results are memory-cached briefly so first-page + follow-up full
  * loads (and filter/export) share one open-PO query.
  */
-async function loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize, bypassMemCache = false }) {
-    const memKey = `replenishment:api:${effectiveCompanyId}:${String(branch).trim().toUpperCase()}`;
+async function loadCachedWithLivePo(effectiveCompanyId, branch, {
+    page,
+    pageSize,
+    search = "",
+    priority = "",
+    itemClass = "",
+    bypassMemCache = false,
+}) {
+    const branchKey = String(branch).trim().toUpperCase();
+    const searchKey = String(search || "").trim().toLowerCase().slice(0, 80);
+    const priorityKey = String(priority || "").trim().toLowerCase().slice(0, 20);
+    const classKey = String(itemClass || "").trim().toLowerCase().slice(0, 80);
+    const memKey = `replenishment:api:${effectiveCompanyId}:${branchKey}:${page}:${pageSize}:${searchKey}:${priorityKey}:${classKey}`;
 
     if (bypassMemCache) {
-        invalidateCache(memKey);
-        invalidateCache(`accurateRetailDemand:`);
-        invalidateCache(`liveBranchDemand:`);
-        invalidateCache(`replenishment:api:`);
+        invalidateCache(`replenishment:api:${effectiveCompanyId}:${branchKey}`);
     }
 
-    // Paginated pages always overlay live demand — never return raw cache rows only.
-    const overlay = async (recs) => applyLiveComingPo(recs, branch);
+    const filters = { search: searchKey, priority: priorityKey, itemClass: classKey };
+    const overlay = async (recs) => applyLiveComingPo(recs, branch, { slim: true });
 
-    if (pageSize === 0) {
-        return getCached(memKey, bypassMemCache ? 0 : 45_000, async () => {
-            const cached = await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch);
+    const loader = async () => {
+        if (pageSize === 0) {
+            const cached = await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch, filters);
             if (!cached?.recommendations) return null;
             const recommendations = await overlay(cached.recommendations);
             return { recommendations, meta: cached.meta };
+        }
+
+        const cachedPage = await MySqlService.getReplenishmentFromCachePage(effectiveCompanyId, branch, {
+            page,
+            pageSize,
+            slim: true,
+            ...filters,
         });
+        if (!cachedPage?.recommendations && cachedPage?.meta?.itemCount) return cachedPage;
+        if (!cachedPage) return null;
+
+        const recommendations = cachedPage.recommendations?.length
+            ? await overlay(cachedPage.recommendations)
+            : [];
+        return { recommendations, meta: cachedPage.meta };
+    };
+
+    if (pageSize === 0) {
+        return getCached(memKey, bypassMemCache ? 0 : 45_000, loader);
     }
 
-    // First paint: slim paginated SQL (LIMIT) + live Coming PO for this page only
-    const cachedPage = await MySqlService.getReplenishmentFromCachePage(effectiveCompanyId, branch, {
-        page,
-        pageSize,
-        slim: true,
-    });
-    if (!cachedPage?.recommendations) return null;
-
-    const recommendations = await overlay(cachedPage.recommendations);
-    return { recommendations, meta: cachedPage.meta };
+    return getCached(memKey, bypassMemCache ? 0 : 20_000, loader);
 }
 
 /** Replenishment API — cache-first, paginated, memory-cached for ultra-fast loads. */
@@ -139,8 +170,10 @@ export async function GET(request) {
     const companyId = getActiveCompanyFromRequest(request) || "main";
     const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
     const forceRefresh = searchParams.get("refresh") === "1";
-    const isMainBranch = String(branch).trim().toUpperCase() === "MAIN";
-    const bypassMemCache = forceRefresh || isMainBranch;
+    const search = (searchParams.get("search") || "").trim();
+    const priority = (searchParams.get("priority") || "").trim().toLowerCase();
+    const itemClass = (searchParams.get("itemClass") || "").trim();
+    const bypassMemCache = forceRefresh;
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
     const pageSizeRaw = parseInt(searchParams.get("pageSize") || "10", 10);
     // pageSize=0 means "all rows" (background full load)
@@ -160,27 +193,27 @@ export async function GET(request) {
         const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, {
             page,
             pageSize,
+            search,
+            priority,
+            itemClass,
             bypassMemCache,
         });
 
-        if (cachedPage?.recommendations) {
+        if (cachedPage?.meta?.itemCount != null || cachedPage?.recommendations) {
             const cacheVersion = Number(cachedPage.meta?.salesLogicVersion) || 0;
             const versionOk = cacheVersion === REPLENISHMENT_SALES_LOGIC_VERSION;
-
-            // Stale sales-logic version: bust mem cache and re-overlay with current demand math
-            if (!versionOk && !forceRefresh) {
-                const refreshed = await loadCachedWithLivePo(effectiveCompanyId, branch, {
-                    page,
-                    pageSize,
-                    bypassMemCache: true,
-                });
-                if (refreshed?.recommendations) {
-                    Object.assign(cachedPage, refreshed);
-                }
-            }
+            const isMainBranch = String(branch).trim().toUpperCase() === "MAIN";
 
             if (forceRefresh || !versionOk) {
-                scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId);
+                if (forceRefresh) {
+                    invalidateCache(`accurateRetailDemand:`);
+                    invalidateCache(`liveBranchDemand:`);
+                }
+                if (isMainBranch) {
+                    scheduleBackgroundRebuildAll(companyId);
+                } else {
+                    scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId);
+                }
             } else {
                 MySqlService.getReplenishmentDataWatermark()
                     .then((wm) => {
@@ -191,7 +224,13 @@ export async function GET(request) {
                     .catch(() => {});
             }
 
-            const recommendations = cachedPage.recommendations;
+            const recommendations = cachedPage.recommendations || [];
+            const branchKey = String(branch).trim().toUpperCase();
+            const itemClasses = await getCached(
+                `repl:classes:${effectiveCompanyId}:${branchKey}`,
+                bypassMemCache ? 0 : 120_000,
+                () => MySqlService.getReplenishmentItemClasses(effectiveCompanyId, branch)
+            );
             const stats = {
                 urgent: cachedPage.meta?.stats?.urgent
                     ?? recommendations.filter((r) => r.priorityLevel === "High").length,
@@ -216,6 +255,7 @@ export async function GET(request) {
                 ),
                 meta: {
                     ...cachedPage.meta,
+                    itemClasses,
                     targetDaysOfCover: TARGET_DAYS_OF_COVER,
                     stockSource: "mysql",
                     salesSource: "mysql",

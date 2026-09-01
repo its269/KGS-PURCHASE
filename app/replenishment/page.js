@@ -188,9 +188,16 @@ function resolveAiInsights(rec) {
         salesScope: rec.salesScope || existing.salesScope || "branch",
         mainWarehouseContext: rec.isMainWarehouseView
             ? {
-                branchOrderQty: Number(rec.branchOrderQty) || 0,
+                branchOrderQty: Number(rec.branchOrderQty ?? rec.totalBranchReplenishment) || 0,
                 comingPO: Number(rec.comingPO) || 0,
-                totalBranchReplenishment: Number(rec.totalBranchReplenishment) || 0,
+                totalBranchReplenishment: Number(rec.totalBranchReplenishment ?? rec.branchOrderQty) || 0,
+                vendorOrderQty: Number(rec.vendorOrderQty ?? rec.aiInsights?.mainWarehouseContext?.vendorOrderQty) || 0,
+                mainTargetStock: Number(rec.mainTargetStock ?? rec.aiInsights?.mainWarehouseContext?.mainTargetStock) || 0,
+                vendorShortfall: Math.max(
+                    0,
+                    (Number(rec.totalBranchReplenishment ?? rec.branchOrderQty) || 0)
+                        - (Number(rec.mainInventory ?? rec.currentStock) || 0)
+                ),
             }
             : null,
     });
@@ -425,14 +432,17 @@ export default function ReplenishmentPage() {
     const [search, setSearch] = useState("");
     const [itemClassFilter, setItemClassFilter] = useState("");
     const [loading, setLoading] = useState(true);
-    const [backgroundLoading, setBackgroundLoading] = useState(false);
+    const [pageLoading, setPageLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [itemClasses, setItemClasses] = useState([]);
+    const [debouncedSearch, setDebouncedSearch] = useState("");
     const [aiExplainRec, setAiExplainRec] = useState(null);
     const [openColumnInfo, setOpenColumnInfo] = useState(null);
     const [page, setPage] = useState(1);
     const [orderQtyDrafts, setOrderQtyDrafts] = useState({});
     const [qtySaveHint, setQtySaveHint] = useState("");
     const fetchGenRef = useRef(0);
+    const listKeyRef = useRef("");
     const saveTimers = useRef({});
     const pendingSaves = useRef({});
     const closeAiExplain = useCallback(() => setAiExplainRec(null), []);
@@ -457,86 +467,94 @@ export default function ReplenishmentPage() {
         setRecs(list);
         setBrief(data?.brief ?? null);
         setMeta(data?.meta ?? null);
+        if (Array.isArray(data?.meta?.itemClasses)) {
+            setItemClasses(data.meta.itemClasses);
+        }
     }, []);
 
-    const fetchRecommendations = useCallback(async (isBackground = false, branchToFetch = activeBranch, forceRefresh = false) => {
+    const buildQueryString = useCallback(({
+        pageNum = 1,
+        searchText = "",
+        priority = "all",
+        itemClass = "",
+        forceRefresh = false,
+        pageSize = PAGE_SIZE,
+    } = {}) => {
+        const qs = new URLSearchParams();
+        qs.set("page", String(pageNum));
+        qs.set("pageSize", String(pageSize));
+        const q = String(searchText || "").trim();
+        if (q) qs.set("search", q);
+        if (priority && priority !== "all") qs.set("priority", priority);
+        if (itemClass) qs.set("itemClass", itemClass);
+        if (forceRefresh) qs.set("refresh", "1");
+        return `&${qs.toString()}`;
+    }, []);
+
+    const fetchRecommendations = useCallback(async ({
+        branchToFetch = activeBranch,
+        pageNum = 1,
+        searchText = debouncedSearch,
+        priority = priorityFilter,
+        itemClass = itemClassFilter,
+        forceRefresh = false,
+        isInitial = false,
+    } = {}) => {
         if (!branchToFetch) return;
         const gen = ++fetchGenRef.current;
-        if (!isBackground) {
+        if (isInitial) {
             setLoading(true);
-            // Drop previous branch rows immediately so MAIN headers never show BACOLOD stock, etc.
             setRecs([]);
             setBrief(null);
             setMeta(null);
+        } else {
+            setPageLoading(true);
         }
         setError(null);
 
-        const load = async (qs) => {
+        try {
+            const qs = buildQueryString({
+                pageNum,
+                searchText,
+                priority,
+                itemClass,
+                forceRefresh,
+            });
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 120000);
-            const res = await fetchWithAuth(`/api/replenishment?branch=${encodeURIComponent(branchToFetch)}${qs}`, {
-                signal: controller.signal,
-            });
+            const res = await fetchWithAuth(
+                `/api/replenishment?branch=${encodeURIComponent(branchToFetch)}${qs}`,
+                { signal: controller.signal }
+            );
             clearTimeout(timeout);
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.message || `HTTP ${res.status}`);
             }
-            return res.json();
-        };
-
-        try {
-            const refreshParam = forceRefresh ? "&refresh=1" : "";
-
-            // 1) Ultra-fast first paint: only 10 rows
-            const first = await load(`&page=1&pageSize=${PAGE_SIZE}${refreshParam}`);
+            const data = await res.json();
             if (gen !== fetchGenRef.current) return;
-            applyPayload(first);
-            setLoading(false);
-
-            const totalItems = first.meta?.pagination?.totalItems
-                ?? first.meta?.itemCount
-                ?? first.recommendations?.length
-                ?? 0;
-
-            // 2) Progressive background: medium chunk first (filters usable sooner),
-            //    then full set only if needed — avoids one giant pageSize=0 blast.
-            if (totalItems > PAGE_SIZE) {
-                setBackgroundLoading(true);
-                const CHUNK = 250;
-                if (totalItems <= CHUNK) {
-                    const full = await load(`&page=1&pageSize=0${refreshParam}`);
-                    if (gen !== fetchGenRef.current) return;
-                    applyPayload(full);
-                } else {
-                    const mid = await load(`&page=1&pageSize=${CHUNK}${refreshParam}`);
-                    if (gen !== fetchGenRef.current) return;
-                    if ((mid.recommendations?.length || 0) > (first.recommendations?.length || 0)) {
-                        applyPayload(mid);
-                    }
-                    if (totalItems > CHUNK) {
-                        const full = await load(`&page=1&pageSize=0${refreshParam}`);
-                        if (gen !== fetchGenRef.current) return;
-                        applyPayload(full);
-                    }
-                }
-            } else {
-                applyPayload(first);
-            }
+            applyPayload(data);
         } catch (err) {
             if (err.message === "Unauthorized") return;
             if (err.name === "AbortError") {
-                if (!isBackground) setError("Request timed out. Try Refresh, or run Full Daily Refresh in Sync Center.");
-            } else if (!isBackground) {
+                setError("Request timed out. Try Refresh, or run Full Daily Refresh in Sync Center.");
+            } else {
                 setError(err.message || "Failed to load recommendations.");
             }
         } finally {
             if (gen === fetchGenRef.current) {
                 setLoading(false);
-                setBackgroundLoading(false);
+                setPageLoading(false);
             }
         }
-    }, [activeBranch, applyPayload]);
+    }, [
+        activeBranch,
+        applyPayload,
+        buildQueryString,
+        debouncedSearch,
+        priorityFilter,
+        itemClassFilter,
+    ]);
 
     useEffect(() => {
         const savedView = localStorage.getItem("repl_view_mode");
@@ -598,13 +616,43 @@ export default function ReplenishmentPage() {
     }, [viewMode, selectedBranch, retailBranches]);
 
     useEffect(() => {
+        const timer = setTimeout(() => setDebouncedSearch(search), 300);
+        return () => clearTimeout(timer);
+    }, [search]);
+
+    useEffect(() => {
+        setPage(1);
+        closeAiExplain();
+    }, [viewMode, selectedBranch, debouncedSearch, priorityFilter, itemClassFilter, closeAiExplain]);
+
+    const listKey = `${activeBranch}|${debouncedSearch}|${priorityFilter}|${itemClassFilter}`;
+
+    useEffect(() => {
         if (!activeBranch) return undefined;
-        fetchRecommendations(false, activeBranch);
-    }, [fetchRecommendations, activeBranch]);
+        const filterChanged = listKeyRef.current !== listKey;
+        listKeyRef.current = listKey;
+        const pageNum = filterChanged ? 1 : page;
+        if (filterChanged && page !== 1) {
+            setPage(1);
+        }
+        fetchRecommendations({
+            branchToFetch: activeBranch,
+            pageNum,
+            searchText: debouncedSearch,
+            isInitial: loading && recs.length === 0,
+        });
+    }, [activeBranch, page, listKey, debouncedSearch, fetchRecommendations]);
 
     useEffect(() => {
         const onCompanyChange = () => {
-            if (activeBranch) fetchRecommendations(false, activeBranch);
+            if (activeBranch) {
+                setPage(1);
+                fetchRecommendations({
+                    branchToFetch: activeBranch,
+                    pageNum: 1,
+                    isInitial: true,
+                });
+            }
         };
         window.addEventListener("company-changed", onCompanyChange);
         return () => window.removeEventListener("company-changed", onCompanyChange);
@@ -686,73 +734,28 @@ export default function ReplenishmentPage() {
 
     const stats = useMemo(() => {
         const metaStats = meta?.stats;
-        const urgent = metaStats?.urgent ?? recs.filter((r) => r.priorityLevel === "High").length;
-        const soon = metaStats?.soon ?? recs.filter((r) => r.priorityLevel === "Medium").length;
-        const zeroOrder = recs.filter((r) => (r.suggestedQty ?? 0) === 0).length;
-        const totalSuggested = recs.reduce((sum, r) => {
-            const qty = orderQtyDrafts[r.itemId] !== undefined
-                ? Number(orderQtyDrafts[r.itemId]) || 0
-                : (Number(r.suggestedQty) || 0);
-            return sum + qty;
-        }, 0);
-        return { urgent, soon, zeroOrder, totalSuggested };
-    }, [recs, meta, orderQtyDrafts]);
+        const urgent = metaStats?.urgent ?? 0;
+        const soon = metaStats?.soon ?? 0;
+        const totalSuggested = metaStats?.totalSuggested ?? 0;
+        const totalItems = meta?.pagination?.totalItems ?? meta?.itemCount ?? recs.length;
+        return { urgent, soon, totalSuggested, totalItems };
+    }, [meta, recs.length]);
 
-    const itemClassOptions = useMemo(() => {
-        const set = new Set();
-        for (const r of recs) {
-            const cls = String(r.itemClass || "").trim();
-            if (cls) set.add(cls);
-        }
-        return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-    }, [recs]);
+    const itemClassOptions = useMemo(
+        () => [...itemClasses].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
+        [itemClasses]
+    );
 
-    const filteredRecs = useMemo(() => {
-        let list = recs;
-        if (priorityFilter === "urgent") {
-            list = list.filter((r) => r.priorityLevel === "High");
-        } else if (priorityFilter === "soon") {
-            const soonItems = list.filter((r) => r.priorityLevel === "Medium");
-            list = soonItems.length > 0
-                ? soonItems
-                : list.filter((r) => (r.suggestedQty ?? 0) === 0);
-        }
-        if (itemClassFilter) {
-            list = list.filter(
-                (r) => String(r.itemClass || "").trim().toLowerCase() === itemClassFilter.toLowerCase()
-            );
-        }
-        const q = search.trim().toLowerCase();
-        if (q) {
-            list = list.filter((r) =>
-                (r.itemId || "").toLowerCase().includes(q) ||
-                (r.description || "").toLowerCase().includes(q) ||
-                (r.itemClass || "").toLowerCase().includes(q)
-            );
-        }
-        return list;
-    }, [recs, priorityFilter, search, itemClassFilter]);
+    const totalPages = meta?.pagination?.totalPages ?? 1;
+    const totalCount = meta?.pagination?.totalItems ?? meta?.itemCount ?? recs.length;
 
-    const showingSoonFallback = useMemo(() => {
-        if (priorityFilter !== "soon") return false;
-        return recs.filter((r) => r.priorityLevel === "Medium").length === 0;
-    }, [recs, priorityFilter]);
-
-    useEffect(() => {
-        setPage(1);
-        closeAiExplain();
-    }, [viewMode, selectedBranch, closeAiExplain]);
-
-    useEffect(() => {
-        setPage(1);
-        closeAiExplain();
-    }, [priorityFilter, search, itemClassFilter, closeAiExplain]);
-
-    const totalPages = Math.max(1, Math.ceil(filteredRecs.length / PAGE_SIZE));
-    const paginatedRecs = useMemo(() => {
-        const start = (page - 1) * PAGE_SIZE;
-        return filteredRecs.slice(start, start + PAGE_SIZE);
-    }, [filteredRecs, page]);
+    const isSearchLoading = useMemo(() => {
+        const typed = search.trim();
+        const applied = debouncedSearch.trim();
+        const debouncePending = typed !== applied;
+        const fetchPending = pageLoading && (typed.length > 0 || applied.length > 0);
+        return debouncePending || fetchPending;
+    }, [search, debouncedSearch, pageLoading]);
 
     useEffect(() => {
         if (page > totalPages) setPage(totalPages);
@@ -768,9 +771,23 @@ export default function ReplenishmentPage() {
 
     const scopeLabel = isMain ? "MAIN Warehouse" : (selectedBranch || "Branch");
 
-    const exportCSV = useCallback(() => {
-        const rows = filteredRecs;
-        if (!rows.length) return;
+    const exportCSV = useCallback(async () => {
+        if (!activeBranch) return;
+        try {
+            const qs = buildQueryString({
+                pageNum: 1,
+                searchText: debouncedSearch,
+                priority: priorityFilter,
+                itemClass: itemClassFilter,
+                pageSize: 5000,
+            });
+            const res = await fetchWithAuth(
+                `/api/replenishment?branch=${encodeURIComponent(activeBranch)}${qs}`
+            );
+            if (!res.ok) return;
+            const data = await res.json();
+            const rows = data.recommendations || [];
+            if (!rows.length) return;
 
         const headers = isMain
             ? ["Status", "Product ID", "Description", "Item Class", "Main Inventory", "Coming PO", "Total Branch Replenishment", "Days Left", "Avg Lead Time", "Order Qty", "Order Qty with Lead Time", "What To Do"]
@@ -819,7 +836,19 @@ export default function ReplenishmentPage() {
         a.download = `replenishment-${isMain ? "MAIN" : selectedBranch}-${new Date().toISOString().split("T")[0]}.csv`;
         a.click();
         URL.revokeObjectURL(url);
-    }, [filteredRecs, isMain, selectedBranch, viewMode, orderQtyDrafts]);
+        } catch (err) {
+            console.error("Export failed", err);
+        }
+    }, [
+        activeBranch,
+        buildQueryString,
+        debouncedSearch,
+        priorityFilter,
+        itemClassFilter,
+        isMain,
+        selectedBranch,
+        orderQtyDrafts,
+    ]);
 
     return (
         <div className="db-root">
@@ -866,7 +895,7 @@ export default function ReplenishmentPage() {
                         onClick={() => setPriorityFilter("all")}
                     >
                         All items
-                        <span className="repl-filter-tab-count">{recs.length}</span>
+                        <span className="repl-filter-tab-count">{stats.totalItems}</span>
                     </button>
                     <button
                         type="button"
@@ -931,14 +960,23 @@ export default function ReplenishmentPage() {
                             </div>
                         )}
 
-                        <div className="db-search-wrapper repl-search">
-                            <IconSearch />
+                        <div className={`db-search-wrapper repl-search ${isSearchLoading ? "is-search-loading" : ""}`}>
+                            {isSearchLoading ? (
+                                <span
+                                    className="repl-search-spinner"
+                                    role="status"
+                                    aria-label="Searching..."
+                                />
+                            ) : (
+                                <IconSearch />
+                            )}
                             <input
                                 className="db-search"
                                 type="text"
                                 placeholder="Search product..."
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
+                                aria-busy={isSearchLoading}
                             />
                             {search && (
                                 <button
@@ -975,7 +1013,7 @@ export default function ReplenishmentPage() {
                         <button
                             className="db-action-btn"
                             onClick={exportCSV}
-                            disabled={loading || filteredRecs.length === 0}
+                            disabled={loading || totalCount === 0}
                         >
                             <IconDownload /> Export CSV
                         </button>
@@ -983,7 +1021,12 @@ export default function ReplenishmentPage() {
                             className="db-refresh-btn"
                             onClick={() => {
                                 if (!activeBranch) return;
-                                fetchRecommendations(false, activeBranch, true);
+                                fetchRecommendations({
+                                    branchToFetch: activeBranch,
+                                    pageNum: page,
+                                    forceRefresh: true,
+                                    isInitial: true,
+                                });
                             }}
                             disabled={loading || !activeBranch}
                         >
@@ -992,21 +1035,11 @@ export default function ReplenishmentPage() {
                     </div>
                 </div>
 
-                <p className="repl-branch-hint">
-                    {branchHint}
-                    {showingSoonFallback && " Showing items with no order quantity because nothing is marked order soon."}
-                </p>
+                <p className="repl-branch-hint">{branchHint}</p>
 
                 {error && <div className="si-error">{error}</div>}
 
-                {backgroundLoading && (
-                    <div className="db-bg-loading">
-                        <div className="db-spinner" />
-                        Loading remaining items in the background…
-                    </div>
-                )}
-
-                <div className={`db-table-wrap ${backgroundLoading ? "is-bg-loading" : ""}`} data-tour="main-table">
+                <div className={`db-table-wrap ${pageLoading ? "is-bg-loading" : ""}`} data-tour="main-table">
                     <table className="db-table db-table--fit repl-table">
                         <thead>
                             <tr>
@@ -1090,13 +1123,15 @@ export default function ReplenishmentPage() {
                                         {isMain ? (
                                             <>
                                                 <p>
-                                                    Units to buy from the vendor so MAIN can (1) cover branch
-                                                    transfers and (2) still keep its own {TARGET_DAYS_OF_COVER}-day shelf
-                                                    target after those transfers ship.
+                                                    When MAIN must buy from a vendor, shows vendor PO qty
+                                                    (includes MAIN shelf target after branch transfers, e.g. M15 → 717).
+                                                    When MAIN already has enough stock, shows{" "}
+                                                    <strong>Total branch repl.</strong> so branch needs (e.g. BACOLOD 13)
+                                                    roll up instead of showing 0.
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    MAIN target = ceil(Sells/day × {TARGET_DAYS_OF_COVER})<br />
-                                                    Order qty = max(branch shortfall, MAIN target − (Main inventory − Total branch repl.))
+                                                    Vendor PO = max(branch shortfall, MAIN target − (Main inventory − Total branch repl.))<br />
+                                                    Order qty = Vendor PO if &gt; 0, else Total branch repl.
                                                 </p>
                                                 <p className="repl-col-info-note">
                                                     <strong>Coming PO</strong> is shown separately and is not subtracted.
@@ -1159,23 +1194,23 @@ export default function ReplenishmentPage() {
                                         Loading recommendations for {scopeLabel}...
                                     </td>
                                 </tr>
-                            ) : filteredRecs.length === 0 ? (
+                            ) : recs.length === 0 ? (
                                 <tr>
                                     <td colSpan={11} className="repl-table-empty">
                                         {priorityFilter === "urgent"
                                             ? "No urgent items right now."
                                             : priorityFilter === "soon"
-                                                ? "No items need ordering soon, and no zero-order items to show."
-                                            : recs.length === 0
+                                                ? "No items need ordering soon."
+                                            : totalCount === 0
                                                 ? isMain
                                                     ? "No items found for MAIN warehouse planning."
                                                     : `No items found for ${selectedBranch}.`
-                                                : "No items match your search."}
+                                                : "No items match your filters."}
                                     </td>
                                 </tr>
                             ) : (
                                 <ReplenishmentRows
-                                    recs={paginatedRecs}
+                                    recs={recs}
                                     onExplain={setAiExplainRec}
                                     explainId={aiExplainRec?.recommendationId}
                                     isMain={isMain}
@@ -1187,11 +1222,11 @@ export default function ReplenishmentPage() {
                     </table>
                 </div>
 
-                {filteredRecs.length > 0 && (
+                {totalCount > 0 && (
                     <PaginationBar
                         page={page}
                         pageSize={PAGE_SIZE}
-                        totalCount={filteredRecs.length}
+                        totalCount={totalCount}
                         onPageChange={setPage}
                         itemLabel="recommendations"
                     />

@@ -4955,7 +4955,7 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `accurateRetailDemand:v4:${companyId}:${watermark}`;
+        const cacheKey = `accurateRetailDemand:v5:${companyId}:${watermark}`;
         return getCached(cacheKey, 120_000, async () => {
             const [live, cached, suggestedTotals] = await Promise.all([
                 this._getAccurateRetailBranchDemandRollupUncached(companyId),
@@ -5137,46 +5137,44 @@ export const MySqlService = {
                 });
             }
 
-            const stockBySite = new Map();
-            for (const site of retailBranches) stockBySite.set(site.toUpperCase(), new Map());
+            const stockBySite = await this._retailBranchLiveStockBySite(companyId, retailBranches);
 
-            if (allWh.length) {
-                const src = await this._forecastStockSource();
-                const whCol = src.warehouseCol;
-                const ph = allWh.map(() => "?").join(", ");
-                const damageEx = sqlExcludeForecastDamage("f", whCol);
-                const ecomEx = sqlExcludeEcomBranches("f");
-                const [stockRows] = await purchasePool.query(
-                    `SELECT UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) AS inv,
-                            UPPER(TRIM(COALESCE(f.${whCol},''))) AS wh,
-                            COALESCE(SUM(GREATEST(0, COALESCE(f.on_hand, 0))), 0) AS onHand
-                     FROM ${src.qualified} f
-                     WHERE f.company_id = ?
-                       AND f.${whCol} != '__catalog__'
-                       AND UPPER(TRIM(COALESCE(f.${whCol},''))) IN (${ph})
-                       AND ${damageEx.clause}
-                       AND ${ecomEx.clause}
-                     GROUP BY UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')),
-                              UPPER(TRIM(COALESCE(f.${whCol},'')))`,
-                    [companyId, ...allWh, ...damageEx.params, ...ecomEx.params]
+            const cacheSuggestedBySite = new Map();
+            try {
+                const [cacheSuggestedRows] = await purchasePool.query(
+                    `SELECT UPPER(TRIM(branch_id)) AS branchId,
+                            UPPER(REPLACE(TRIM(inventory_id), ' ', '')) AS inventoryId,
+                            COALESCE(suggested_qty, 0) AS suggestedQty
+                     FROM replenishment_cache
+                     WHERE company_id = ?
+                       AND UPPER(TRIM(branch_id)) != 'MAIN'
+                       AND COALESCE(suggested_qty, 0) > 0`,
+                    [companyId]
                 );
-
-                for (const r of stockRows) {
-                    const site = whToSite.get(String(r.wh || "").trim().toUpperCase());
-                    if (!site) continue;
-                    const inv = normalizeInvKey(r.inv) || String(r.inv || "").trim();
-                    if (!inv) continue;
-                    const m = stockBySite.get(site);
-                    if (!m) continue;
-                    m.set(inv, (m.get(inv) || 0) + (Number(r.onHand) || 0));
+                for (const r of cacheSuggestedRows) {
+                    const siteKey = String(r.branchId || "").trim().toUpperCase();
+                    const inv = normalizeInvKey(r.inventoryId) || String(r.inventoryId || "").trim();
+                    if (!siteKey || !inv || !isRetailReplenishmentBranch(siteKey)) continue;
+                    if (!cacheSuggestedBySite.has(siteKey)) {
+                        cacheSuggestedBySite.set(siteKey, new Map());
+                    }
+                    const m = cacheSuggestedBySite.get(siteKey);
+                    const n = Number(r.suggestedQty) || 0;
+                    if (n > (m.get(inv) || 0)) m.set(inv, n);
                 }
+            } catch (err) {
+                console.warn("[MySQL accurateRetailDemand] cache suggested floor skipped:", err?.message);
             }
 
             for (const site of retailBranches) {
                 const siteKey = String(site).trim().toUpperCase();
                 const salesMap = salesBySite.get(siteKey) || new Map();
                 const stockMap = stockBySite.get(siteKey) || new Map();
-                const keys = new Set([...salesMap.keys(), ...stockMap.keys()]);
+                const keys = new Set([
+                    ...salesMap.keys(),
+                    ...stockMap.keys(),
+                    ...(cacheSuggestedBySite.get(siteKey)?.keys() || []),
+                ]);
 
                 for (const inventoryId of keys) {
                     const sales = salesMap.get(inventoryId);
@@ -5186,6 +5184,8 @@ export const MySqlService = {
                     const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
                     // Shelf gap only — Coming PO is tracked separately and must not hide transfer need.
                     const suggested = ads > 0 ? Math.max(0, targetStock - stock) : 0;
+                    const cachedSuggested = Number(cacheSuggestedBySite.get(siteKey)?.get(inventoryId)) || 0;
+                    const branchNeed = Math.max(suggested, cachedSuggested);
 
                     if (qtySold > 0 || ads > 0) {
                         const prev = salesByItem.get(inventoryId) || {
@@ -5205,10 +5205,10 @@ export const MySqlService = {
                         });
                     }
 
-                    if (suggested > 0) {
+                    if (branchNeed > 0) {
                         qtyByItem.set(
                             inventoryId,
-                            (qtyByItem.get(inventoryId) || 0) + suggested
+                            (qtyByItem.get(inventoryId) || 0) + branchNeed
                         );
                         branchesNeedingByItem.set(
                             inventoryId,
@@ -5697,8 +5697,42 @@ export const MySqlService = {
         return rec;
     },
 
-    async getReplenishmentCacheStats(companyId, branchId) {
+    _replenishmentFilterSql({ search = "", priority = "", itemClass = "" } = {}, params) {
+        let sql = "";
+        const q = String(search || "").trim();
+        if (q) {
+            const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+            sql += ` AND (inventory_id LIKE ? OR description LIKE ? OR item_class LIKE ?)`;
+            params.push(like, like, like);
+        }
+        const pri = String(priority || "").trim().toLowerCase();
+        if (pri === "urgent") sql += ` AND priority_level = 'High'`;
+        else if (pri === "soon") sql += ` AND priority_level = 'Medium'`;
+        const cls = String(itemClass || "").trim();
+        if (cls) {
+            sql += ` AND LOWER(TRIM(item_class)) = LOWER(?)`;
+            params.push(cls);
+        }
+        return sql;
+    },
+
+    async getReplenishmentItemClasses(companyId, branchId) {
         await this.ensureReplenishmentCacheTable();
+        const [rows] = await purchasePool.query(
+            `SELECT DISTINCT item_class AS itemClass
+             FROM replenishment_cache
+             WHERE company_id = ? AND branch_id = ?
+               AND item_class IS NOT NULL AND TRIM(item_class) != ''
+             ORDER BY item_class ASC`,
+            [companyId, branchId]
+        );
+        return rows.map((r) => String(r.itemClass || "").trim()).filter(Boolean);
+    },
+
+    async getReplenishmentCacheStats(companyId, branchId, filters = {}) {
+        await this.ensureReplenishmentCacheTable();
+        const params = [companyId, branchId];
+        const filterSql = this._replenishmentFilterSql(filters, params);
         const [[row]] = await purchasePool.query(
             `SELECT
                 COUNT(*) AS itemCount,
@@ -5709,8 +5743,8 @@ export const MySqlService = {
                 MAX(sales_scope) AS salesScope,
                 MAX(CAST(JSON_UNQUOTE(JSON_EXTRACT(ai_insights_json, '$.salesLogicVersion')) AS UNSIGNED)) AS salesLogicVersion
              FROM replenishment_cache
-             WHERE company_id = ? AND branch_id = ?`,
-            [companyId, branchId]
+             WHERE company_id = ? AND branch_id = ?${filterSql}`,
+            params
         );
         return {
             itemCount: Number(row?.itemCount) || 0,
@@ -5726,15 +5760,33 @@ export const MySqlService = {
     /**
      * Paginated cache read — used for ultra-fast first paint (default slim, no heavy JSON).
      */
-    async getReplenishmentFromCachePage(companyId, branchId, { page = 1, pageSize = 10, slim = true } = {}) {
+    async getReplenishmentFromCachePage(companyId, branchId, {
+        page = 1,
+        pageSize = 10,
+        slim = true,
+        search = "",
+        priority = "",
+        itemClass = "",
+    } = {}) {
         await this.ensureReplenishmentCacheTable();
         try {
-            const stats = await this.getReplenishmentCacheStats(companyId, branchId);
-            if (!stats.itemCount) return null;
+            const filters = {
+                search: String(search || "").trim(),
+                priority: String(priority || "").trim(),
+                itemClass: String(itemClass || "").trim(),
+            };
+            const branchStats = await this.getReplenishmentCacheStats(companyId, branchId);
+            if (!branchStats.itemCount) return null;
+
+            const hasFilters = filters.search || filters.priority || filters.itemClass;
+            const filteredStats = hasFilters
+                ? await this.getReplenishmentCacheStats(companyId, branchId, filters)
+                : branchStats;
 
             const safePage = Math.max(1, page);
             const limit = Math.max(1, Math.min(pageSize, 5000));
             const offset = (safePage - 1) * limit;
+            const totalItems = filteredStats.itemCount;
             const cols = slim
                 ? `inventory_id, description, item_class, current_stock, qty_sold_90, sales_velocity, days_remaining,
                    suggested_qty, priority_level, lead_time_days, vendor_id, branch_order_qty,
@@ -5742,14 +5794,20 @@ export const MySqlService = {
                    what_to_do, ai_preview, is_main_warehouse_view, updated_at, branch_id`
                 : `*`;
 
-            const [rows] = await purchasePool.query(
-                `SELECT ${cols}
-                 FROM replenishment_cache
-                 WHERE company_id = ? AND branch_id = ?
-                 ORDER BY FIELD(priority_level, 'High', 'Medium', 'Low'), suggested_qty DESC, inventory_id ASC
-                 LIMIT ? OFFSET ?`,
-                [companyId, branchId, limit, offset]
-            );
+            const params = [companyId, branchId];
+            const filterSql = this._replenishmentFilterSql(filters, params);
+            params.push(limit, offset);
+
+            const [rows] = totalItems > 0
+                ? await purchasePool.query(
+                    `SELECT ${cols}
+                     FROM replenishment_cache
+                     WHERE company_id = ? AND branch_id = ?${filterSql}
+                     ORDER BY FIELD(priority_level, 'High', 'Medium', 'Low'), suggested_qty DESC, inventory_id ASC
+                     LIMIT ? OFFSET ?`,
+                    params
+                )
+                : [[]];
 
             let recommendations = rows.map((row, i) =>
                 this.cacheRowToRecommendation(row, offset + i, { slim })
@@ -5779,23 +5837,23 @@ export const MySqlService = {
                 recommendations,
                 meta: {
                     branch: branchId,
-                    generatedAt: stats.updatedAt,
-                    itemCount: stats.itemCount,
+                    generatedAt: branchStats.updatedAt,
+                    itemCount: branchStats.itemCount,
                     cacheSource: "mysql",
-                    salesScope: stats.salesScope,
+                    salesScope: branchStats.salesScope,
                     salesMode: "gross",
                     pagination: {
                         page: safePage,
                         pageSize: limit,
-                        totalItems: stats.itemCount,
-                        totalPages: Math.max(1, Math.ceil(stats.itemCount / limit)),
+                        totalItems,
+                        totalPages: Math.max(1, Math.ceil(totalItems / limit)),
                     },
                     stats: {
-                        urgent: stats.urgentCount,
-                        soon: stats.soonCount,
-                        totalSuggested: stats.totalSuggested,
+                        urgent: branchStats.urgentCount,
+                        soon: branchStats.soonCount,
+                        totalSuggested: branchStats.totalSuggested,
                     },
-                    salesLogicVersion: stats.salesLogicVersion,
+                    salesLogicVersion: branchStats.salesLogicVersion,
                 },
             };
         } catch (err) {
@@ -5851,11 +5909,12 @@ export const MySqlService = {
         }
     },
 
-    async getReplenishmentFromCache(companyId, branchId) {
+    async getReplenishmentFromCache(companyId, branchId, filters = {}) {
         return this.getReplenishmentFromCachePage(companyId, branchId, {
             page: 1,
             pageSize: 100000,
             slim: true,
+            ...filters,
         });
     },
 

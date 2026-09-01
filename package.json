@@ -1,6 +1,6 @@
 {
   "name": "acu",
-  "version": "1.2.60",
+  "version": "1.2.61",
   "private": true,
   "scripts": {
     "dev": "next dev --webpack -p 3002",
