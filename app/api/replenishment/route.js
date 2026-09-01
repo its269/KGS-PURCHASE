@@ -92,13 +92,17 @@ async function loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize
         invalidateCache(memKey);
         invalidateCache(`accurateRetailDemand:`);
         invalidateCache(`liveBranchDemand:`);
+        invalidateCache(`replenishment:api:`);
     }
+
+    // Paginated pages always overlay live demand — never return raw cache rows only.
+    const overlay = async (recs) => applyLiveComingPo(recs, branch);
 
     if (pageSize === 0) {
         return getCached(memKey, bypassMemCache ? 0 : 45_000, async () => {
             const cached = await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch);
             if (!cached?.recommendations) return null;
-            const recommendations = await applyLiveComingPo(cached.recommendations, branch);
+            const recommendations = await overlay(cached.recommendations);
             return { recommendations, meta: cached.meta };
         });
     }
@@ -111,7 +115,7 @@ async function loadCachedWithLivePo(effectiveCompanyId, branch, { page, pageSize
     });
     if (!cachedPage?.recommendations) return null;
 
-    const recommendations = await applyLiveComingPo(cachedPage.recommendations, branch);
+    const recommendations = await overlay(cachedPage.recommendations);
     return { recommendations, meta: cachedPage.meta };
 }
 
@@ -135,6 +139,8 @@ export async function GET(request) {
     const companyId = getActiveCompanyFromRequest(request) || "main";
     const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
     const forceRefresh = searchParams.get("refresh") === "1";
+    const isMainBranch = String(branch).trim().toUpperCase() === "MAIN";
+    const bypassMemCache = forceRefresh || isMainBranch;
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
     const pageSizeRaw = parseInt(searchParams.get("pageSize") || "10", 10);
     // pageSize=0 means "all rows" (background full load)
@@ -154,7 +160,7 @@ export async function GET(request) {
         const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, {
             page,
             pageSize,
-            bypassMemCache: forceRefresh,
+            bypassMemCache,
         });
 
         if (cachedPage?.recommendations) {

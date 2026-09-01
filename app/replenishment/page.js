@@ -341,6 +341,14 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
             : (Number(rec.suggestedQty) || 0);
         const ltNum = Number(leadTime) || 0;
         const orderQtyWithLeadTime = ltNum > 0 && orderQty > 0 ? ltNum * orderQty : 0;
+        const branchReplTotal = Number(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0) || 0;
+        const mainStock = Number(rec.mainInventory ?? rec.currentStock ?? 0) || 0;
+        const comingPo = Number(rec.comingPO ?? 0) || 0;
+        const aiPreview = isMain && branchReplTotal > 0
+            ? `Branches need ${fmtNum(branchReplTotal)} units; MAIN has ${fmtNum(mainStock)} + ${fmtNum(comingPo)} incoming.`
+            : (how.preview || (hasSales && ads
+                ? `${fmtNum(mainStock || rec.currentStock)} on hand · ${fmtNum(ads)}/day`
+                : null));
 
         return (
             <tr key={rec.recommendationId} className={`repl-row ${priorityClass(rec.priorityLevel)}`}>
@@ -389,7 +397,7 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                 </td>
                 <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
                 <td className="repl-ai-cell">
-                    <p className="repl-ai-preview">{how.preview || "Tap Explain to see how this was calculated."}</p>
+                    <p className="repl-ai-preview">{aiPreview || "Tap Explain to see how this was calculated."}</p>
                     <button
                         type="button"
                         className={`repl-ai-btn ${isOpen ? "open" : ""}`}
@@ -1082,13 +1090,13 @@ export default function ReplenishmentPage() {
                                         {isMain ? (
                                             <>
                                                 <p>
-                                                    Units to buy from the vendor when MAIN is short, or the branch
-                                                    replenishment total when MAIN already has enough stock (so Order qty
-                                                    is not stuck at 0 while branches still need transfers).
+                                                    Units to buy from the vendor so MAIN can (1) cover branch
+                                                    transfers and (2) still keep its own {TARGET_DAYS_OF_COVER}-day shelf
+                                                    target after those transfers ship.
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    Vendor shortfall = max(0, Total branch repl. − Main inventory)<br />
-                                                    Order qty = Vendor shortfall if &gt; 0, else Total branch repl.
+                                                    MAIN target = ceil(Sells/day × {TARGET_DAYS_OF_COVER})<br />
+                                                    Order qty = max(branch shortfall, MAIN target − (Main inventory − Total branch repl.))
                                                 </p>
                                                 <p className="repl-col-info-note">
                                                     <strong>Coming PO</strong> is shown separately and is not subtracted.
