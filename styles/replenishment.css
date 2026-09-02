@@ -430,6 +430,10 @@
     color: var(--text-muted);
 }
 
+.repl-qty-surplus {
+    color: var(--status-success);
+}
+
 .repl-action {
     font-size: 0.82rem;
     color: var(--text-secondary);
@@ -441,6 +445,108 @@
     text-align: center;
     padding: 3rem 1.5rem !important;
     color: var(--text-secondary);
+}
+
+.repl-table-wrap {
+    position: relative;
+}
+
+.repl-table-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    min-height: 220px;
+    padding: 2rem 1rem;
+}
+
+.repl-table-spinner {
+    width: 44px;
+    height: 44px;
+    border: 3px solid var(--border-medium);
+    border-top-color: var(--accent-primary);
+    border-right-color: var(--accent-primary);
+    border-radius: 50%;
+    animation: repl-table-spin 0.75s linear infinite;
+    flex-shrink: 0;
+}
+
+.repl-table-spinner-lg {
+    width: 36px;
+    height: 36px;
+    border-width: 3px;
+}
+
+.repl-table-loading-text {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.01em;
+}
+
+.repl-table-loading-dots {
+    display: inline-flex;
+    gap: 0.1em;
+    margin-left: 0.15em;
+}
+
+.repl-table-loading-dots span {
+    animation: repl-loading-dot 1.2s ease-in-out infinite;
+    opacity: 0.25;
+}
+
+.repl-table-loading-dots span:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.repl-table-loading-dots span:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+.repl-table-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.85rem;
+    background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+    backdrop-filter: blur(2px);
+    border-radius: inherit;
+    pointer-events: none;
+}
+
+.repl-table-wrap.is-page-loading .repl-table {
+    opacity: 0.45;
+    transition: opacity 0.2s ease;
+}
+
+.repl-table-overlay-text {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+}
+
+@keyframes repl-table-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes repl-loading-dot {
+    0%, 80%, 100% {
+        opacity: 0.2;
+        transform: translateY(0);
+    }
+    40% {
+        opacity: 1;
+        transform: translateY(-2px);
+    }
 }
 
 .repl-footer {

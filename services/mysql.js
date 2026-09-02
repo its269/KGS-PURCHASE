@@ -1062,6 +1062,57 @@ export const MySqlService = {
         }
     },
 
+    /** Open PO qty for a small set of SKUs — avoids scanning all PO lines on paginated reads. */
+    async getOpenPoQtyForItems(inventoryIds, { warehouseId = "MAIN", includeOnHold = false, useOrderQty = false } = {}) {
+        const keys = [...new Set((inventoryIds || []).map((id) => normalizeInvKey(id)).filter(Boolean))];
+        if (!keys.length) return new Map();
+
+        try {
+            await this.ensureReceivedQtyColumn();
+            await this.ensurePoWarehouseColumns();
+            const destKey = String(warehouseId || "MAIN").trim().toUpperCase() || "MAIN";
+            const destinations = getStockWarehouseIdsForBranch(destKey);
+            if (!destinations.length) return new Map();
+
+            const openStatuses = openPoHeaderStatuses({ includeOnHold });
+            const branchMatch = sqlMatchOpenPoForBranch({
+                detailsAlias: "d",
+                headerAlias: "h",
+                destinations,
+            });
+            const qtyExpr = useOrderQty ? sqlPoLineOrderQty("d") : sqlPoLineOpenQty("d");
+            const idPh = keys.map(() => "?").join(", ");
+
+            const [rows] = await purchasePool.query(
+                `
+                SELECT
+                    UPPER(REPLACE(TRIM(d.inventory_id), ' ', '')) as inventoryId,
+                    COALESCE(SUM(${qtyExpr}), 0) as openQty
+                FROM purchase_order_details d
+                INNER JOIN purchase_history h
+                    ON h.order_nbr COLLATE utf8mb4_unicode_ci = d.order_nbr
+                WHERE h.status IN (${openStatuses.map(() => "?").join(", ")})
+                  AND d.inventory_id IS NOT NULL
+                  AND d.inventory_id != ''
+                  AND (${qtyExpr}) > 0
+                  AND ${branchMatch.clause}
+                  AND UPPER(REPLACE(TRIM(d.inventory_id), ' ', '')) IN (${idPh})
+                GROUP BY UPPER(REPLACE(TRIM(d.inventory_id), ' ', ''))
+                `,
+                [...openStatuses, ...branchMatch.params, ...keys]
+            );
+            const map = new Map();
+            for (const row of rows) {
+                const key = normalizeInvKey(row.inventoryId);
+                if (key) map.set(key, Number(row.openQty) || 0);
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getOpenPoQtyForItems Error]", err);
+            return new Map();
+        }
+    },
+
     /**
      * Get calculated reliability scores for all vendors
      */
@@ -2324,6 +2375,60 @@ export const MySqlService = {
             return map;
         } catch (err) {
             console.error("[MySQL getBranchOnHandMap Error]", err);
+            return map;
+        }
+    },
+
+    /** On-hand for a small set of SKUs — used for fast paginated replenishment overlay. */
+    async getBranchOnHandForItems(inventoryIds, { branch = "MAIN", companyId = "main" } = {}) {
+        const keys = [...new Set((inventoryIds || []).map((id) => normalizeInvKey(id)).filter(Boolean))];
+        const map = new Map();
+        if (!keys.length || isExcludedBranchAlias(branch)) return map;
+
+        const effectiveCompanyId = resolveCompanyIdForBranch(companyId, branch);
+        const destinations = getStockWarehouseIdsForBranch(branch);
+        if (!destinations.length) return map;
+
+        try {
+            const src = await this._forecastStockSource();
+            const whCol = src.warehouseCol;
+            const whPh = destinations.map(() => "?").join(", ");
+            const idPh = keys.map(() => "?").join(", ");
+            const damageEx = sqlExcludeForecastDamage("f", whCol);
+            const where = [
+                `f.${whCol} != '__catalog__'`,
+                `UPPER(TRIM(COALESCE(f.${whCol},''))) IN (${whPh})`,
+                `UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) IN (${idPh})`,
+                damageEx.clause,
+            ];
+            const params = [...destinations, ...keys, ...damageEx.params];
+
+            if (isEcomBranchAlias(branch) || effectiveCompanyId === "ecommerce") {
+                where.unshift(`(f.company_id = 'ecommerce' OR f.company_id = 'main')`);
+            } else {
+                where.unshift(`f.company_id = ?`);
+                params.unshift(effectiveCompanyId);
+                const ecomEx = sqlExcludeEcomBranches("f");
+                where.push(ecomEx.clause);
+                params.push(...ecomEx.params);
+            }
+
+            const [rows] = await purchasePool.query(
+                `SELECT UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) AS invKey,
+                        COALESCE(SUM(GREATEST(0, COALESCE(f.on_hand, 0))), 0) AS onHand
+                 FROM ${src.qualified} f
+                 WHERE ${where.join(" AND ")}
+                 GROUP BY UPPER(REPLACE(TRIM(f.inventory_id), ' ', ''))`,
+                params
+            );
+            for (const r of rows) {
+                const key = String(r.invKey || "").trim();
+                if (!key) continue;
+                map.set(key, Number(r.onHand) || 0);
+            }
+            return map;
+        } catch (err) {
+            console.error("[MySQL getBranchOnHandForItems Error]", err);
             return map;
         }
     },
@@ -5701,9 +5806,11 @@ export const MySqlService = {
         let sql = "";
         const q = String(search || "").trim();
         if (q) {
-            const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+            const escaped = q.replace(/[%_\\]/g, (c) => `\\${c}`);
+            const likePrefix = `${escaped}%`;
+            const likeContains = `%${escaped}%`;
             sql += ` AND (inventory_id LIKE ? OR description LIKE ? OR item_class LIKE ?)`;
-            params.push(like, like, like);
+            params.push(likePrefix, likeContains, likeContains);
         }
         const pri = String(priority || "").trim().toLowerCase();
         if (pri === "urgent") sql += ` AND priority_level = 'High'`;

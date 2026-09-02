@@ -21,6 +21,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const rebuildInFlight = new Map();
+const MEM_CACHE_MS = 120_000;
 
 function isCacheFresh(cacheUpdatedAt, dataWatermark) {
     if (!cacheUpdatedAt) return false;
@@ -95,36 +96,39 @@ function scheduleBackgroundRebuildAll(companyId) {
 }
 
 /**
- * Load cache rows + overlay live Coming PO and demand.
- * Full-branch results are memory-cached briefly so first-page + follow-up full
- * loads (and filter/export) share one open-PO query.
+ * Cache-first page load. Normal reads skip the heavy live overlay (15s+ demand rollup).
+ * Explicit Refresh uses a fast per-row overlay (scoped stock + PO queries only).
  */
-async function loadCachedWithLivePo(effectiveCompanyId, branch, {
+async function loadCachedPage(effectiveCompanyId, branch, {
     page,
     pageSize,
     search = "",
     priority = "",
     itemClass = "",
     bypassMemCache = false,
+    liveOverlay = false,
 }) {
     const branchKey = String(branch).trim().toUpperCase();
     const searchKey = String(search || "").trim().toLowerCase().slice(0, 80);
     const priorityKey = String(priority || "").trim().toLowerCase().slice(0, 20);
     const classKey = String(itemClass || "").trim().toLowerCase().slice(0, 80);
-    const memKey = `replenishment:api:${effectiveCompanyId}:${branchKey}:${page}:${pageSize}:${searchKey}:${priorityKey}:${classKey}`;
+    const overlayKey = liveOverlay ? "live" : "cache";
+    const memKey = `replenishment:api:${effectiveCompanyId}:${branchKey}:${page}:${pageSize}:${searchKey}:${priorityKey}:${classKey}:${overlayKey}`;
 
     if (bypassMemCache) {
         invalidateCache(`replenishment:api:${effectiveCompanyId}:${branchKey}`);
     }
 
     const filters = { search: searchKey, priority: priorityKey, itemClass: classKey };
-    const overlay = async (recs) => applyLiveComingPo(recs, branch, { slim: true });
 
     const loader = async () => {
         if (pageSize === 0) {
             const cached = await MySqlService.getReplenishmentFromCache(effectiveCompanyId, branch, filters);
             if (!cached?.recommendations) return null;
-            const recommendations = await overlay(cached.recommendations);
+            let recommendations = cached.recommendations;
+            if (liveOverlay && recommendations.length) {
+                recommendations = await applyLiveComingPo(recommendations, branch, { slim: true, fast: true });
+            }
             return { recommendations, meta: cached.meta };
         }
 
@@ -134,20 +138,17 @@ async function loadCachedWithLivePo(effectiveCompanyId, branch, {
             slim: true,
             ...filters,
         });
-        if (!cachedPage?.recommendations && cachedPage?.meta?.itemCount) return cachedPage;
         if (!cachedPage) return null;
+        if (!cachedPage.recommendations?.length && !cachedPage.meta?.itemCount) return null;
 
-        const recommendations = cachedPage.recommendations?.length
-            ? await overlay(cachedPage.recommendations)
-            : [];
+        let recommendations = cachedPage.recommendations || [];
+        if (liveOverlay && recommendations.length) {
+            recommendations = await applyLiveComingPo(recommendations, branch, { slim: true, fast: true });
+        }
         return { recommendations, meta: cachedPage.meta };
     };
 
-    if (pageSize === 0) {
-        return getCached(memKey, bypassMemCache ? 0 : 45_000, loader);
-    }
-
-    return getCached(memKey, bypassMemCache ? 0 : 20_000, loader);
+    return getCached(memKey, bypassMemCache ? 0 : MEM_CACHE_MS, loader);
 }
 
 /** Replenishment API — cache-first, paginated, memory-cached for ultra-fast loads. */
@@ -176,8 +177,8 @@ export async function GET(request) {
     const bypassMemCache = forceRefresh;
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
     const pageSizeRaw = parseInt(searchParams.get("pageSize") || "10", 10);
-    // pageSize=0 means "all rows" (background full load)
     const pageSize = pageSizeRaw === 0 ? 0 : Math.max(1, Math.min(pageSizeRaw || 10, 5000));
+    const branchKey = String(branch).trim().toUpperCase();
 
     if (isExcludedBranchAlias(branch)) {
         return NextResponse.json({
@@ -188,21 +189,27 @@ export async function GET(request) {
     }
 
     try {
-        // Prefer cache for all normal loads. Full recompute is background-only unless
-        // there is no cache at all (cold start) — prevents MySQL pool exhaustion.
-        const cachedPage = await loadCachedWithLivePo(effectiveCompanyId, branch, {
-            page,
-            pageSize,
-            search,
-            priority,
-            itemClass,
-            bypassMemCache,
-        });
+        const [cachedPage, itemClasses] = await Promise.all([
+            loadCachedPage(effectiveCompanyId, branch, {
+                page,
+                pageSize,
+                search,
+                priority,
+                itemClass,
+                bypassMemCache,
+                liveOverlay: forceRefresh,
+            }),
+            getCached(
+                `repl:classes:${effectiveCompanyId}:${branchKey}`,
+                bypassMemCache ? 0 : MEM_CACHE_MS,
+                () => MySqlService.getReplenishmentItemClasses(effectiveCompanyId, branch)
+            ),
+        ]);
 
         if (cachedPage?.meta?.itemCount != null || cachedPage?.recommendations) {
             const cacheVersion = Number(cachedPage.meta?.salesLogicVersion) || 0;
             const versionOk = cacheVersion === REPLENISHMENT_SALES_LOGIC_VERSION;
-            const isMainBranch = String(branch).trim().toUpperCase() === "MAIN";
+            const isMainBranch = branchKey === "MAIN";
 
             if (forceRefresh || !versionOk) {
                 if (forceRefresh) {
@@ -225,23 +232,14 @@ export async function GET(request) {
             }
 
             const recommendations = cachedPage.recommendations || [];
-            const branchKey = String(branch).trim().toUpperCase();
-            const itemClasses = await getCached(
-                `repl:classes:${effectiveCompanyId}:${branchKey}`,
-                bypassMemCache ? 0 : 120_000,
-                () => MySqlService.getReplenishmentItemClasses(effectiveCompanyId, branch)
-            );
             const stats = {
-                urgent: cachedPage.meta?.stats?.urgent
-                    ?? recommendations.filter((r) => r.priorityLevel === "High").length,
-                soon: cachedPage.meta?.stats?.soon
-                    ?? recommendations.filter((r) => r.priorityLevel === "Medium").length,
-                totalSuggested: cachedPage.meta?.stats?.totalSuggested
-                    ?? recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0),
+                urgent: cachedPage.meta?.stats?.urgent ?? 0,
+                soon: cachedPage.meta?.stats?.soon ?? 0,
+                totalSuggested: cachedPage.meta?.stats?.totalSuggested ?? 0,
                 itemCount: cachedPage.meta?.itemCount ?? recommendations.length,
             };
 
-            if (pageSize === 0) {
+            if (pageSize === 0 && recommendations.length) {
                 stats.urgent = recommendations.filter((r) => r.priorityLevel === "High").length;
                 stats.soon = recommendations.filter((r) => r.priorityLevel === "Medium").length;
                 stats.totalSuggested = recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0);
@@ -259,14 +257,14 @@ export async function GET(request) {
                     targetDaysOfCover: TARGET_DAYS_OF_COVER,
                     stockSource: "mysql",
                     salesSource: "mysql",
-                    isMainWarehouseView: String(branch).trim().toUpperCase() === "MAIN",
+                    isMainWarehouseView: branchKey === "MAIN",
                     servedFrom: forceRefresh
                         ? "cache-refreshing"
                         : versionOk
                             ? "cache"
                             : "cache-stale-rebuilding",
                     salesLogicVersion: cacheVersion || cachedPage.meta?.salesLogicVersion,
-                    comingPoScope: String(branch).trim().toUpperCase() || "MAIN",
+                    comingPoScope: branchKey || "MAIN",
                     stockWarehouses: getStockWarehouseIdsForBranch(branch),
                     stockMetric: "qty_on_hand",
                 },
@@ -276,7 +274,7 @@ export async function GET(request) {
         // Cold path only when no cache exists
         const computed = await computeReplenishmentForBranch(branch, companyId);
         await MySqlService.upsertReplenishmentCache(effectiveCompanyId, branch, computed.recommendations);
-        invalidateCache(`replenishment:api:${effectiveCompanyId}:${String(branch).trim().toUpperCase()}`);
+        invalidateCache(`replenishment:api:${effectiveCompanyId}:${branchKey}`);
 
         const all = computed.recommendations;
         const totalItems = all.length;
@@ -304,7 +302,7 @@ export async function GET(request) {
                 targetDaysOfCover: TARGET_DAYS_OF_COVER,
                 pagination,
                 servedFrom: forceRefresh ? "live-refresh" : "live",
-                isMainWarehouseView: String(branch).trim().toUpperCase() === "MAIN",
+                isMainWarehouseView: branchKey === "MAIN",
                 stockWarehouses: getStockWarehouseIdsForBranch(branch),
                 stats: {
                     urgent: all.filter((r) => r.priorityLevel === "High").length,

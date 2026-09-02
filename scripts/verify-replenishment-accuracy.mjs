@@ -11,7 +11,7 @@ dotenv.config({ path: fs.existsSync(".env.local") ? ".env.local" : ".env" });
 
 const TARGET = 60;
 const LOOKBACK = 90;
-const LOGIC_VERSION = 18;
+const LOGIC_VERSION = 19;
 const failures = [];
 
 function averageDailySales(qtySold, lookbackDays = LOOKBACK) {
@@ -31,18 +31,30 @@ function computeMainVendorOrderQty(mainInventory, totalBranchReplenishment, main
     return Math.max(branchShortfall, mainShelfGap);
 }
 
-function resolveMainOrderQty(mainInventory, totalBranchReplenishment, mainTargetStock) {
+function resolveMainOrderQty(mainInventory, totalBranchReplenishment, mainTargetStock, comingPoQty = 0) {
     const branchRepl = Number(totalBranchReplenishment) || 0;
-    const vendorOrderQty = computeMainVendorOrderQty(mainInventory, totalBranchReplenishment, mainTargetStock);
-    return vendorOrderQty > 0 ? vendorOrderQty : branchRepl;
+    const mainInv = Number(mainInventory) || 0;
+    const comingPo = Number(comingPoQty) || 0;
+    return branchRepl - (mainInv + comingPo);
 }
 
-function computeMainRowMetrics({ mainInventory, totalBranchReplenishment, mainQtySold90, lookbackDays = LOOKBACK }) {
+function computeMainRowMetrics({
+    mainInventory,
+    totalBranchReplenishment,
+    mainQtySold90,
+    lookbackDays = LOOKBACK,
+    comingPoQty = 0,
+}) {
     const qty90 = Number(mainQtySold90) || 0;
     const mainAds = qty90 > 0 ? averageDailySales(qty90, lookbackDays) : 0;
     const mainTargetStock = mainAds > 0 ? Math.ceil(mainAds * TARGET) : 0;
     const vendorOrderQty = computeMainVendorOrderQty(mainInventory, totalBranchReplenishment, mainTargetStock);
-    const suggestedQty = resolveMainOrderQty(mainInventory, totalBranchReplenishment, mainTargetStock);
+    const suggestedQty = resolveMainOrderQty(
+        mainInventory,
+        totalBranchReplenishment,
+        mainTargetStock,
+        comingPoQty
+    );
     return { mainTargetStock, vendorOrderQty, suggestedQty };
 }
 
@@ -57,25 +69,36 @@ console.log("");
 
 console.log("1) Pure formula checks (business examples)");
 {
-    // M15 Cyan — manager spreadsheet: 717 vendor PO
+    // M15 Cyan — vendor PO reference (vendorOrderQty); Order qty uses net formula when no coming PO
     const m15 = computeMainRowMetrics({
         mainInventory: 636,
         totalBranchReplenishment: 517,
         mainQtySold90: 13.93 * 90,
         lookbackDays: 90,
+        comingPoQty: 0,
     });
     assert("M15 vendor PO = 717", m15.vendorOrderQty === 717, `got ${m15.vendorOrderQty}`);
-    assert("M15 Order qty = 717", m15.suggestedQty === 717, `got ${m15.suggestedQty}`);
+    assert("M15 Order qty = TBR − MAIN (no coming PO)", m15.suggestedQty === -119, `got ${m15.suggestedQty}`);
 
-    // Papijet Yellow — MAIN has stock; branches need transfers
+    // Papijet Cyan — surplus when MAIN + Coming PO exceed branch need
+    const papijetCyan = computeMainRowMetrics({
+        mainInventory: 3147,
+        totalBranchReplenishment: 756,
+        mainQtySold90: 500,
+        lookbackDays: 90,
+        comingPoQty: 3000,
+    });
+    assert("Papijet Cyan Order qty = −5,391", papijetCyan.suggestedQty === -5391, `got ${papijetCyan.suggestedQty}`);
+
+    // Papijet Yellow — branch need vs MAIN + Coming PO
     const papijet = computeMainRowMetrics({
         mainInventory: 2711,
         totalBranchReplenishment: 467,
         mainQtySold90: 500,
         lookbackDays: 90,
+        comingPoQty: 2000,
     });
-    assert("Papijet vendor PO = 0 (MAIN covers branches)", papijet.vendorOrderQty === 0, `got ${papijet.vendorOrderQty}`);
-    assert("Papijet Order qty = Total branch repl (467)", papijet.suggestedQty === 467, `got ${papijet.suggestedQty}`);
+    assert("Papijet Yellow Order qty = −4,244", papijet.suggestedQty === -4244, `got ${papijet.suggestedQty}`);
 
     // Branch BACOLOD formula
     const ads = 22 / 90;

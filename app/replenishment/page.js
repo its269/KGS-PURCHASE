@@ -389,14 +389,15 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                     <input
                         className="repl-qty-input"
                         type="number"
-                        min="0"
                         step="1"
                         value={drafts[rec.itemId] !== undefined ? drafts[rec.itemId] : (rec.suggestedQty ?? 0)}
                         onChange={(e) => onOrderQtyChange(rec, e.target.value)}
                         aria-label={`Order qty for ${rec.itemId}`}
                     />
-                    {Number(rec.suggestedQty) > 0 ? (
-                        <span className="repl-qty-suggested">Suggested {fmtNum(rec.suggestedQty)}</span>
+                    {Number(rec.suggestedQty) !== 0 ? (
+                        <span className={`repl-qty-suggested ${Number(rec.suggestedQty) < 0 ? "repl-qty-surplus" : ""}`}>
+                            Suggested {fmtNum(rec.suggestedQty)}
+                        </span>
                     ) : null}
                 </td>
                 <td className="repl-num">
@@ -1039,7 +1040,13 @@ export default function ReplenishmentPage() {
 
                 {error && <div className="si-error">{error}</div>}
 
-                <div className={`db-table-wrap ${pageLoading ? "is-bg-loading" : ""}`} data-tour="main-table">
+                <div className={`db-table-wrap repl-table-wrap ${pageLoading ? "is-page-loading" : ""}`} data-tour="main-table">
+                    {pageLoading && recs.length > 0 && (
+                        <div className="repl-table-overlay" role="status" aria-live="polite" aria-busy="true">
+                            <div className="repl-table-spinner repl-table-spinner-lg" aria-hidden="true" />
+                            <span className="repl-table-overlay-text">Updating results…</span>
+                        </div>
+                    )}
                     <table className="db-table db-table--fit repl-table">
                         <thead>
                             <tr>
@@ -1123,20 +1130,15 @@ export default function ReplenishmentPage() {
                                         {isMain ? (
                                             <>
                                                 <p>
-                                                    When MAIN must buy from a vendor, shows vendor PO qty
-                                                    (includes MAIN shelf target after branch transfers, e.g. M15 → 717).
-                                                    When MAIN already has enough stock, shows{" "}
-                                                    <strong>Total branch repl.</strong> so branch needs (e.g. BACOLOD 13)
-                                                    roll up instead of showing 0.
+                                                    Net branch need after MAIN on-hand and open purchase orders.
+                                                    Positive = shortfall to cover; negative = surplus at MAIN.
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    Vendor PO = max(branch shortfall, MAIN target − (Main inventory − Total branch repl.))<br />
-                                                    Order qty = Vendor PO if &gt; 0, else Total branch repl.
+                                                    Order qty = Total branch repl. − (Main inventory + Coming PO)
                                                 </p>
                                                 <p className="repl-col-info-note">
-                                                    <strong>Coming PO</strong> is shown separately and is not subtracted.
-                                                    Order qty is <strong>0</strong> only when no retail branch needs a
-                                                    transfer for that product.
+                                                    Example: branch need 756, MAIN 3,147 + Coming PO 3,000 →
+                                                    756 − 6,147 = <strong>−5,391</strong> (surplus, no order needed).
                                                 </p>
                                             </>
                                         ) : (
@@ -1190,8 +1192,15 @@ export default function ReplenishmentPage() {
                             {loading && recs.length === 0 ? (
                                 <tr>
                                     <td colSpan={11} className="repl-table-empty">
-                                        <div className="db-spinner db-spinner-lg" style={{ margin: "0 auto 0.75rem" }} />
-                                        Loading recommendations for {scopeLabel}...
+                                        <div className="repl-table-loading" role="status" aria-live="polite" aria-busy="true">
+                                            <div className="repl-table-spinner" aria-hidden="true" />
+                                            <p className="repl-table-loading-text">
+                                                Loading recommendations for {scopeLabel}
+                                                <span className="repl-table-loading-dots" aria-hidden="true">
+                                                    <span>.</span><span>.</span><span>.</span>
+                                                </span>
+                                            </p>
+                                        </div>
                                     </td>
                                 </tr>
                             ) : recs.length === 0 ? (
