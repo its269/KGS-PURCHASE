@@ -140,9 +140,7 @@ export function groupCmsMediaBrowse(
       continue;
     }
 
-    // When grouping by model, keep only uncategorized files at this level.
-    if (groupByModel) continue;
-
+    // Products with media but no model still appear under Brochure/Photo/Video.
     products.push({
       id: row.inventory_id,
       name: row.inventory_name,

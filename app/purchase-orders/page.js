@@ -1533,10 +1533,14 @@ export default function PurchaseOrdersPage() {
                                                     <IconChevronDown />
                                                 </span>
                                             </td>
-                                            <td><span className="db-inv-id">{po.orderNbr}</span></td>
-                                            <td><span className="po-vendor-id">{po.vendorId || "—"}</span></td>
-                                            <td>
-                                                <span className="po-vendor-name">{po.vendorName || "—"}</span>
+                                            <td className="po-col-order">
+                                                <span className="db-inv-id" title={po.orderNbr}>{po.orderNbr}</span>
+                                            </td>
+                                            <td className="po-col-vendor-id">
+                                                <span className="po-vendor-id" title={po.vendorId || ""}>{po.vendorId || "—"}</span>
+                                            </td>
+                                            <td className="po-col-vendor-name">
+                                                <span className="po-vendor-name" title={po.vendorName || ""}>{po.vendorName || "—"}</span>
                                             </td>
                                             <td onClick={(e) => e.stopPropagation()}>
                                                 <select
