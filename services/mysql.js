@@ -583,6 +583,54 @@ export const MySqlService = {
         return { orderNbr: nbr, status: next };
     },
 
+    /**
+     * Fix stale Open POs in MySQL when Acumatica already closed/received them.
+     * Delta sync can miss status transitions if LastModifiedDateTime was not re-fetched.
+     */
+    async reconcilePurchaseOrderStatuses() {
+        const openStatuses = [
+            "Open",
+            "Balanced",
+            "Pending Approval",
+            "Pending Printing",
+            "Pending Email",
+            "On Hold",
+            "Hold",
+        ];
+        const statusPh = openStatuses.map(() => "?").join(", ");
+
+        const [receiptResult] = await purchasePool.query(
+            `UPDATE purchase_history
+             SET status = 'Closed'
+             WHERE status IN (${statusPh})
+               AND receipt_date IS NOT NULL`,
+            openStatuses
+        );
+
+        const [linesResult] = await purchasePool.query(
+            `UPDATE purchase_history h
+             INNER JOIN (
+               SELECT d.order_nbr
+               FROM purchase_order_details d
+               GROUP BY d.order_nbr
+               HAVING SUM(COALESCE(d.qty, 0)) > 0
+                  AND SUM(GREATEST(COALESCE(d.qty, 0) - COALESCE(d.received_qty, 0), 0)) = 0
+             ) fully ON fully.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+             SET h.status = 'Closed'
+             WHERE h.status IN (${statusPh})`,
+            openStatuses
+        );
+
+        const closed =
+            (Number(receiptResult?.affectedRows) || 0) +
+            (Number(linesResult?.affectedRows) || 0);
+        if (closed > 0) {
+            invalidateCache("po:");
+            invalidateCache("openPo:");
+        }
+        return { closed };
+    },
+
     async ensureReceivedQtyColumn() {
         try {
             const purchaseDb = process.env.MYSQL_PURCHASE_DATABASE || "db_purchase";

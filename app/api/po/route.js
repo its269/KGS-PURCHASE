@@ -9,6 +9,7 @@ import {
 import { getSystemAcumaticaCredential } from "@/lib/acumatica-system-auth";
 import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
+import { getCached } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -133,6 +134,10 @@ export async function GET(request) {
 
         if (source === "mysql") {
             try {
+                await getCached("po:reconcile-status", 60_000, () =>
+                    MySqlService.reconcilePurchaseOrderStatuses()
+                );
+
                 let result = await MySqlService.getPurchaseOrders(fetchParams);
 
                 const needsVendorBackfill = result.orders.some(

@@ -1056,6 +1056,10 @@ export async function POST(request) {
                             if (orders.length < 50) break;
                         }
                         poRowsSynced = poTotal;
+                        const poReconcile = await MySqlService.reconcilePurchaseOrderStatuses();
+                        if (poReconcile?.closed > 0) {
+                            console.log(`>>> [Sync API] Reconciled ${poReconcile.closed} stale Open PO(s) to Closed`);
+                        }
                         await MySqlService.logSyncEvent(options.mode, "Incoming PO", "completed", poTotal);
                         send({ section: "Incoming PO", status: "done", details: "Purchase order sync complete.", progress: 100 });
                     } catch (poErr) {
