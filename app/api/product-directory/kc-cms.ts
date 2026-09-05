@@ -1303,6 +1303,27 @@ export async function itemClassMedia(
   });
 }
 
+async function loadInventoryGalleryUrls(
+  inventoryItemId: number,
+): Promise<string[]> {
+  if (!Number.isFinite(inventoryItemId) || inventoryItemId <= 0) {
+    return [];
+  }
+  try {
+    const [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT file_url FROM product_inventory_images
+       WHERE inventory_item_id = ?
+       ORDER BY sort_order ASC, id ASC`,
+      [inventoryItemId],
+    );
+    return rows
+      .map((r) => resolveCmsMediaUrl(String(r.file_url ?? "")))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * All CMS media files for one Product Database inventory row
  * (KelinConnect /product-database/inventory/{id} uploads).
@@ -1318,7 +1339,7 @@ export async function getProductMedia(
   let rows: RowDataPacket[];
   if (/^\d+$/.test(lookup)) {
     [rows] = await getPool().query<RowDataPacket[]>(
-      `SELECT inventory_id, inventory_name, image_url, brochure_url, youtube_url,
+      `SELECT id, inventory_id, inventory_name, image_url, brochure_url, youtube_url,
               kc_category, kc_item_class
        FROM product_inventory_items
        WHERE deleted_at IS NULL AND id = ?
@@ -1327,7 +1348,7 @@ export async function getProductMedia(
     );
   } else {
     [rows] = await getPool().query<RowDataPacket[]>(
-      `SELECT inventory_id, inventory_name, image_url, brochure_url, youtube_url,
+      `SELECT id, inventory_id, inventory_name, image_url, brochure_url, youtube_url,
               kc_category, kc_item_class
        FROM product_inventory_items
        WHERE deleted_at IS NULL AND inventory_id = ?
@@ -1344,6 +1365,7 @@ export async function getProductMedia(
   const cat = String(row.kc_category || "").trim();
   const ic = String(row.kc_item_class || "").trim();
   const folderPath = [ROOT_NAME, cat, ic].filter(Boolean);
+  const galleryImageUrls = await loadInventoryGalleryUrls(Number(row.id));
 
   const entries = [
     { kind: "images", column: "image_url" as const, label: "Photo" },
@@ -1353,7 +1375,10 @@ export async function getProductMedia(
 
   const products: InventoryProduct[] = [];
   for (const entry of entries) {
-    const urls = expandMediaUrls(String(row[entry.column] ?? ""));
+    const urls =
+      entry.kind === "images" && galleryImageUrls.length > 0
+        ? galleryImageUrls
+        : expandMediaUrls(String(row[entry.column] ?? ""));
     urls.forEach((url, index) => {
       products.push({
         id: cmsMediaProductId(inventoryId, entry.kind, index),
