@@ -1336,25 +1336,30 @@ export async function getProductMedia(
   const lookup = inventoryIdFromFlatCmsFileProductId(productId.trim());
   const kindFilter = mediaKind?.trim().toLowerCase() || "";
 
-  let rows: RowDataPacket[];
-  if (/^\d+$/.test(lookup)) {
-    [rows] = await getPool().query<RowDataPacket[]>(
+  // Prefer inventory_id (SKU). All-digit SKUs like 130101101000030 must NOT be
+  // treated as CMS row id — that id is smaller (e.g. gallery/.../172089/...).
+  let rows: RowDataPacket[] = [];
+  {
+    const [bySku] = await getPool().query<RowDataPacket[]>(
+      `SELECT id, inventory_id, inventory_name, image_url, brochure_url, youtube_url,
+              kc_category, kc_item_class
+       FROM product_inventory_items
+       WHERE deleted_at IS NULL AND BINARY inventory_id = BINARY ?
+       LIMIT 1`,
+      [lookup],
+    );
+    rows = bySku;
+  }
+  if (rows.length === 0 && /^\d+$/.test(lookup)) {
+    const [byId] = await getPool().query<RowDataPacket[]>(
       `SELECT id, inventory_id, inventory_name, image_url, brochure_url, youtube_url,
               kc_category, kc_item_class
        FROM product_inventory_items
        WHERE deleted_at IS NULL AND id = ?
        LIMIT 1`,
-      [lookup],
+      [Number(lookup)],
     );
-  } else {
-    [rows] = await getPool().query<RowDataPacket[]>(
-      `SELECT id, inventory_id, inventory_name, image_url, brochure_url, youtube_url,
-              kc_category, kc_item_class
-       FROM product_inventory_items
-       WHERE deleted_at IS NULL AND inventory_id = ?
-       LIMIT 1`,
-      [lookup],
-    );
+    rows = byId;
   }
 
   const row = rows[0];
