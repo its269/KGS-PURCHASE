@@ -1,6 +1,8 @@
 import { randomBytes } from "crypto";
 import { getPool, type RowDataPacket } from "./db";
 import {
+  cmsMediaProductId,
+  expandMediaUrls,
   flowchartMediaKind,
   flatCmsFilesFromRows,
   groupCmsMediaBrowse,
@@ -1002,18 +1004,24 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
       cmsModel.kind,
       cmsModel.modelId,
     );
-    // Only files for this media kind + model (skip empty URLs).
-    const products = rows
-      .map((row) => ({
-        id: row.inventory_id,
-        name: row.inventory_name,
-        sku: row.inventory_id,
-        description: "",
-        file_url: resolveCmsMediaUrl(row.media_url),
-        folder_id: current,
-        folder_path: [...path, row.model_name || "Model"],
-      }))
-      .filter((p) => p.file_url.trim() !== "");
+    const products: InventoryProduct[] = [];
+    for (const row of rows) {
+      const urls = expandMediaUrls(row.media_url);
+      urls.forEach((url, index) => {
+        products.push({
+          id: cmsMediaProductId(row.inventory_id, cmsModel.kind, index),
+          name:
+            urls.length > 1
+              ? `${row.inventory_name} (${index + 1})`
+              : row.inventory_name,
+          sku: row.inventory_id,
+          description: "",
+          file_url: url,
+          folder_id: current,
+          folder_path: [...path, row.model_name || "Model"],
+        });
+      });
+    }
     return { folders: [], products };
   }
 
@@ -1293,6 +1301,73 @@ export async function itemClassMedia(
     groupByModel: shouldGroupMediaByModel(icRow.category_id),
     allowEmptyUrl: !requireMediaUrl(kind, icRow.category_id),
   });
+}
+
+/**
+ * All CMS media files for one Product Database inventory row
+ * (KelinConnect /product-database/inventory/{id} uploads).
+ */
+export async function getProductMedia(
+  productId: string,
+  mediaKind?: string,
+): Promise<BrowseResult> {
+  await ensureTables();
+  const lookup = inventoryIdFromFlatCmsFileProductId(productId.trim());
+  const kindFilter = mediaKind?.trim().toLowerCase() || "";
+
+  let rows: RowDataPacket[];
+  if (/^\d+$/.test(lookup)) {
+    [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT inventory_id, inventory_name, image_url, brochure_url, youtube_url,
+              kc_category, kc_item_class
+       FROM product_inventory_items
+       WHERE deleted_at IS NULL AND id = ?
+       LIMIT 1`,
+      [lookup],
+    );
+  } else {
+    [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT inventory_id, inventory_name, image_url, brochure_url, youtube_url,
+              kc_category, kc_item_class
+       FROM product_inventory_items
+       WHERE deleted_at IS NULL AND inventory_id = ?
+       LIMIT 1`,
+      [lookup],
+    );
+  }
+
+  const row = rows[0];
+  if (!row) return { folders: [], products: [] };
+
+  const inventoryId = String(row.inventory_id);
+  const name = String(row.inventory_name || inventoryId);
+  const cat = String(row.kc_category || "").trim();
+  const ic = String(row.kc_item_class || "").trim();
+  const folderPath = [ROOT_NAME, cat, ic].filter(Boolean);
+
+  const entries = [
+    { kind: "images", column: "image_url" as const, label: "Photo" },
+    { kind: "brochure", column: "brochure_url" as const, label: "Brochure" },
+    { kind: "videos", column: "youtube_url" as const, label: "Video" },
+  ].filter((entry) => !kindFilter || entry.kind === kindFilter);
+
+  const products: InventoryProduct[] = [];
+  for (const entry of entries) {
+    const urls = expandMediaUrls(String(row[entry.column] ?? ""));
+    urls.forEach((url, index) => {
+      products.push({
+        id: cmsMediaProductId(inventoryId, entry.kind, index),
+        name: urls.length > 1 ? `${name} (${index + 1})` : name,
+        sku: inventoryId,
+        description: entry.label,
+        file_url: url,
+        folder_id: "",
+        folder_path: [...folderPath, entry.label],
+      });
+    });
+  }
+
+  return { folders: [], products };
 }
 
 export async function createFolder(body: Record<string, unknown>) {

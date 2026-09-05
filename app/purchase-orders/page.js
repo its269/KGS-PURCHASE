@@ -777,6 +777,7 @@ export default function PurchaseOrdersPage() {
     const [orders, setOrders] = useState([]);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(false);
+    const [totalCount, setTotalCount] = useState(null);
     const [search, setSearch] = useState("");
     const [debSearch, setDebSearch] = useState("");
     const [startDate, setStartDate] = useState(() => yearStartIso());
@@ -1088,6 +1089,7 @@ export default function PurchaseOrdersPage() {
                 if (!nbrs.length) {
                     setOrders([]);
                     setHasMore(false);
+                    setTotalCount(0);
                     return;
                 }
             }
@@ -1101,6 +1103,11 @@ export default function PurchaseOrdersPage() {
             const data = await res.json();
             setOrders(data.orders ?? []);
             setHasMore(data.hasMore ?? false);
+            setTotalCount(
+                typeof data.totalCount === "number" && Number.isFinite(data.totalCount)
+                    ? data.totalCount
+                    : null
+            );
         } catch (err) {
             if (err.message === "Unauthorized") return;
             setError(err.message || "Failed to load purchase orders.");
@@ -1692,6 +1699,7 @@ export default function PurchaseOrdersPage() {
                     <PaginationBar
                         page={page}
                         pageSize={PAGE_SIZE}
+                        totalCount={totalCount}
                         hasMore={hasMore}
                         onPageChange={setPage}
                         itemLabel="orders"

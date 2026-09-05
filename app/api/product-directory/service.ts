@@ -6,6 +6,7 @@ import {
     createProduct,
     ensureTables,
     getProduct,
+    getProductMedia,
     itemClassMedia,
     listActionLogs,
     search,
@@ -58,6 +59,14 @@ export const ProductDirectoryService = {
         const product = await getProduct(productId);
         if (!product) throw httpError("Product not found", 404);
         return product;
+    },
+
+    async productMedia(body: JsonBody = {}) {
+        await ensureTables();
+        const productId = String(body.product_id || "").trim();
+        if (!productId) throw httpError("product_id is required", 400);
+        const mediaKind = String(body.media_kind || body.mediaKind || "").trim();
+        return getProductMedia(productId, mediaKind);
     },
 
     async itemClassMedia(body: JsonBody = {}) {
@@ -121,6 +130,9 @@ export const PRODUCT_DIRECTORY_ACTIONS: Record<string, keyof typeof ProductDirec
     inventory_search: "search",
     product: "product",
     inventory_product: "product",
+    product_media: "productMedia",
+    inventory_product_media: "productMedia",
+    cms_product_media: "productMedia",
     item_class_media: "itemClassMedia",
     inventory_item_class_media: "itemClassMedia",
     cms_media: "itemClassMedia",

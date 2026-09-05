@@ -118,8 +118,8 @@ export function groupCmsMediaBrowse(
   >();
 
   for (const row of rows) {
-    const url = resolveCmsMediaUrl(row.media_url);
-    if (!url && !allowEmptyUrl) continue;
+    const urls = expandMediaUrls(row.media_url);
+    if (urls.length === 0 && !allowEmptyUrl) continue;
     const mid = row.model_id;
     const hasModel =
       groupByModel &&
@@ -134,21 +134,24 @@ export function groupCmsMediaBrowse(
       const prev = byModel.get(key);
       byModel.set(key, {
         name,
-        // Count only rows that have a file for this media kind.
-        count: (prev?.count ?? 0) + (url ? 1 : 0),
+        count: (prev?.count ?? 0) + urls.length,
       });
       continue;
     }
 
-    // Products with media but no model still appear under Brochure/Photo/Video.
-    products.push({
-      id: row.inventory_id,
-      name: row.inventory_name,
-      sku: row.inventory_id,
-      description: "",
-      file_url: url,
-      folder_id: `kc_fld_${kind}_${itemClassId}`,
-      folder_path: basePath,
+    urls.forEach((url, index) => {
+      products.push({
+        id: cmsMediaProductId(row.inventory_id, kind, index),
+        name:
+          urls.length > 1
+            ? `${row.inventory_name} (${index + 1})`
+            : row.inventory_name,
+        sku: row.inventory_id,
+        description: "",
+        file_url: url,
+        folder_id: `kc_fld_${kind}_${itemClassId}`,
+        folder_path: basePath,
+      });
     });
   }
 
@@ -196,9 +199,61 @@ export function flatCmsFileProductId(inventoryId: string, kind: string): string 
 
 export function inventoryIdFromFlatCmsFileProductId(productId: string): string {
   const m = String(productId || "").match(
-    /^(.*)__(brochure|images|videos)$/i,
+    /^(.*)__(brochure|images|videos)(?:__\d+)?$/i,
   );
   return m ? m[1] : productId;
+}
+
+/** Unique product id per CMS media file (supports multiple URLs per inventory row). */
+export function cmsMediaProductId(
+  inventoryId: string,
+  kind: string,
+  index = 0,
+): string {
+  if (index <= 0) return flatCmsFileProductId(inventoryId, kind);
+  return `${inventoryId}__${kind}__${index}`;
+}
+
+/**
+ * CMS may store one URL or several (JSON array, pipe, or comma-separated list).
+ * KelinConnect Product Database uploads can attach multiple files per field.
+ */
+export function expandMediaUrls(url: string): string[] {
+  const value = String(url ?? "").trim();
+  if (!value) return [];
+
+  if (value.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => resolveCmsMediaUrl(String(entry ?? "")))
+          .filter(Boolean);
+      }
+    } catch {
+      // fall through to single-value handling
+    }
+  }
+
+  if (value.includes("|")) {
+    return value
+      .split("|")
+      .map((part) => resolveCmsMediaUrl(part.trim()))
+      .filter(Boolean);
+  }
+
+  if (/,https?:\/\//i.test(value)) {
+    return value
+      .split(/,(?=https?:\/\/)/i)
+      .map((part) => resolveCmsMediaUrl(part.trim()))
+      .filter(Boolean);
+  }
+
+  return [resolveCmsMediaUrl(value)];
+}
+
+export function mediaUrlCount(url: string): number {
+  return expandMediaUrls(url).length;
 }
 
 export function flatCmsFilesFromRows(
@@ -210,19 +265,23 @@ export function flatCmsFilesFromRows(
   const seen = new Set<string>();
   for (const { kind, rows } of rowsByKind) {
     for (const row of rows) {
-      const url = resolveCmsMediaUrl(row.media_url);
-      if (!url) continue;
-      const id = flatCmsFileProductId(row.inventory_id, kind);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      products.push({
-        id,
-        name: row.inventory_name,
-        sku: row.inventory_id,
-        description: "",
-        file_url: url,
-        folder_id: itemClassId,
-        folder_path: basePath,
+      const urls = expandMediaUrls(row.media_url);
+      urls.forEach((url, index) => {
+        const id = cmsMediaProductId(row.inventory_id, kind, index);
+        if (seen.has(id)) return;
+        seen.add(id);
+        products.push({
+          id,
+          name:
+            urls.length > 1
+              ? `${row.inventory_name} (${index + 1})`
+              : row.inventory_name,
+          sku: row.inventory_id,
+          description: "",
+          file_url: url,
+          folder_id: itemClassId,
+          folder_path: basePath,
+        });
       });
     }
   }
