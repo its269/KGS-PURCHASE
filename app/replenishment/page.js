@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
 import { buildReplenishmentInsight, TARGET_DAYS_OF_COVER } from "@/lib/replenishment-insights";
+import { toSignedQty } from "@/lib/sales-velocity";
 import PaginationBar from "@/components/PaginationBar";
 import { isLocalAdminUser } from "@/lib/user-access-client";
 import "@/styles/dashboard.css";
@@ -157,6 +158,13 @@ function fmtNum(n) {
     return val % 1 === 0 ? val.toLocaleString() : val.toFixed(1);
 }
 
+/** Order qty input value — keep the minus sign for surplus. */
+function orderQtyInputValue(n) {
+    const val = toSignedQty(n);
+    if (Object.is(val, -0)) return "0";
+    return String(val);
+}
+
 /** Cache often serves slim rows without howItWorks.steps — rebuild so Explain always has content. */
 function resolveAiInsights(rec) {
     const existing = rec?.aiInsights || {};
@@ -169,7 +177,7 @@ function resolveAiInsights(rec) {
     const hasSalesHistory = rawDays !== "N/A" && rawDays != null && ads > 0;
     const daysRemaining = hasSalesHistory ? Number(rawDays) || 0 : 0;
     const currentStock = Number(rec.currentStock ?? rec.mainInventory) || 0;
-    const suggestedQty = Number(rec.suggestedQty) || 0;
+    const suggestedQty = toSignedQty(rec.suggestedQty);
     const branchId = rec.branchId || (rec.isMainWarehouseView ? "MAIN" : "");
     const rebuilt = buildReplenishmentInsight({
         itemId: rec.itemId,
@@ -186,6 +194,7 @@ function resolveAiInsights(rec) {
         qtySold90: Number(rec.qtySold90) || 0,
         targetStock: ads * TARGET_DAYS_OF_COVER,
         salesScope: rec.salesScope || existing.salesScope || "branch",
+        comingPoQty: Number(rec.comingPO) || 0,
         mainWarehouseContext: rec.isMainWarehouseView
             ? {
                 branchOrderQty: Number(rec.branchOrderQty ?? rec.totalBranchReplenishment) || 0,
@@ -344,8 +353,8 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
         const isOpen = explainId === rec.recommendationId;
         const leadTime = rec.leadTimeDays ?? ai.leadTimeDays;
         const orderQty = drafts[rec.itemId] !== undefined
-            ? (Number(drafts[rec.itemId]) || 0)
-            : (Number(rec.suggestedQty) || 0);
+            ? toSignedQty(drafts[rec.itemId])
+            : toSignedQty(rec.suggestedQty);
         const ltNum = Number(leadTime) || 0;
         const orderQtyWithLeadTime = ltNum > 0 && orderQty > 0 ? ltNum * orderQty : 0;
         const branchReplTotal = Number(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0) || 0;
@@ -360,7 +369,7 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
         return (
             <tr key={rec.recommendationId} className={`repl-row ${priorityClass(rec.priorityLevel)}`}>
                 <td>
-                    <span className={`repl-badge ${priorityClass(rec.priorityLevel)} ${Number(rec.suggestedQty) <= 0 ? "repl-badge-ok" : ""}`}>
+                    <span className={`repl-badge ${priorityClass(rec.priorityLevel)} ${toSignedQty(rec.suggestedQty) <= 0 ? "repl-badge-ok" : ""}`}>
                         {priorityLabel(rec.priorityLevel, rec.suggestedQty)}
                     </span>
                 </td>
@@ -387,15 +396,15 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                 <td className="repl-num">{ltNum > 0 ? `${fmtNum(ltNum)} days` : "—"}</td>
                 <td className="repl-num repl-order-qty">
                     <input
-                        className="repl-qty-input"
-                        type="number"
-                        step="1"
-                        value={drafts[rec.itemId] !== undefined ? drafts[rec.itemId] : (rec.suggestedQty ?? 0)}
+                        className={`repl-qty-input ${toSignedQty(rec.suggestedQty) < 0 ? "repl-qty-surplus-input" : ""}`}
+                        type="text"
+                        inputMode="decimal"
+                        value={drafts[rec.itemId] !== undefined ? drafts[rec.itemId] : orderQtyInputValue(rec.suggestedQty)}
                         onChange={(e) => onOrderQtyChange(rec, e.target.value)}
                         aria-label={`Order qty for ${rec.itemId}`}
                     />
-                    {Number(rec.suggestedQty) !== 0 ? (
-                        <span className={`repl-qty-suggested ${Number(rec.suggestedQty) < 0 ? "repl-qty-surplus" : ""}`}>
+                    {toSignedQty(rec.suggestedQty) !== 0 ? (
+                        <span className={`repl-qty-suggested ${toSignedQty(rec.suggestedQty) < 0 ? "repl-qty-surplus" : ""}`}>
                             Suggested {fmtNum(rec.suggestedQty)}
                         </span>
                     ) : null}
@@ -1101,12 +1110,13 @@ export default function ReplenishmentPage() {
                                                 at branch <strong>{selectedBranch}</strong> — not today&apos;s sales alone.
                                             </p>
                                             <p className="repl-col-info-formula">
-                                                Sells / day = Net units sold in the last 90 days at {selectedBranch} ÷ 90
+                                                Sells / day = Net units sold in the last 90 days ÷ 90
                                             </p>
                                             <p>
-                                                Uses this branch’s invoice sales first (credit memos subtracted). Network-wide
-                                                invoice totals are only used when this branch has no sales for a product.
-                                                Stock on hand comes from synced inventory.
+                                                Uses Acumatica invoice sales for this branch (credit memos subtracted).
+                                                Stock warehouses (e.g. MNL-MRILAO) use the parent POS branch (MANILA) —
+                                                where Acumatica posts the invoices. Network-wide totals are only used
+                                                when a retail branch has no sales for a product.
                                             </p>
                                             <p className="repl-col-info-note">
                                                 <strong>Days left</strong> uses this rate: Branch stock (+ Coming PO) ÷ Sells / day
@@ -1144,18 +1154,16 @@ export default function ReplenishmentPage() {
                                         ) : (
                                             <>
                                                 <p>
-                                                    Units to transfer from MAIN to <strong>{selectedBranch || "this branch"}</strong>{" "}
-                                                    to keep about 60 days of stock on the shelf.
+                                                    Units to transfer from MAIN to <strong>{selectedBranch || "this branch"}</strong>.
+                                                    Negative = surplus (stock + Coming PO already cover Sells/day).
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    Target = ceil(Sells/day × 60)<br />
-                                                    Order qty = max(0, Target − Branch stock)
+                                                    A = Branch stock + Coming PO<br />
+                                                    Order qty = Sells/day − A
                                                 </p>
                                                 <p className="repl-col-info-note">
-                                                    <strong>Coming PO</strong> is shown separately for awareness and is not
-                                                    subtracted from Order qty (so open vendor POs do not hide a shelf gap).
-                                                    <strong>0 is correct</strong> when on-hand already meets the 60-day
-                                                    target, or there are no recent sales.
+                                                    Example: Sells/day 7.5, stock 19 + Coming PO 515 →
+                                                    7.5 − 534 = <strong>−526.5</strong> (surplus, no transfer needed).
                                                 </p>
                                             </>
                                         )}
@@ -1249,6 +1257,8 @@ export default function ReplenishmentPage() {
                         {meta.salesScope === "network" && " · Branch demand from live stock + velocity"}
                         {meta.salesScope === "catalog-network" &&
                             " · Sales velocity from network invoices for this branch's catalog"}
+                        {meta.salesScope === "parent-pos" &&
+                            " · Sells/day from parent POS invoices (Acumatica posting branch)"}
                         {meta.servedFrom === "cache-refreshing" && " · Refresh running in background — reload in a minute for updated totals"}
                         {meta.servedFrom === "cache-stale-rebuilding" && " · Updating branch demand in background"}
                         {meta.salesMode === "live-branch-demand" && " · Total Branch Repl. from retail branch demand"}

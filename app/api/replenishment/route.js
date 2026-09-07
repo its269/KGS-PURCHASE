@@ -197,7 +197,7 @@ export async function GET(request) {
                 priority,
                 itemClass,
                 bypassMemCache,
-                liveOverlay: forceRefresh,
+                liveOverlay: false,
             }),
             getCached(
                 `repl:classes:${effectiveCompanyId}:${branchKey}`,
@@ -210,8 +210,9 @@ export async function GET(request) {
             const cacheVersion = Number(cachedPage.meta?.salesLogicVersion) || 0;
             const versionOk = cacheVersion === REPLENISHMENT_SALES_LOGIC_VERSION;
             const isMainBranch = branchKey === "MAIN";
+            const needLive = forceRefresh || !versionOk;
 
-            if (forceRefresh || !versionOk) {
+            if (needLive) {
                 if (forceRefresh) {
                     invalidateCache(`accurateRetailDemand:`);
                     invalidateCache(`liveBranchDemand:`);
@@ -231,7 +232,14 @@ export async function GET(request) {
                     .catch(() => {});
             }
 
-            const recommendations = cachedPage.recommendations || [];
+            let recommendations = cachedPage.recommendations || [];
+            if (needLive && recommendations.length) {
+                recommendations = await applyLiveComingPo(recommendations, branch, {
+                    slim: true,
+                    fast: true,
+                });
+            }
+
             const stats = {
                 urgent: cachedPage.meta?.stats?.urgent ?? 0,
                 soon: cachedPage.meta?.stats?.soon ?? 0,
@@ -239,10 +247,14 @@ export async function GET(request) {
                 itemCount: cachedPage.meta?.itemCount ?? recommendations.length,
             };
 
+            // Full export / unpaged: recompute stats from live rows.
             if (pageSize === 0 && recommendations.length) {
                 stats.urgent = recommendations.filter((r) => r.priorityLevel === "High").length;
                 stats.soon = recommendations.filter((r) => r.priorityLevel === "Medium").length;
-                stats.totalSuggested = recommendations.reduce((s, r) => s + (r.suggestedQty || 0), 0);
+                stats.totalSuggested = recommendations.reduce(
+                    (s, r) => s + Math.max(0, Number(r.suggestedQty) || 0),
+                    0
+                );
             }
 
             return NextResponse.json({
@@ -263,7 +275,9 @@ export async function GET(request) {
                         : versionOk
                             ? "cache"
                             : "cache-stale-rebuilding",
-                    salesLogicVersion: cacheVersion || cachedPage.meta?.salesLogicVersion,
+                    salesLogicVersion: needLive
+                        ? REPLENISHMENT_SALES_LOGIC_VERSION
+                        : (cacheVersion || cachedPage.meta?.salesLogicVersion),
                     comingPoScope: branchKey || "MAIN",
                     stockWarehouses: getStockWarehouseIdsForBranch(branch),
                     stockMetric: "qty_on_hand",
@@ -307,7 +321,7 @@ export async function GET(request) {
                 stats: {
                     urgent: all.filter((r) => r.priorityLevel === "High").length,
                     soon: all.filter((r) => r.priorityLevel === "Medium").length,
-                    totalSuggested: all.reduce((s, r) => s + (r.suggestedQty || 0), 0),
+                    totalSuggested: all.reduce((s, r) => s + Math.max(0, Number(r.suggestedQty) || 0), 0),
                     itemCount: totalItems,
                 },
             },

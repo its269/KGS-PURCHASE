@@ -434,6 +434,10 @@
     color: var(--status-success);
 }
 
+.repl-qty-surplus-input {
+    color: var(--status-success);
+}
+
 .repl-action {
     font-size: 0.82rem;
     color: var(--text-secondary);

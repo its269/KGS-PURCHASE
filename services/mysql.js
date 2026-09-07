@@ -15,6 +15,7 @@ import {
     sqlExcludeEcomSalesBranches,
     sqlOnlyEcomSalesBranches,
     getStockWarehouseIdsForBranch,
+    resolveSalesBranchForStockSite,
     EXCLUDED_BRANCH_KEYWORDS,
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold, mergeBranchFirstSalesMaps } from "@/lib/sales-velocity.js";
@@ -4676,8 +4677,12 @@ export const MySqlService = {
     },
 
     async _resolveSalesBranchNamesUncached(key) {
-        const candidates = new Set([key.toUpperCase()]);
-        if (isEcomBranchAlias(key)) {
+        const salesBranch = resolveSalesBranchForStockSite(key);
+        const candidates = new Set([
+            String(key || "").toUpperCase(),
+            String(salesBranch || "").toUpperCase(),
+        ].filter(Boolean));
+        if (isEcomBranchAlias(key) || isEcomBranchAlias(salesBranch)) {
             for (const alias of ECOM_BRANCH_ALIASES) candidates.add(String(alias).toUpperCase());
         }
 
@@ -4802,7 +4807,7 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `replSalesMap:v3:${companyKey}:${branchKey}:${watermark}`;
+        const cacheKey = `replSalesMap:v4:${companyKey}:${branchKey}:${watermark}`;
         return getCached(cacheKey, 300_000, () =>
             this._getAccurateReplenishmentSalesMapUncached({ branch, companyId })
         );
@@ -4858,15 +4863,28 @@ export const MySqlService = {
             };
         }
 
-        let strict = await this.getReplenishmentSalesSummary({ branch, lookbackDays });
-        let catalog = await this.getBranchCatalogNetworkSalesSummary({
-            branch,
-            companyId: effectiveCompanyId,
+        // Prefer Acumatica POS branch for stock-only warehouses (e.g. MNL-MRILAO → MANILA).
+        // Do not inflate with company-wide catalog-network for those sites.
+        const salesBranch = resolveSalesBranchForStockSite(branch);
+        const isStockWarehouseAlias = salesBranch !== String(branch || "").trim().toUpperCase();
+
+        let strict = await this.getReplenishmentSalesSummary({
+            branch: isStockWarehouseAlias ? salesBranch : branch,
             lookbackDays,
         });
+        let catalog = isStockWarehouseAlias
+            ? { map: new Map(), mode: "gross", salesScope: "catalog-network" }
+            : await this.getBranchCatalogNetworkSalesSummary({
+                branch,
+                companyId: effectiveCompanyId,
+                lookbackDays,
+            });
         // Catalog-network is only for SKUs with no invoice/memo activity at this branch.
         // If the branch has credit memos that zero net sales, do NOT replace with network qty.
-        const activityIds = await this.getBranchSalesDocumentIds(branch, lookbackDays);
+        const activityIds = await this.getBranchSalesDocumentIds(
+            isStockWarehouseAlias ? salesBranch : branch,
+            lookbackDays
+        );
         const catalogFallback = new Map();
         for (const [key, val] of catalog.map) {
             if (activityIds.has(key) || strict.map.has(key)) continue;
@@ -4878,13 +4896,21 @@ export const MySqlService = {
 
         if (count < 20) {
             for (const days of [180, 365]) {
-                const extStrict = await this.getReplenishmentSalesSummary({ branch, lookbackDays: days });
-                const extCatalog = await this.getBranchCatalogNetworkSalesSummary({
-                    branch,
-                    companyId: effectiveCompanyId,
+                const extStrict = await this.getReplenishmentSalesSummary({
+                    branch: isStockWarehouseAlias ? salesBranch : branch,
                     lookbackDays: days,
                 });
-                const extActivity = await this.getBranchSalesDocumentIds(branch, days);
+                const extCatalog = isStockWarehouseAlias
+                    ? { map: new Map(), mode: "gross", salesScope: "catalog-network" }
+                    : await this.getBranchCatalogNetworkSalesSummary({
+                        branch,
+                        companyId: effectiveCompanyId,
+                        lookbackDays: days,
+                    });
+                const extActivity = await this.getBranchSalesDocumentIds(
+                    isStockWarehouseAlias ? salesBranch : branch,
+                    days
+                );
                 const extCatalogFallback = new Map();
                 for (const [key, val] of extCatalog.map) {
                     if (extActivity.has(key) || extStrict.map.has(key)) continue;
@@ -4900,6 +4926,13 @@ export const MySqlService = {
                     salesMode = extStrict.mode;
                 }
                 if (count >= 20) break;
+            }
+        }
+
+        if (isStockWarehouseAlias) {
+            salesScope = "parent-pos";
+            for (const val of map.values()) {
+                if (val && typeof val === "object") val.salesScope = "parent-pos";
             }
         }
 
@@ -5894,7 +5927,7 @@ export const MySqlService = {
                 MAX(updated_at) AS updatedAt,
                 SUM(CASE WHEN priority_level = 'High' THEN 1 ELSE 0 END) AS urgentCount,
                 SUM(CASE WHEN priority_level = 'Medium' THEN 1 ELSE 0 END) AS soonCount,
-                SUM(COALESCE(suggested_qty, 0)) AS totalSuggested,
+                SUM(CASE WHEN COALESCE(suggested_qty, 0) > 0 THEN suggested_qty ELSE 0 END) AS totalSuggested,
                 MAX(sales_scope) AS salesScope,
                 MAX(CAST(JSON_UNQUOTE(JSON_EXTRACT(ai_insights_json, '$.salesLogicVersion')) AS UNSIGNED)) AS salesLogicVersion
              FROM replenishment_cache

@@ -128,12 +128,15 @@ test("Coming PO open qty matches Acumatica Order/Open Qty (qty on receipts), not
     assert.equal(poLineOpenQty({ orderQty: 12, receivedQty: 1, completed: true }), 11);
 });
 
-test("Coming PO branch match includes PO-number prefix even when warehouse is filled", () => {
+test("Coming PO prefix match only when warehouse and branch are blank", () => {
     const match = sqlMatchOpenPoForBranch({ detailsAlias: "d", headerAlias: "h", destinations: ["ECOMMERCE", "ECOM"] });
     assert.match(match.clause, /warehouse_id/);
     assert.match(match.clause, /purchase_order_dest/);
     assert.ok(match.params.includes("ECMP%"));
     assert.match(match.clause, /h\.order_nbr/);
+    // Prefix OR is gated behind blank warehouse+branch (same as openPoPrefixMatch).
+    assert.match(match.clause, /TRIM\(COALESCE\(d\.warehouse_id,''\)\) = ''/);
+    assert.match(match.clause, /TRIM\(COALESCE\(d\.branch_id,''\)\) = ''/);
     assert.equal(sqlPoLineOpenQty("d").includes("received_qty"), true);
     assert.equal(sqlPoLineOpenQty("d").includes("line_completed"), false);
 });
