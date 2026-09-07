@@ -15,7 +15,11 @@ import {
     sqlExcludeEcomSalesBranches,
     sqlOnlyEcomSalesBranches,
     getStockWarehouseIdsForBranch,
+<<<<<<< HEAD
     resolveSalesBranchForStockSite,
+=======
+    resolveSalesBranchForWarehouse,
+>>>>>>> 2c8d47e7e44e9a7edce73fc4957929d3aaf75009
     EXCLUDED_BRANCH_KEYWORDS,
 } from "@/lib/companies.js";
 import { SALES_LOOKBACK_DAYS, SQL_NET_QTY, SQL_NET_AMOUNT, SQL_GROSS_QTY, netQtySold, mergeBranchFirstSalesMaps } from "@/lib/sales-velocity.js";
@@ -4815,6 +4819,7 @@ export const MySqlService = {
 
     async _getAccurateReplenishmentSalesMapUncached({ branch = "", companyId = "main" } = {}) {
         const isMain = !branch || String(branch).trim().toUpperCase() === "MAIN";
+        const branchKey = String(branch || "").trim().toUpperCase();
         const effectiveCompanyId = isMain ? companyId : resolveCompanyIdForBranch(companyId, branch);
         let lookbackDays = SALES_LOOKBACK_DAYS;
 
@@ -4863,6 +4868,7 @@ export const MySqlService = {
             };
         }
 
+<<<<<<< HEAD
         // Prefer Acumatica POS branch for stock-only warehouses (e.g. MNL-MRILAO → MANILA).
         // Do not inflate with company-wide catalog-network for those sites.
         const salesBranch = resolveSalesBranchForStockSite(branch);
@@ -4870,6 +4876,48 @@ export const MySqlService = {
 
         let strict = await this.getReplenishmentSalesSummary({
             branch: isStockWarehouseAlias ? salesBranch : branch,
+=======
+        // Stock warehouses with no POS (e.g. MNL-MRILAO): never use catalog-network
+        // (company-wide qty). Use the parent retail branch's invoices only (MANILA).
+        if (isWarehouseLikeAlias(branchKey) && !isRetailReplenishmentBranch(branchKey)) {
+            const salesBranch = resolveSalesBranchForWarehouse(branchKey) || branchKey;
+            let strict = await this.getReplenishmentSalesSummary({ branch: salesBranch, lookbackDays });
+            let count = countPositive(strict.map);
+            let salesMode = strict.mode;
+
+            if (count < 20) {
+                for (const days of [180, 365]) {
+                    const extStrict = await this.getReplenishmentSalesSummary({
+                        branch: salesBranch,
+                        lookbackDays: days,
+                    });
+                    const extCount = countPositive(extStrict.map);
+                    if (extCount > count) {
+                        strict = extStrict;
+                        lookbackDays = days;
+                        count = extCount;
+                        salesMode = extStrict.mode;
+                    }
+                    if (count >= 20) break;
+                }
+            }
+
+            const map = new Map();
+            for (const [key, val] of strict.map) {
+                map.set(key, {
+                    qty_sold: netQtySold(val?.qty_sold),
+                    total_sales: Math.max(0, Number(val?.total_sales) || 0),
+                    salesScope: "branch",
+                });
+            }
+            return { map, salesScope: "branch", lookbackDays, salesMode };
+        }
+
+        let strict = await this.getReplenishmentSalesSummary({ branch, lookbackDays });
+        let catalog = await this.getBranchCatalogNetworkSalesSummary({
+            branch,
+            companyId: effectiveCompanyId,
+>>>>>>> 2c8d47e7e44e9a7edce73fc4957929d3aaf75009
             lookbackDays,
         });
         let catalog = isStockWarehouseAlias

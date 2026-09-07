@@ -1253,14 +1253,16 @@ export default function ReplenishmentPage() {
                     <p className="repl-footer">
                         Updated {new Date(meta.generatedAt).toLocaleString("en-PH")}
                         {meta.salesSource === "acumatica" && " · Sales from Acumatica (live)"}
-                        {meta.servedFrom === "cache" && " · Loaded from replenishment cache"}
                         {meta.salesScope === "network" && " · Branch demand from live stock + velocity"}
+<<<<<<< HEAD
                         {meta.salesScope === "catalog-network" &&
                             " · Sales velocity from network invoices for this branch's catalog"}
                         {meta.salesScope === "parent-pos" &&
                             " · Sells/day from parent POS invoices (Acumatica posting branch)"}
                         {meta.servedFrom === "cache-refreshing" && " · Refresh running in background — reload in a minute for updated totals"}
                         {meta.servedFrom === "cache-stale-rebuilding" && " · Updating branch demand in background"}
+=======
+>>>>>>> 2c8d47e7e44e9a7edce73fc4957929d3aaf75009
                         {meta.salesMode === "live-branch-demand" && " · Total Branch Repl. from retail branch demand"}
                         {qtySaveHint ? ` · ${qtySaveHint}` : ""}
                     </p>
