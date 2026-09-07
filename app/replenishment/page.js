@@ -1113,10 +1113,9 @@ export default function ReplenishmentPage() {
                                                 Sells / day = Net units sold in the last 90 days ÷ 90
                                             </p>
                                             <p>
-                                                Uses Acumatica invoice sales for this branch (credit memos subtracted).
+                                                Uses Acumatica invoice sales for this branch only (credit memos subtracted).
                                                 Stock warehouses (e.g. MNL-MRILAO) use the parent POS branch (MANILA) —
-                                                where Acumatica posts the invoices. Network-wide totals are only used
-                                                when a retail branch has no sales for a product.
+                                                where Acumatica posts the invoices. Network-wide catalog fallback is not used.
                                             </p>
                                             <p className="repl-col-info-note">
                                                 <strong>Days left</strong> uses this rate: Branch stock (+ Coming PO) ÷ Sells / day

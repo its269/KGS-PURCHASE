@@ -4807,7 +4807,7 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `replSalesMap:v4:${companyKey}:${branchKey}:${watermark}`;
+        const cacheKey = `replSalesMap:v5:${companyKey}:${branchKey}:${watermark}`;
         return getCached(cacheKey, 300_000, () =>
             this._getAccurateReplenishmentSalesMapUncached({ branch, companyId })
         );
@@ -4823,18 +4823,6 @@ export const MySqlService = {
             let n = 0;
             for (const v of map.values()) if ((v.qty_sold ?? 0) > 0) n++;
             return n;
-        };
-
-        const finalizeBranchMap = (branchMap, catalogMap) => {
-            const merged = mergeBranchFirstSalesMaps(branchMap, catalogMap);
-            let catalogItems = 0;
-            for (const val of merged.values()) {
-                if (val.salesScope === "catalog-network") catalogItems++;
-            }
-            const salesScope = catalogItems > 0 && catalogItems >= countPositive(merged)
-                ? "catalog-network"
-                : "branch";
-            return { map: merged, salesScope };
         };
 
         if (isMain) {
@@ -4900,45 +4888,37 @@ export const MySqlService = {
             return { map, salesScope: "parent-pos", lookbackDays, salesMode };
         }
 
+        // Retail branches: Acumatica branch invoices only — never catalog-network
+        // (company-wide) fallback. That invents Sells/day for SKUs with 0 local stock.
         let strict = await this.getReplenishmentSalesSummary({ branch, lookbackDays });
-        let catalog = await this.getBranchCatalogNetworkSalesSummary({
-            branch,
-            companyId: effectiveCompanyId,
-            lookbackDays,
-        });
-        // Catalog-network is only for SKUs with no invoice/memo activity at this branch.
-        // If the branch has credit memos that zero net sales, do NOT replace with network qty.
-        const activityIds = await this.getBranchSalesDocumentIds(branch, lookbackDays);
-        const catalogFallback = new Map();
-        for (const [key, val] of catalog.map) {
-            if (activityIds.has(key) || strict.map.has(key)) continue;
-            catalogFallback.set(key, val);
+        let map = new Map();
+        for (const [key, val] of strict.map) {
+            map.set(key, {
+                qty_sold: netQtySold(val?.qty_sold),
+                total_sales: Math.max(0, Number(val?.total_sales) || 0),
+                salesScope: "branch",
+            });
         }
-        let { map, salesScope } = finalizeBranchMap(strict.map, catalogFallback);
         let count = countPositive(map);
         let salesMode = strict.mode;
+        let salesScope = "branch";
 
         if (count < 20) {
             for (const days of [180, 365]) {
                 const extStrict = await this.getReplenishmentSalesSummary({ branch, lookbackDays: days });
-                const extCatalog = await this.getBranchCatalogNetworkSalesSummary({
-                    branch,
-                    companyId: effectiveCompanyId,
-                    lookbackDays: days,
-                });
-                const extActivity = await this.getBranchSalesDocumentIds(branch, days);
-                const extCatalogFallback = new Map();
-                for (const [key, val] of extCatalog.map) {
-                    if (extActivity.has(key) || extStrict.map.has(key)) continue;
-                    extCatalogFallback.set(key, val);
+                const extMap = new Map();
+                for (const [key, val] of extStrict.map) {
+                    extMap.set(key, {
+                        qty_sold: netQtySold(val?.qty_sold),
+                        total_sales: Math.max(0, Number(val?.total_sales) || 0),
+                        salesScope: "branch",
+                    });
                 }
-                const finalized = finalizeBranchMap(extStrict.map, extCatalogFallback);
-                const extCount = countPositive(finalized.map);
+                const extCount = countPositive(extMap);
                 if (extCount > count) {
-                    map = finalized.map;
+                    map = extMap;
                     lookbackDays = days;
                     count = extCount;
-                    salesScope = finalized.salesScope;
                     salesMode = extStrict.mode;
                 }
                 if (count >= 20) break;
