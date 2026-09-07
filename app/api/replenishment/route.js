@@ -151,7 +151,120 @@ async function loadCachedPage(effectiveCompanyId, branch, {
     return getCached(memKey, bypassMemCache ? 0 : MEM_CACHE_MS, loader);
 }
 
-/** Replenishment API — cache-first, paginated, memory-cached for ultra-fast loads. */
+function paginateRecommendations(all, page, pageSize, filters = {}) {
+    const searchKey = String(filters.search || "").trim().toLowerCase();
+    const priorityKey = String(filters.priority || "").trim().toLowerCase();
+    const classKey = String(filters.itemClass || "").trim().toLowerCase();
+
+    let filtered = all || [];
+    if (searchKey) {
+        filtered = filtered.filter((r) => {
+            const id = String(r.itemId || "").toLowerCase();
+            const desc = String(r.description || "").toLowerCase();
+            return id.includes(searchKey) || desc.includes(searchKey);
+        });
+    }
+    if (priorityKey && priorityKey !== "all") {
+        const want =
+            priorityKey === "urgent" || priorityKey === "high"
+                ? "High"
+                : priorityKey === "soon" || priorityKey === "medium"
+                    ? "Medium"
+                    : priorityKey === "low"
+                        ? "Low"
+                        : "";
+        if (want) filtered = filtered.filter((r) => r.priorityLevel === want);
+    }
+    if (classKey) {
+        filtered = filtered.filter(
+            (r) => String(r.itemClass || "").trim().toLowerCase() === classKey
+        );
+    }
+
+    const totalItems = filtered.length;
+    if (pageSize === 0) {
+        return {
+            recommendations: filtered,
+            pagination: { page: 1, pageSize: totalItems, totalItems, totalPages: 1 },
+            stats: {
+                urgent: filtered.filter((r) => r.priorityLevel === "High").length,
+                soon: filtered.filter((r) => r.priorityLevel === "Medium").length,
+                totalSuggested: filtered.reduce((s, r) => s + (r.suggestedQty || 0), 0),
+                itemCount: totalItems,
+            },
+        };
+    }
+
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
+    const safePage = Math.min(Math.max(1, page), totalPages);
+    const start = (safePage - 1) * pageSize;
+    return {
+        recommendations: filtered.slice(start, start + pageSize),
+        pagination: { page: safePage, pageSize, totalItems, totalPages },
+        stats: {
+            urgent: filtered.filter((r) => r.priorityLevel === "High").length,
+            soon: filtered.filter((r) => r.priorityLevel === "Medium").length,
+            totalSuggested: filtered.reduce((s, r) => s + (r.suggestedQty || 0), 0),
+            itemCount: totalItems,
+        },
+    };
+}
+
+async function serveLiveReplenishment({
+    branch,
+    companyId,
+    effectiveCompanyId,
+    branchKey,
+    page,
+    pageSize,
+    search,
+    priority,
+    itemClass,
+    itemClasses,
+    forceRefresh,
+}) {
+    invalidateCache(`accurateRetailDemand:`);
+    invalidateCache(`liveBranchDemand:`);
+    invalidateCache(`replSalesMap:`);
+    invalidateCache(`replenishment:api:${effectiveCompanyId}:${branchKey}`);
+
+    // MAIN rollup depends on other branches — refresh them in the background after we
+    // return this branch's live page (do not block the response on a full rebuild).
+    if (branchKey === "MAIN") {
+        scheduleBackgroundRebuildAll(companyId);
+    }
+
+    const computed = await computeReplenishmentForBranch(branch, companyId);
+    await MySqlService.upsertReplenishmentCache(effectiveCompanyId, branch, computed.recommendations);
+    invalidateCache(`replenishment:api:${effectiveCompanyId}:${branchKey}`);
+    invalidateCache(`replenishment:page:${effectiveCompanyId}:${branch}`);
+
+    const paged = paginateRecommendations(computed.recommendations, page, pageSize, {
+        search,
+        priority,
+        itemClass,
+    });
+
+    return NextResponse.json({
+        recommendations: paged.recommendations,
+        brief: computed.brief || buildBranchBrief(computed.recommendations, branch),
+        meta: {
+            ...computed.meta,
+            itemClasses,
+            targetDaysOfCover: TARGET_DAYS_OF_COVER,
+            pagination: paged.pagination,
+            servedFrom: forceRefresh ? "live-refresh" : "live",
+            isMainWarehouseView: branchKey === "MAIN",
+            stockWarehouses: getStockWarehouseIdsForBranch(branch),
+            stockMetric: "qty_on_hand",
+            comingPoScope: branchKey || "MAIN",
+            salesLogicVersion: REPLENISHMENT_SALES_LOGIC_VERSION,
+            stats: paged.stats,
+        },
+    });
+}
+
+/** Replenishment API — live when refresh/stale; otherwise fast cache read. */
 export async function GET(request) {
     const cookie = getSessionFromRequest(request);
     if (!cookie) {
@@ -189,47 +302,67 @@ export async function GET(request) {
     }
 
     try {
-        const [cachedPage, itemClasses] = await Promise.all([
-            loadCachedPage(effectiveCompanyId, branch, {
+        const itemClasses = await getCached(
+            `repl:classes:${effectiveCompanyId}:${branchKey}`,
+            bypassMemCache ? 0 : MEM_CACHE_MS,
+            () => MySqlService.getReplenishmentItemClasses(effectiveCompanyId, branch)
+        );
+
+        // Never show stale/wrong-version cache — compute live and return that.
+        if (forceRefresh) {
+            return await serveLiveReplenishment({
+                branch,
+                companyId,
+                effectiveCompanyId,
+                branchKey,
                 page,
                 pageSize,
                 search,
                 priority,
                 itemClass,
-                bypassMemCache,
-                liveOverlay: forceRefresh,
-            }),
-            getCached(
-                `repl:classes:${effectiveCompanyId}:${branchKey}`,
-                bypassMemCache ? 0 : MEM_CACHE_MS,
-                () => MySqlService.getReplenishmentItemClasses(effectiveCompanyId, branch)
-            ),
-        ]);
+                itemClasses,
+                forceRefresh: true,
+            });
+        }
 
-        if (cachedPage?.meta?.itemCount != null || cachedPage?.recommendations) {
-            const cacheVersion = Number(cachedPage.meta?.salesLogicVersion) || 0;
-            const versionOk = cacheVersion === REPLENISHMENT_SALES_LOGIC_VERSION;
-            const isMainBranch = branchKey === "MAIN";
+        const cachedPage = await loadCachedPage(effectiveCompanyId, branch, {
+            page,
+            pageSize,
+            search,
+            priority,
+            itemClass,
+            bypassMemCache: false,
+            liveOverlay: false,
+        });
 
-            if (forceRefresh || !versionOk) {
-                if (forceRefresh) {
-                    invalidateCache(`accurateRetailDemand:`);
-                    invalidateCache(`liveBranchDemand:`);
-                }
-                if (isMainBranch) {
-                    scheduleBackgroundRebuildAll(companyId);
-                } else {
-                    scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId);
-                }
-            } else {
-                MySqlService.getReplenishmentDataWatermark()
-                    .then((wm) => {
-                        if (!isCacheFresh(cachedPage.meta?.generatedAt, wm)) {
-                            scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId);
-                        }
-                    })
-                    .catch(() => {});
-            }
+        const cacheVersion = Number(cachedPage?.meta?.salesLogicVersion) || 0;
+        const versionOk = cacheVersion === REPLENISHMENT_SALES_LOGIC_VERSION;
+        const hasCache = cachedPage?.meta?.itemCount != null || cachedPage?.recommendations;
+
+        if (hasCache && !versionOk) {
+            return await serveLiveReplenishment({
+                branch,
+                companyId,
+                effectiveCompanyId,
+                branchKey,
+                page,
+                pageSize,
+                search,
+                priority,
+                itemClass,
+                itemClasses,
+                forceRefresh: false,
+            });
+        }
+
+        if (hasCache && versionOk) {
+            MySqlService.getReplenishmentDataWatermark()
+                .then((wm) => {
+                    if (!isCacheFresh(cachedPage.meta?.generatedAt, wm)) {
+                        scheduleBackgroundRebuild(branch, companyId, effectiveCompanyId);
+                    }
+                })
+                .catch(() => {});
 
             const recommendations = cachedPage.recommendations || [];
             const stats = {
@@ -258,12 +391,8 @@ export async function GET(request) {
                     stockSource: "mysql",
                     salesSource: "mysql",
                     isMainWarehouseView: branchKey === "MAIN",
-                    servedFrom: forceRefresh
-                        ? "cache-refreshing"
-                        : versionOk
-                            ? "cache"
-                            : "cache-stale-rebuilding",
-                    salesLogicVersion: cacheVersion || cachedPage.meta?.salesLogicVersion,
+                    servedFrom: "live",
+                    salesLogicVersion: cacheVersion,
                     comingPoScope: branchKey || "MAIN",
                     stockWarehouses: getStockWarehouseIdsForBranch(branch),
                     stockMetric: "qty_on_hand",
@@ -271,46 +400,19 @@ export async function GET(request) {
             });
         }
 
-        // Cold path only when no cache exists
-        const computed = await computeReplenishmentForBranch(branch, companyId);
-        await MySqlService.upsertReplenishmentCache(effectiveCompanyId, branch, computed.recommendations);
-        invalidateCache(`replenishment:api:${effectiveCompanyId}:${branchKey}`);
-
-        const all = computed.recommendations;
-        const totalItems = all.length;
-        let pageRecs = all;
-        let pagination = {
-            page: 1,
-            pageSize: totalItems,
-            totalItems,
-            totalPages: 1,
-        };
-
-        if (pageSize > 0) {
-            const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
-            const safePage = Math.min(page, totalPages);
-            const start = (safePage - 1) * pageSize;
-            pageRecs = all.slice(start, start + pageSize);
-            pagination = { page: safePage, pageSize, totalItems, totalPages };
-        }
-
-        return NextResponse.json({
-            recommendations: pageRecs,
-            brief: computed.brief || buildBranchBrief(all, branch),
-            meta: {
-                ...computed.meta,
-                targetDaysOfCover: TARGET_DAYS_OF_COVER,
-                pagination,
-                servedFrom: forceRefresh ? "live-refresh" : "live",
-                isMainWarehouseView: branchKey === "MAIN",
-                stockWarehouses: getStockWarehouseIdsForBranch(branch),
-                stats: {
-                    urgent: all.filter((r) => r.priorityLevel === "High").length,
-                    soon: all.filter((r) => r.priorityLevel === "Medium").length,
-                    totalSuggested: all.reduce((s, r) => s + (r.suggestedQty || 0), 0),
-                    itemCount: totalItems,
-                },
-            },
+        // Cold path — no cache rows yet
+        return await serveLiveReplenishment({
+            branch,
+            companyId,
+            effectiveCompanyId,
+            branchKey,
+            page,
+            pageSize,
+            search,
+            priority,
+            itemClass,
+            itemClasses,
+            forceRefresh: false,
         });
     } catch (err) {
         console.error("[Replenishment API Error]", err);
