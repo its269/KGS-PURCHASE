@@ -118,8 +118,8 @@ export default function IncomingPOPage() {
                 page: String(page),
                 pageSize: String(PAGE_SIZE),
                 startDate: startDate,
-                status: status
             });
+            if (status) params.set("status", status);
             if (debSearch) params.set("search", debSearch);
 
             const res = await fetchWithAuth(`/api/po?${params}`);

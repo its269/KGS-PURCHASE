@@ -1073,7 +1073,8 @@ export default function PurchaseOrdersPage() {
                 params.set("endDate", endDate);
             }
             // User Status / overdue filters look up annotated order #s across all ERP statuses
-            // (default toolbar "Open" would hide Customs / Delayed / Cancelled matches)
+            // (default toolbar "Open" would hide Customs / Delayed / Cancelled matches).
+            // Keep Status when searching so vendor searches (e.g. Sofie + Open) match Acumatica.
             if (!columnFilters.userStatus && !overdueShipOutFilter && status) {
                 params.set("status", status);
             }
@@ -1230,7 +1231,9 @@ export default function PurchaseOrdersPage() {
                         <div className="po-summary-grid">
                             <div className="po-summary-item">
                                 <span className="po-summary-label">Total Purchase Orders</span>
-                                <span className="po-summary-value">{orders.length} Orders</span>
+                                <span className="po-summary-value">
+                                    {typeof totalCount === "number" ? totalCount : orders.length} Orders
+                                </span>
                             </div>
 
                             <div className="po-summary-item" style={{ color: summaryStats.pendingEtaCount > 0 ? 'var(--status-danger)' : 'inherit' }}>

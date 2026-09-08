@@ -119,6 +119,9 @@ export function aggregateSummaryByWarehouse(summaryResults = []) {
 
         const locationId = String(getAny(row, "LocationID", "Location") || "").trim();
         if (isExcludedLocationAlias(locationId)) continue;
+        // <UNASSIGNED> is allocation noise (often negative Available), not shelf stock.
+        const locKey = locationId.replace(/^<|>$/g, "").trim().toUpperCase();
+        if (!locKey || locKey === "UNASSIGNED") continue;
 
         const onHand = parseFloat(getAny(row, "QtyOnHand", "OnHand", "BaseQty") || 0);
         const rawAvail = getAny(
@@ -130,6 +133,9 @@ export function aggregateSummaryByWarehouse(summaryResults = []) {
         );
         let available = rawAvail === "" || rawAvail == null ? NaN : parseFloat(rawAvail);
         if (Number.isNaN(available)) available = Number.isNaN(onHand) ? 0 : onHand;
+        // Location rows can carry negative Available (e.g. <UNASSIGNED> allocations).
+        // Floor per location so warehouse Available matches sellable qty managers see.
+        if (!Number.isNaN(available)) available = Math.max(0, available);
 
         const prev = byWh.get(key) || {
             warehouse_id: warehouseId,
@@ -538,16 +544,8 @@ export const AcumaticaService = {
             return { levels: fallback, damageLevels: damageFromDetails };
         }
 
-        const hasStock = fallback.some(
-            (l) => (Number(l.on_hand) || 0) > 0 || (Number(l.available) || 0) > 0
-        );
-        // Always probe Inventory Summary when sellable stock exists OR WarehouseDetails
-        // already showed a DAMAGE/DISCOUNTED site — location-level damage lives in Summary.
-        const needsSummary = hasStock || damageFromDetails.length > 0;
-        if (!needsSummary) {
-            return { levels: fallback, damageLevels: damageFromDetails };
-        }
-
+        // Always probe Inventory Summary (IN401000). WarehouseDetails is often empty or
+        // rolls DAMAGE locations into warehouse totals — Summary is the sellable source of truth.
         try {
             const results = await this.getInventorySummaryResults(invId, cookie);
             if (!results.length) {
@@ -1412,36 +1410,56 @@ export const AcumaticaService = {
         });
     },
 
-    /** Live branch stock from Acumatica for specific items */
+    /** Live branch stock from Acumatica Inventory Summary (DAMAGE locations excluded). */
     async getBranchStockForItems(itemIds, branch, cookie) {
         const map = new Map();
         const ids = [...new Set(itemIds.map((id) => String(id || "").trim()).filter(Boolean))];
         if (!ids.length || !cookie || cookie === "__bypass__") return map;
 
         const branchKey = String(branch || "").toUpperCase().trim();
-        const CHUNK = 6;
+        const CHUNK = 4;
 
         for (let i = 0; i < ids.length; i += CHUNK) {
             const batch = ids.slice(i, i + CHUNK);
-            const filter = batch.map((id) => `InventoryID eq '${id.replace(/'/g, "''")}'`).join(" or ");
-            const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$filter=${encodeURIComponent(filter)}`;
-            try {
-                const res = await this.fetchWithRetry(url, cookie);
-                const data = await res.json();
-                for (const item of (data.value || [])) {
-                    const invKey = String(getF(item, "InventoryID")).trim().toUpperCase();
-                    const levels = extractWarehouseLevels(item);
-                    let stock = 0;
-                    for (const level of levels) {
-                        if (!branchKey || level.branch_id.toUpperCase() === branchKey) {
-                            stock += level.on_hand;
+            await Promise.all(
+                batch.map(async (id) => {
+                    try {
+                        const results = await this.getInventorySummaryResults(id, cookie);
+                        if (!results.length) {
+                            // Fallback: WarehouseDetails when Summary returns nothing
+                            const filter = encodeURIComponent(
+                                `InventoryID eq '${String(id).replace(/'/g, "''")}'`
+                            );
+                            const url = `${ACU_BASE}/StockItem?$expand=WarehouseDetails&$top=1&$filter=${filter}`;
+                            const res = await this.fetchWithRetry(url, cookie);
+                            const data = await res.json();
+                            const item = (data.value || [])[0];
+                            if (!item) return;
+                            const levels = extractWarehouseLevels(item);
+                            let stock = 0;
+                            for (const level of levels) {
+                                if (
+                                    !branchKey ||
+                                    String(level.branch_id || "").toUpperCase() === branchKey ||
+                                    String(level.warehouse_id || "").toUpperCase() === branchKey
+                                ) {
+                                    stock += Number(level.on_hand) || 0;
+                                }
+                            }
+                            map.set(String(id).trim().toUpperCase(), stock);
+                            return;
                         }
+                        const { byWh } = aggregateSummaryByWarehouse(results);
+                        const row = byWh.get(branchKey);
+                        map.set(
+                            String(id).trim().toUpperCase(),
+                            Number(row?.available ?? row?.on_hand) || 0
+                        );
+                    } catch (err) {
+                        console.error("[Acumatica getBranchStockForItems]", id, err.message);
                     }
-                    map.set(invKey, stock);
-                }
-            } catch (err) {
-                console.error("[Acumatica getBranchStockForItems]", err.message);
-            }
+                })
+            );
         }
         return map;
     },

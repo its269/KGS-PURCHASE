@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { fetchWithAuth } from "@/lib/api-client";
 import { buildReplenishmentInsight, TARGET_DAYS_OF_COVER } from "@/lib/replenishment-insights";
-import { toSignedQty } from "@/lib/sales-velocity";
 import PaginationBar from "@/components/PaginationBar";
 import { isLocalAdminUser } from "@/lib/user-access-client";
 import "@/styles/dashboard.css";
@@ -158,11 +157,16 @@ function fmtNum(n) {
     return val % 1 === 0 ? val.toLocaleString() : val.toFixed(1);
 }
 
-/** Order qty input value — keep the minus sign for surplus. */
-function orderQtyInputValue(n) {
-    const val = toSignedQty(n);
-    if (Object.is(val, -0)) return "0";
-    return String(val);
+/** Order qty is always whole units (ceil need, floor surplus). */
+function toWholeOrderQty(n) {
+    const e = Number(n);
+    if (!Number.isFinite(e) || e === 0) return 0;
+    if (e > 0) return Math.ceil(e);
+    return Math.floor(e);
+}
+
+function fmtWhole(n) {
+    return toWholeOrderQty(n).toLocaleString();
 }
 
 /** Cache often serves slim rows without howItWorks.steps — rebuild so Explain always has content. */
@@ -177,7 +181,8 @@ function resolveAiInsights(rec) {
     const hasSalesHistory = rawDays !== "N/A" && rawDays != null && ads > 0;
     const daysRemaining = hasSalesHistory ? Number(rawDays) || 0 : 0;
     const currentStock = Number(rec.currentStock ?? rec.mainInventory) || 0;
-    const suggestedQty = toSignedQty(rec.suggestedQty);
+    const suggestedQty = Number(rec.suggestedQty) || 0;
+    const comingPoQty = Number(rec.comingPO) || 0;
     const branchId = rec.branchId || (rec.isMainWarehouseView ? "MAIN" : "");
     const rebuilt = buildReplenishmentInsight({
         itemId: rec.itemId,
@@ -194,7 +199,7 @@ function resolveAiInsights(rec) {
         qtySold90: Number(rec.qtySold90) || 0,
         targetStock: ads * TARGET_DAYS_OF_COVER,
         salesScope: rec.salesScope || existing.salesScope || "branch",
-        comingPoQty: Number(rec.comingPO) || 0,
+        comingPoQty,
         mainWarehouseContext: rec.isMainWarehouseView
             ? {
                 branchOrderQty: Number(rec.branchOrderQty ?? rec.totalBranchReplenishment) || 0,
@@ -353,10 +358,10 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
         const isOpen = explainId === rec.recommendationId;
         const leadTime = rec.leadTimeDays ?? ai.leadTimeDays;
         const orderQty = drafts[rec.itemId] !== undefined
-            ? toSignedQty(drafts[rec.itemId])
-            : toSignedQty(rec.suggestedQty);
+            ? toWholeOrderQty(drafts[rec.itemId])
+            : toWholeOrderQty(rec.suggestedQty);
         const ltNum = Number(leadTime) || 0;
-        const orderQtyWithLeadTime = ltNum > 0 && orderQty > 0 ? ltNum * orderQty : 0;
+        const orderQtyWithLeadTime = ltNum > 0 && orderQty > 0 ? Math.round(ltNum * orderQty) : 0;
         const branchReplTotal = Number(rec.totalBranchReplenishment ?? rec.branchOrderQty ?? 0) || 0;
         const mainStock = Number(rec.mainInventory ?? rec.currentStock ?? 0) || 0;
         const comingPo = Number(rec.comingPO ?? 0) || 0;
@@ -369,7 +374,7 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
         return (
             <tr key={rec.recommendationId} className={`repl-row ${priorityClass(rec.priorityLevel)}`}>
                 <td>
-                    <span className={`repl-badge ${priorityClass(rec.priorityLevel)} ${toSignedQty(rec.suggestedQty) <= 0 ? "repl-badge-ok" : ""}`}>
+                    <span className={`repl-badge ${priorityClass(rec.priorityLevel)} ${Number(rec.suggestedQty) <= 0 ? "repl-badge-ok" : ""}`}>
                         {priorityLabel(rec.priorityLevel, rec.suggestedQty)}
                     </span>
                 </td>
@@ -396,21 +401,25 @@ function ReplenishmentRows({ recs, onExplain, explainId, isMain, drafts, onOrder
                 <td className="repl-num">{ltNum > 0 ? `${fmtNum(ltNum)} days` : "—"}</td>
                 <td className="repl-num repl-order-qty">
                     <input
-                        className={`repl-qty-input ${toSignedQty(rec.suggestedQty) < 0 ? "repl-qty-surplus-input" : ""}`}
-                        type="text"
-                        inputMode="decimal"
-                        value={drafts[rec.itemId] !== undefined ? drafts[rec.itemId] : orderQtyInputValue(rec.suggestedQty)}
+                        className="repl-qty-input"
+                        type="number"
+                        step="1"
+                        value={
+                            drafts[rec.itemId] !== undefined
+                                ? drafts[rec.itemId]
+                                : toWholeOrderQty(rec.suggestedQty)
+                        }
                         onChange={(e) => onOrderQtyChange(rec, e.target.value)}
                         aria-label={`Order qty for ${rec.itemId}`}
                     />
-                    {toSignedQty(rec.suggestedQty) !== 0 ? (
-                        <span className={`repl-qty-suggested ${toSignedQty(rec.suggestedQty) < 0 ? "repl-qty-surplus" : ""}`}>
-                            Suggested {fmtNum(rec.suggestedQty)}
+                    {toWholeOrderQty(rec.suggestedQty) !== 0 ? (
+                        <span className={`repl-qty-suggested ${toWholeOrderQty(rec.suggestedQty) < 0 ? "repl-qty-surplus" : ""}`}>
+                            Suggested {fmtWhole(rec.suggestedQty)}
                         </span>
                     ) : null}
                 </td>
                 <td className="repl-num">
-                    {orderQtyWithLeadTime > 0 ? fmtNum(orderQtyWithLeadTime) : "—"}
+                    {orderQtyWithLeadTime > 0 ? fmtWhole(orderQtyWithLeadTime) : "—"}
                 </td>
                 <td className="repl-action">{ai.whatToDo || rec.restockSource}</td>
                 <td className="repl-ai-cell">
@@ -771,12 +780,18 @@ export default function ReplenishmentPage() {
         if (page > totalPages) setPage(totalPages);
     }, [page, totalPages]);
 
+    const branchKey = String(selectedBranch || "").trim().toUpperCase();
+    const isWarehouseSite = ["MNL-MRILAO", "MNL CAL WH", "WH1", "MAIN WH11", "MAIN2"].includes(branchKey)
+        || branchKey.includes(" WH")
+        || /\bWH\d+\b/.test(branchKey);
     const branchHint = isMain
-        ? "MAIN warehouse: Coming PO counts open (non–On Hold) purchase orders destined for MAIN only. Branch demand is separate."
+        ? "MAIN warehouse: Coming PO counts open (non–On Hold) purchase orders destined for MAIN only. Order qty = Sells/day − (stock + Coming PO)."
         : selectedBranch
-            ? String(selectedBranch).toUpperCase() === "MANILA"
-                ? "For MANILA: stock and Coming PO include related Manila warehouses (MANILA, WH1, MNL CAL WH, MNL-MRILAO). Sales stay on the MANILA branch."
-                : `For ${selectedBranch}: Coming PO counts open (non–On Hold) purchase orders destined for this branch only. Request transfers from MAIN for any remaining gap.`
+            ? branchKey === "MANILA"
+                ? "For MANILA: stock and Coming PO include related Manila warehouses (MANILA, WH1, MNL CAL WH, MNL-MRILAO). Sales stay on the MANILA POS branch. Order qty = Sells/day − (stock + Coming PO)."
+                : isWarehouseSite
+                    ? `For ${selectedBranch}: Sells/day uses invoices posted to this warehouse site only (not full parent POS). Prefer parent branch (e.g. MANILA) for metro demand. Order qty = Sells/day − (stock + Coming PO).`
+                    : `For ${selectedBranch}: Coming PO counts open (non–On Hold) POs for this branch. Order qty = Sells/day − (stock + Coming PO). Request transfers from MAIN when Order qty is positive.`
             : "Select a branch to view replenishment needs.";
 
     const scopeLabel = isMain ? "MAIN Warehouse" : (selectedBranch || "Branch");
@@ -807,9 +822,9 @@ export default function ReplenishmentPage() {
             const ai = rec.aiInsights || {};
             const leadTime = Number(rec.leadTimeDays ?? ai.leadTimeDays) || 0;
             const orderQty = orderQtyDrafts[rec.itemId] !== undefined
-                ? (Number(orderQtyDrafts[rec.itemId]) || 0)
-                : (Number(rec.suggestedQty) || 0);
-            const orderQtyWithLeadTime = leadTime > 0 && orderQty > 0 ? leadTime * orderQty : "";
+                ? toWholeOrderQty(orderQtyDrafts[rec.itemId])
+                : toWholeOrderQty(rec.suggestedQty);
+            const orderQtyWithLeadTime = leadTime > 0 && orderQty > 0 ? Math.round(leadTime * orderQty) : "";
             const base = [
                 priorityLabel(rec.priorityLevel, rec.suggestedQty),
                 rec.itemId,
@@ -1110,12 +1125,12 @@ export default function ReplenishmentPage() {
                                                 at branch <strong>{selectedBranch}</strong> — not today&apos;s sales alone.
                                             </p>
                                             <p className="repl-col-info-formula">
-                                                Sells / day = Net units sold in the last 90 days ÷ 90
+                                                Sells / day = Net units sold in the last 90 days at {selectedBranch} ÷ 90
                                             </p>
                                             <p>
-                                                Uses Acumatica invoice sales for this branch only (credit memos subtracted).
-                                                Stock warehouses (e.g. MNL-MRILAO) use the parent POS branch (MANILA) —
-                                                where Acumatica posts the invoices. Network-wide catalog fallback is not used.
+                                                Uses this branch’s invoice sales first (credit memos subtracted). Network-wide
+                                                invoice totals are only used when this branch has no sales for a product.
+                                                Stock on hand comes from synced inventory.
                                             </p>
                                             <p className="repl-col-info-note">
                                                 <strong>Days left</strong> uses this rate: Branch stock (+ Coming PO) ÷ Sells / day
@@ -1139,30 +1154,36 @@ export default function ReplenishmentPage() {
                                         {isMain ? (
                                             <>
                                                 <p>
-                                                    Net branch need after MAIN on-hand and open purchase orders.
-                                                    Positive = shortfall to cover; negative = surplus at MAIN.
+                                                    Same global formula as branches. Positive = shortfall vs one day of sales;
+                                                    negative = surplus (stock + Coming PO already cover Sells/day).
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    Order qty = Total branch repl. − (Main inventory + Coming PO)
+                                                    a = Main inventory<br />
+                                                    b = Coming PO<br />
+                                                    c = a + b<br />
+                                                    d = Sells/day<br />
+                                                    e = d − c → Order qty
                                                 </p>
                                                 <p className="repl-col-info-note">
-                                                    Example: branch need 756, MAIN 3,147 + Coming PO 3,000 →
-                                                    756 − 6,147 = <strong>−5,391</strong> (surplus, no order needed).
+                                                    Example: a=47, b=399 → c=446; d=7.9 → e = 7.9 − 446 = <strong>−438.1</strong> (surplus).
                                                 </p>
                                             </>
                                         ) : (
                                             <>
                                                 <p>
                                                     Units to transfer from MAIN to <strong>{selectedBranch || "this branch"}</strong>.
-                                                    Negative = surplus (stock + Coming PO already cover Sells/day).
+                                                    Positive = need more; negative = surplus.
                                                 </p>
                                                 <p className="repl-col-info-formula">
-                                                    A = Branch stock + Coming PO<br />
-                                                    Order qty = Sells/day − A
+                                                    a = Branch stock<br />
+                                                    b = Coming PO<br />
+                                                    c = a + b<br />
+                                                    d = Sells/day<br />
+                                                    e = d − c → Order qty
                                                 </p>
                                                 <p className="repl-col-info-note">
-                                                    Example: Sells/day 7.5, stock 19 + Coming PO 515 →
-                                                    7.5 − 534 = <strong>−526.5</strong> (surplus, no transfer needed).
+                                                    Example: a=47, b=399 → c=446; d=7.9 → e = 7.9 − 446 = <strong>−438.1</strong> (surplus).
+                                                    Coming PO is included in c so open POs reduce Order qty.
                                                 </p>
                                             </>
                                         )}
@@ -1252,11 +1273,10 @@ export default function ReplenishmentPage() {
                     <p className="repl-footer">
                         Updated {new Date(meta.generatedAt).toLocaleString("en-PH")}
                         {meta.salesSource === "acumatica" && " · Sales from Acumatica (live)"}
+                        {meta.servedFrom === "cache" && " · Loaded from replenishment cache"}
                         {meta.salesScope === "network" && " · Branch demand from live stock + velocity"}
                         {meta.salesScope === "catalog-network" &&
                             " · Sales velocity from network invoices for this branch's catalog"}
-                        {meta.salesScope === "parent-pos" &&
-                            " · Sells/day from parent POS invoices (Acumatica posting branch)"}
                         {meta.servedFrom === "cache-refreshing" && " · Refresh running in background — reload in a minute for updated totals"}
                         {meta.servedFrom === "cache-stale-rebuilding" && " · Updating branch demand in background"}
                         {meta.salesMode === "live-branch-demand" && " · Total Branch Repl. from retail branch demand"}

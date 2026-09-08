@@ -407,8 +407,19 @@ export const MySqlService = {
             }
 
             if (search) {
-                whereClauses.push("(h.order_nbr LIKE ? OR h.vendor_id LIKE ? OR h.vendor_name LIKE ? OR v.vendor_name LIKE ?)");
-                params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+                // Order # / Vendor / Item ID only.
+                // Do NOT match line descriptions — brand text (e.g. "Sofie … Vinyl") collides
+                // with vendor-name searches and buries the real vendor POs under unrelated orders.
+                const like = `%${search}%`;
+                whereClauses.push(`(
+                    h.order_nbr LIKE ? OR h.vendor_id LIKE ? OR h.vendor_name LIKE ? OR v.vendor_name LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM purchase_order_details d
+                        WHERE d.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                          AND d.inventory_id LIKE ?
+                    )
+                )`);
+                params.push(like, like, like, like, like);
             }
 
             if (vendorId) {
@@ -585,51 +596,55 @@ export const MySqlService = {
     },
 
     /**
-     * Fix stale Open POs in MySQL when Acumatica already closed/received them.
-     * Delta sync can miss status transitions if LastModifiedDateTime was not re-fetched.
+     * Status must come from Acumatica sync only.
+     * Do not invent Open/Closed from receipt_date or received_qty — that caused:
+     * - Open ERP POs to show as Closed (Sofie DVOP260049 / MPO260273), and
+     * - Closed ERP POs to be wrongly reopened (extra Sofie rows beyond Acumatica's 4).
      */
     async reconcilePurchaseOrderStatuses() {
-        const openStatuses = [
-            "Open",
-            "Balanced",
-            "Pending Approval",
-            "Pending Printing",
-            "Pending Email",
-            "On Hold",
-            "Hold",
-        ];
-        const statusPh = openStatuses.map(() => "?").join(", ");
+        return { closed: 0, repaired: 0 };
+    },
 
-        const [receiptResult] = await purchasePool.query(
+    /**
+     * Align local Open/Closed with an authoritative set of Acumatica Open order numbers.
+     * Any local Open not in the ERP Open set (and with a receipt_date — the false-repair
+     * pattern) is set back to Closed. Every ERP Open order is forced to Open locally.
+     */
+    async applyAcumaticaOpenPoStatuses(openOrderNbrs) {
+        const openIds = [...new Set(
+            (openOrderNbrs || []).map((n) => String(n || "").trim()).filter(Boolean)
+        )];
+        if (!openIds.length) return { opened: 0, closed: 0 };
+
+        let opened = 0;
+        const CHUNK = 200;
+        for (let i = 0; i < openIds.length; i += CHUNK) {
+            const chunk = openIds.slice(i, i + CHUNK);
+            const ph = chunk.map(() => "?").join(",");
+            const [res] = await purchasePool.query(
+                `UPDATE purchase_history SET status = 'Open' WHERE order_nbr IN (${ph}) AND status <> 'Open'`,
+                chunk
+            );
+            opened += Number(res?.affectedRows) || 0;
+        }
+
+        // Revert false reopens: local Open + receipt_date, but NOT Open in Acumatica
+        const phAll = openIds.map(() => "?").join(",");
+        const [closeRes] = await purchasePool.query(
             `UPDATE purchase_history
              SET status = 'Closed'
-             WHERE status IN (${statusPh})
-               AND receipt_date IS NOT NULL`,
-            openStatuses
+             WHERE status = 'Open'
+               AND receipt_date IS NOT NULL
+               AND order_nbr NOT IN (${phAll})`,
+            openIds
         );
+        const closed = Number(closeRes?.affectedRows) || 0;
 
-        const [linesResult] = await purchasePool.query(
-            `UPDATE purchase_history h
-             INNER JOIN (
-               SELECT d.order_nbr
-               FROM purchase_order_details d
-               GROUP BY d.order_nbr
-               HAVING SUM(COALESCE(d.qty, 0)) > 0
-                  AND SUM(GREATEST(COALESCE(d.qty, 0) - COALESCE(d.received_qty, 0), 0)) = 0
-             ) fully ON fully.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
-             SET h.status = 'Closed'
-             WHERE h.status IN (${statusPh})`,
-            openStatuses
-        );
-
-        const closed =
-            (Number(receiptResult?.affectedRows) || 0) +
-            (Number(linesResult?.affectedRows) || 0);
-        if (closed > 0) {
+        if (opened > 0 || closed > 0) {
             invalidateCache("po:");
             invalidateCache("openPo:");
         }
-        return { closed };
+        return { opened, closed };
     },
 
     async ensureReceivedQtyColumn() {
@@ -2373,9 +2388,9 @@ export const MySqlService = {
     },
 
     /**
-     * Qty On Hand by inventory ID for a branch/warehouse group.
-     * Reads Acumatica-synced forecast_item_stock (preferred) — same source Forecast uses.
-     * inventory_items is often incomplete/stale after sync writes to product_inventory_items.
+     * Qty Available (sellable) by inventory ID for a branch/warehouse group.
+     * Reads Acumatica-synced forecast_item_stock — Available floored, DAMAGE excluded at sync.
+     * Falls back to on_hand when Available is null.
      */
     async getBranchOnHandMap({ branch = "MAIN", companyId = "main" } = {}) {
         const map = new Map();
@@ -2410,7 +2425,7 @@ export const MySqlService = {
 
             const [rows] = await purchasePool.query(
                 `SELECT UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) AS invKey,
-                        COALESCE(SUM(GREATEST(0, COALESCE(f.on_hand, 0))), 0) AS onHand
+                        COALESCE(SUM(GREATEST(0, COALESCE(f.available, f.on_hand, 0))), 0) AS onHand
                  FROM ${src.qualified} f
                  WHERE ${where.join(" AND ")}
                  GROUP BY UPPER(REPLACE(TRIM(f.inventory_id), ' ', ''))`,
@@ -2464,7 +2479,7 @@ export const MySqlService = {
 
             const [rows] = await purchasePool.query(
                 `SELECT UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) AS invKey,
-                        COALESCE(SUM(GREATEST(0, COALESCE(f.on_hand, 0))), 0) AS onHand
+                        COALESCE(SUM(GREATEST(0, COALESCE(f.available, f.on_hand, 0))), 0) AS onHand
                  FROM ${src.qualified} f
                  WHERE ${where.join(" AND ")}
                  GROUP BY UPPER(REPLACE(TRIM(f.inventory_id), ' ', ''))`,
@@ -2484,7 +2499,7 @@ export const MySqlService = {
 
     /**
      * Branch-accurate stock + sales for replenishment analysis.
-     * Stock qty = Acumatica Qty On Hand from forecast_item_stock (synced on inventory sync).
+     * Stock qty = Acumatica Qty Available (sellable) from forecast_item_stock, excl. DAMAGE.
      */
     async getReplenishmentItems({ branch = "MAIN", companyId = "main", salesMap = null } = {}) {
         if (isExcludedBranchAlias(branch)) {
@@ -2542,7 +2557,7 @@ export const MySqlService = {
                     MAX(i.inventory_name) as description,
                     MAX(i.item_status) as itemStatus,
                     MAX(i.item_class) as itemClass,
-                    COALESCE(SUM(GREATEST(0, COALESCE(i.on_hand, 0))), 0) as totalOnHand
+                    COALESCE(SUM(GREATEST(0, COALESCE(i.available, i.on_hand, 0))), 0) as totalOnHand
                  FROM inventory_items i
                  WHERE ${whereClauses.join(" AND ")}
                  GROUP BY TRIM(i.inventory_id)
@@ -3524,6 +3539,59 @@ export const MySqlService = {
                     );
                 }
             }
+
+            // Drop inventory_id-only unique indexes — they collapse all warehouses into one row
+            // and catalog upserts wipe sellable stock (Branch Stock then reads stale forecast).
+            // Keep PK on `id` (FK from product_inventory_attachments); add composite UNIQUE instead.
+            for (const idx of [
+                "uq_product_inventory_items_inventory_id",
+                "uq_inventory_items_inventory_id",
+                "inventory_id",
+            ]) {
+                try {
+                    const [[row]] = await pool.query(
+                        `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                         WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND INDEX_NAME=?`,
+                        [inventoryDb, INVENTORY_SYNC_TABLE, idx]
+                    );
+                    if (Number(row?.cnt) > 0) {
+                        await pool.query(
+                            `ALTER TABLE \`${INVENTORY_SYNC_TABLE}\` DROP INDEX \`${idx}\``
+                        );
+                        console.log(
+                            `[MySQL] Dropped blocking ${INVENTORY_SYNC_TABLE} index: ${idx}`
+                        );
+                    }
+                } catch (idxErr) {
+                    console.warn(
+                        `[MySQL] ${INVENTORY_SYNC_TABLE} index drop ${idx}:`,
+                        idxErr.message
+                    );
+                }
+            }
+
+            const [[uqWh]] = await pool.query(
+                `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND INDEX_NAME='uq_inv_warehouse'`,
+                [inventoryDb, INVENTORY_SYNC_TABLE]
+            );
+            if (Number(uqWh?.cnt) === 0) {
+                try {
+                    await pool.query(
+                        `ALTER TABLE \`${INVENTORY_SYNC_TABLE}\`
+                         ADD UNIQUE KEY uq_inv_warehouse (inventory_id, default_warehouse, company_id)`
+                    );
+                    console.log(
+                        `[MySQL] ${INVENTORY_SYNC_TABLE} added uq_inv_warehouse (inventory_id, default_warehouse, company_id)`
+                    );
+                } catch (uqErr) {
+                    console.warn(
+                        `[MySQL] ${INVENTORY_SYNC_TABLE} uq_inv_warehouse skipped:`,
+                        uqErr.message
+                    );
+                }
+            }
+
             return true;
         } catch (err) {
             console.error("[MySQL ensureProductInventoryItemsTable Error]", err);
@@ -4807,7 +4875,7 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `replSalesMap:v5:${companyKey}:${branchKey}:${watermark}`;
+        const cacheKey = `replSalesMap:v6:${companyKey}:${branchKey}:${watermark}`;
         return getCached(cacheKey, 300_000, () =>
             this._getAccurateReplenishmentSalesMapUncached({ branch, companyId })
         );
@@ -4852,18 +4920,19 @@ export const MySqlService = {
             };
         }
 
-        // Stock warehouses with no POS (e.g. MNL-MRILAO): never use catalog-network
-        // (company-wide qty). Use the parent retail branch's invoices only (MANILA).
+        // Stock warehouses (e.g. MNL-MRILAO): use sales posted to THIS site only.
+        // Do NOT copy full parent POS (MANILA) velocity — that inflates Sells/day
+        // against warehouse-only on-hand. Plan Manila metro demand from MANILA branch
+        // (which aggregates related warehouse stock).
         if (isWarehouseLikeAlias(branchKey) && !isRetailReplenishmentBranch(branchKey)) {
-            const salesBranch = resolveSalesBranchForWarehouse(branchKey) || branchKey;
-            let strict = await this.getReplenishmentSalesSummary({ branch: salesBranch, lookbackDays });
+            let strict = await this.getReplenishmentSalesSummary({ branch: branchKey, lookbackDays });
             let count = countPositive(strict.map);
             let salesMode = strict.mode;
 
             if (count < 20) {
                 for (const days of [180, 365]) {
                     const extStrict = await this.getReplenishmentSalesSummary({
-                        branch: salesBranch,
+                        branch: branchKey,
                         lookbackDays: days,
                     });
                     const extCount = countPositive(extStrict.map);
@@ -4882,10 +4951,10 @@ export const MySqlService = {
                 map.set(key, {
                     qty_sold: netQtySold(val?.qty_sold),
                     total_sales: Math.max(0, Number(val?.total_sales) || 0),
-                    salesScope: "parent-pos",
+                    salesScope: "warehouse",
                 });
             }
-            return { map, salesScope: "parent-pos", lookbackDays, salesMode };
+            return { map, salesScope: "warehouse", lookbackDays, salesMode };
         }
 
         // Retail branches: Acumatica branch invoices only — never catalog-network
@@ -5356,11 +5425,11 @@ export const MySqlService = {
                     const qtySold = netQtySold(sales?.qty_sold);
                     const ads = qtySold > 0 ? qtySold / lookbackDays : 0;
                     const stock = Number(stockMap.get(inventoryId)) || 0;
-                    const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
-                    // Shelf gap only — Coming PO is tracked separately and must not hide transfer need.
-                    const suggested = ads > 0 ? Math.max(0, targetStock - stock) : 0;
+                    // a + b = c; need = max(0, d − c). Coming PO not in this rollup path
+                    // (stock-only sites); live overlay applies Coming PO per branch.
+                    const suggested = ads > 0 ? Math.max(0, ads - stock) : 0;
                     const cachedSuggested = Number(cacheSuggestedBySite.get(siteKey)?.get(inventoryId)) || 0;
-                    const branchNeed = Math.max(suggested, cachedSuggested);
+                    const branchNeed = Math.max(suggested, cachedSuggested > 0 ? cachedSuggested : 0);
 
                     if (qtySold > 0 || ads > 0) {
                         const prev = salesByItem.get(inventoryId) || {
@@ -5457,11 +5526,9 @@ export const MySqlService = {
                 const qtySold = Number(r.qtySold) || 0;
                 const cachedStock = Number(r.stock) || 0;
                 const liveStock = Number(stockBySite.get(siteKey)?.get(inventoryId)) ?? cachedStock;
-                const cachedSuggested = Number(r.suggestedQty) || 0;
-                const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
-                // Shelf gap only — Coming PO must not hide branch transfer need.
-                const suggested = ads > 0 ? Math.max(0, targetStock - liveStock) : 0;
-                const branchNeed = Math.max(suggested, cachedSuggested);
+                // a + b = c; need = max(0, d − a). Coming PO applied on live overlay / live rollup.
+                const suggested = ads > 0 ? Math.max(0, ads - liveStock) : 0;
+                const branchNeed = suggested;
 
                 if (qtySold > 0 || ads > 0) {
                     const prev = salesByItem.get(inventoryId) || {
@@ -5524,7 +5591,7 @@ export const MySqlService = {
             const [stockRows] = await purchasePool.query(
                 `SELECT UPPER(REPLACE(TRIM(f.inventory_id), ' ', '')) AS inv,
                         UPPER(TRIM(COALESCE(f.${whCol},''))) AS wh,
-                        COALESCE(SUM(GREATEST(0, COALESCE(f.on_hand, 0))), 0) AS onHand
+                        COALESCE(SUM(GREATEST(0, COALESCE(f.available, f.on_hand, 0))), 0) AS onHand
                  FROM ${src.qualified} f
                  WHERE f.company_id = ?
                    AND f.${whCol} != '__catalog__'
@@ -5559,7 +5626,7 @@ export const MySqlService = {
             watermark = wm ? new Date(wm).toISOString() : "0";
         } catch { /* ignore */ }
 
-        const cacheKey = `liveBranchDemand:v5:${companyId}:${watermark}`;
+        const cacheKey = `liveBranchDemand:v6:${companyId}:${watermark}`;
         return getCached(cacheKey, 60_000, () =>
             this._getLiveBranchDemandByItemUncached(companyId)
         );
@@ -5622,9 +5689,9 @@ export const MySqlService = {
                                 const qtySold = netQtySold(sales?.qty_sold);
                                 const ads = qtySold > 0 ? qtySold / lookbackDays : 0;
                                 const stock = Number(onHandMap.get(inventoryId)) || 0;
-                                const targetStock = ads > 0 ? Math.ceil(ads * TARGET_DAYS_OF_COVER) : 0;
-                                // Shelf gap only — Coming PO must not hide branch transfer need.
-                                const suggested = ads > 0 ? Math.max(0, targetStock - stock) : 0;
+                                const comingPo = Number(comingPoMap.get(inventoryId)) || 0;
+                                // a + b = c; branch need = max(0, d − c)
+                                const suggested = ads > 0 ? Math.max(0, ads - (stock + comingPo)) : 0;
 
                                 if (qtySold > 0 || ads > 0) {
                                     const prevSales = salesByItem.get(inventoryId) || {

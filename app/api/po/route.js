@@ -134,7 +134,7 @@ export async function GET(request) {
 
         if (source === "mysql") {
             try {
-                await getCached("po:reconcile-status", 60_000, () =>
+                await getCached("po:reconcile-status-v2", 60_000, () =>
                     MySqlService.reconcilePurchaseOrderStatuses()
                 );
 

@@ -274,10 +274,17 @@
 }
 
 .repl-table {
+    /* Fit viewport — never force a min width that creates a horizontal scrollbar */
     table-layout: fixed !important;
-    width: max(100%, 1420px) !important;
-    min-width: 1420px !important;
-    max-width: none;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+}
+
+.repl-table-wrap {
+    position: relative;
+    overflow-x: hidden !important;
+    max-width: 100%;
 }
 
 .repl-table thead th,
@@ -449,10 +456,6 @@
     text-align: center;
     padding: 3rem 1.5rem !important;
     color: var(--text-secondary);
-}
-
-.repl-table-wrap {
-    position: relative;
 }
 
 .repl-table-loading {

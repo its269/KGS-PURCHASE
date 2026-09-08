@@ -967,6 +967,7 @@ export async function POST(request) {
                         let poSkip = 0;
                         let poTotal = 0;
                         let usedPoFallback = false;
+                        const acuOpenOrderNbrs = [];
                         while (!signal.aborted) {
                             let orders = [];
                             try {
@@ -992,11 +993,16 @@ export async function POST(request) {
                             const historyRows = [];
                             const lineRows = [];
                             for (const o of orders) {
+                                const orderNbr = getF(o, "OrderNbr");
+                                const status = getF(o, "Status");
+                                if (String(status || "").trim() === "Open" && orderNbr) {
+                                    acuOpenOrderNbrs.push(String(orderNbr).trim());
+                                }
                                 historyRows.push({
-                                    order_nbr: getF(o, "OrderNbr"),
+                                    order_nbr: orderNbr,
                                     vendor_id: getF(o, "VendorID"),
                                     vendor_name: getF(o, "VendorName"),
-                                    status: getF(o, "Status"),
+                                    status,
                                     order_date: getF(o, "Date"),
                                     promised_date: getF(o, "PromisedOn"),
                                     receipt_date: resolveReceiptDate(o, receiptDateByOrder),
@@ -1056,9 +1062,16 @@ export async function POST(request) {
                             if (orders.length < 50) break;
                         }
                         poRowsSynced = poTotal;
-                        const poReconcile = await MySqlService.reconcilePurchaseOrderStatuses();
-                        if (poReconcile?.closed > 0) {
-                            console.log(`>>> [Sync API] Reconciled ${poReconcile.closed} stale Open PO(s) to Closed`);
+                        // Never invent status locally. On full PO sync, close false "Open"
+                        // rows that Acumatica no longer reports as Open (global, all vendors).
+                        await MySqlService.reconcilePurchaseOrderStatuses();
+                        if (!isDelta && acuOpenOrderNbrs.length > 0) {
+                            const aligned = await MySqlService.applyAcumaticaOpenPoStatuses(acuOpenOrderNbrs);
+                            if (aligned.opened || aligned.closed) {
+                                console.log(
+                                    `>>> [Sync API] PO status align: opened=${aligned.opened}, closed=${aligned.closed}`
+                                );
+                            }
                         }
                         await MySqlService.logSyncEvent(options.mode, "Incoming PO", "completed", poTotal);
                         send({ section: "Incoming PO", status: "done", details: "Purchase order sync complete.", progress: 100 });
