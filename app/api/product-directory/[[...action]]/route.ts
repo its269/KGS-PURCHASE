@@ -12,22 +12,23 @@ import {
   softDeleteFolder,
   softDeleteProduct,
   writeActionLog,
-} from "@/lib/product-directory/kc-cms";
+} from "../kc-cms";
 import {
   fail,
   ok,
   readJson,
   requireAdmin,
   withCors,
-} from "@/lib/product-directory/http";
+} from "../http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type Ctx = { params: Promise<{ action: string }> };
+type Ctx = { params: Promise<{ action?: string[] }> };
 
-function normalizeAction(raw: string): string {
-  return raw.replace(/[^a-z0-9_]/gi, "").toLowerCase();
+function normalizeAction(raw: string | string[] | undefined): string {
+  const value = Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "");
+  return value.replace(/[^a-z0-9_]/gi, "").toLowerCase();
 }
 
 export async function OPTIONS() {
