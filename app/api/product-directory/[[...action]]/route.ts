@@ -1,155 +1,186 @@
-/**
- * Product Directory HTTP API (Next.js / TypeScript).
- *
- * Production (Flutter):
- *   http://190.92.233.232/kgs-purchase/api/product-directory/inventory_browse
- *
- * Local (no base path):
- *   http://localhost:3002/api/product-directory/inventory_browse
- *
- * Actions (POST JSON body unless noted):
- *   GET/POST  .../health | inventory_health
- *   POST      .../browse | inventory_browse          { folder_id? }
- *   POST      .../search | inventory_search          { query, limit? }
- *   POST      .../product | inventory_product        { product_id }
- *   POST      .../item_class_media | inventory_item_class_media | cms_media | inventory_cms_media
- *             { item_class_id, media_kind: brochure|images|videos }
- *   POST      .../folder_create | inventory_folder_create
- *   POST      .../product_create | inventory_product_create
- *   POST      .../folder_delete | inventory_folder_delete
- *   POST      .../product_delete | inventory_product_delete
- *   POST      .../action_log | inventory_action_log
- *   POST      .../action_logs | inventory_action_logs  (admin)
- *
- * Admin mutations need header X-Inventory-Admin-Token when INVENTORY_ADMIN_TOKEN is set.
- */
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
-    ProductDirectoryService,
-    PRODUCT_DIRECTORY_ACTIONS,
-} from "../service";
+  browse,
+  createFolder,
+  createProduct,
+  getProduct,
+  getProductMedia,
+  itemClassDocuments,
+  itemClassMedia,
+  listActionLogs,
+  search,
+  softDeleteFolder,
+  softDeleteProduct,
+  writeActionLog,
+} from "@/lib/product-directory/kc-cms";
+import {
+  fail,
+  ok,
+  readJson,
+  requireAdmin,
+  withCors,
+} from "@/lib/product-directory/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const CORS_HEADERS: Record<string, string> = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers":
-        "Content-Type, Authorization, Cookie, X-Inventory-Admin-Token, session_token, X-Session-Id",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
+type Ctx = { params: Promise<{ action: string }> };
 
-type RouteContext = { params: Promise<{ action?: string[] }> };
-
-function json(data: unknown, status = 200) {
-    return NextResponse.json(data, { status, headers: CORS_HEADERS });
-}
-
-function resolveAction(request: Request, params: { action?: string[] }) {
-    const { searchParams } = new URL(request.url);
-    let action = (searchParams.get("action") || "").trim();
-
-    if (!action && Array.isArray(params?.action) && params.action.length > 0) {
-        action = String(params.action[params.action.length - 1] || "").trim();
-    }
-
-    return action.toLowerCase().replace(/[^a-z0-9_]/g, "");
-}
-
-async function parseBody(request: Request): Promise<Record<string, unknown>> {
-    if (request.method === "GET" || request.method === "HEAD") {
-        const { searchParams } = new URL(request.url);
-        const body: Record<string, unknown> = {};
-        for (const [key, value] of searchParams.entries()) {
-            if (key === "action") continue;
-            body[key] = value;
-        }
-        return body;
-    }
-
-    try {
-        const text = await request.text();
-        if (!text) return {};
-        const parsed = JSON.parse(text);
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-            ? (parsed as Record<string, unknown>)
-            : {};
-    } catch {
-        return {};
-    }
-}
-
-async function handle(request: Request, context: RouteContext) {
-    const params = await context.params;
-    let actionKey = resolveAction(request, params);
-    const body = await parseBody(request);
-
-    if (!actionKey && body.action) {
-        const fromBody = String(body.action)
-            .toLowerCase()
-            .replace(/[^a-z0-9_]/g, "");
-        if (PRODUCT_DIRECTORY_ACTIONS[fromBody]) {
-            actionKey = fromBody;
-        }
-    }
-
-    if (!actionKey) {
-        actionKey = "health";
-    }
-
-    const methodName = PRODUCT_DIRECTORY_ACTIONS[actionKey];
-    if (!methodName) {
-        return json(
-            {
-                status: "error",
-                message:
-                    "Unknown action. Example: /api/product-directory/browse or /api/product-directory/inventory_browse",
-            },
-            404
-        );
-    }
-
-    try {
-        const handler = ProductDirectoryService[methodName] as (
-            body: Record<string, unknown>,
-            request?: Request
-        ) => Promise<unknown>;
-        const needsRequest = [
-            "folderCreate",
-            "productCreate",
-            "folderDelete",
-            "productDelete",
-            "actionLogsList",
-        ].includes(methodName);
-
-        const data = needsRequest
-            ? await handler.call(ProductDirectoryService, body, request)
-            : await handler.call(ProductDirectoryService, body);
-
-        return json({ status: "success", success: true, data });
-    } catch (err: unknown) {
-        const e = err as { status?: number; message?: string };
-        const status = e?.status || 500;
-        console.error(`[product-directory] ${actionKey}:`, err);
-        return json(
-            {
-                status: "error",
-                success: false,
-                message: e?.message || "Internal server error",
-            },
-            status
-        );
-    }
+function normalizeAction(raw: string): string {
+  return raw.replace(/[^a-z0-9_]/gi, "").toLowerCase();
 }
 
 export async function OPTIONS() {
-    return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+  return withCors(new NextResponse(null, { status: 204 }));
 }
 
-export async function GET(request: Request, context: RouteContext) {
-    return handle(request, context);
+export async function GET(
+  req: NextRequest,
+  ctx: Ctx,
+) {
+  const { action } = await ctx.params;
+  const key = normalizeAction(action);
+  if (key === "health" || key === "inventory_health") {
+    return withCors(ok({ ok: true }));
+  }
+  if (key === "browse" || key === "inventory_browse") {
+    const folderId = req.nextUrl.searchParams.get("folder_id") ?? "";
+    return withCors(ok(await browse(folderId)));
+  }
+  return withCors(fail(404, `Unknown action: ${action}`));
 }
 
-export async function POST(request: Request, context: RouteContext) {
-    return handle(request, context);
+export async function POST(req: NextRequest, ctx: Ctx) {
+  const { action } = await ctx.params;
+  const key = normalizeAction(action);
+  const body = await readJson(req);
+
+  try {
+    switch (key) {
+      case "browse":
+      case "inventory_browse": {
+        const folderId = String(body.folder_id ?? "");
+        return withCors(ok(await browse(folderId)));
+      }
+      case "search":
+      case "inventory_search": {
+        const query = String(body.query ?? "");
+        const limit = Number(body.limit ?? 40);
+        return withCors(ok(await search(query, limit)));
+      }
+      case "product":
+      case "inventory_product": {
+        const productId = String(body.product_id ?? "").trim();
+        if (!productId) return withCors(fail(400, "product_id is required"));
+        const product = await getProduct(productId);
+        if (!product) return withCors(fail(404, "Product not found"));
+        return withCors(ok(product));
+      }
+      case "product_media":
+      case "inventory_product_media":
+      case "cms_product_media": {
+        const productId = String(body.product_id ?? "").trim();
+        if (!productId) return withCors(fail(400, "product_id is required"));
+        const mediaKind = String(body.media_kind ?? "").trim();
+        return withCors(ok(await getProductMedia(productId, mediaKind)));
+      }
+      case "cms_media":
+      case "inventory_cms_media":
+      case "item_class_media":
+      case "inventory_item_class_media": {
+        const itemClassId = String(body.item_class_id ?? "").trim();
+        const mediaKind = String(body.media_kind ?? "").trim();
+        if (!itemClassId) {
+          return withCors(fail(400, "item_class_id is required"));
+        }
+        if (!mediaKind) {
+          return withCors(fail(400, "media_kind is required"));
+        }
+        return withCors(ok(await itemClassMedia(itemClassId, mediaKind)));
+      }
+      case "cms_documents":
+      case "inventory_cms_documents":
+      case "item_class_documents":
+      case "inventory_item_class_documents": {
+        const itemClassId = String(body.item_class_id ?? "").trim();
+        const documentCategory = String(
+          body.document_category ?? body.category ?? "",
+        ).trim();
+        if (!itemClassId) {
+          return withCors(fail(400, "item_class_id is required"));
+        }
+        if (!documentCategory) {
+          return withCors(fail(400, "document_category is required"));
+        }
+        return withCors(
+          ok(await itemClassDocuments(itemClassId, documentCategory)),
+        );
+      }
+      case "folder_create":
+      case "inventory_folder_create": {
+        if (!requireAdmin(req)) {
+          return withCors(fail(403, "Admin token required"));
+        }
+        return withCors(ok(await createFolder(body)));
+      }
+      case "product_create":
+      case "inventory_product_create": {
+        if (!requireAdmin(req)) {
+          return withCors(fail(403, "Admin token required"));
+        }
+        return withCors(ok(await createProduct(body)));
+      }
+      case "folder_delete":
+      case "inventory_folder_delete": {
+        if (!requireAdmin(req)) {
+          return withCors(fail(403, "Admin token required"));
+        }
+        const folderId = String(body.folder_id ?? "").trim();
+        if (!folderId) return withCors(fail(400, "folder_id is required"));
+        await softDeleteFolder(folderId);
+        return withCors(ok({ deleted: true }));
+      }
+      case "product_delete":
+      case "inventory_product_delete": {
+        if (!requireAdmin(req)) {
+          return withCors(fail(403, "Admin token required"));
+        }
+        const productId = String(body.product_id ?? "").trim();
+        if (!productId) return withCors(fail(400, "product_id is required"));
+        await softDeleteProduct(productId);
+        return withCors(ok({ deleted: true }));
+      }
+      case "action_log":
+      case "inventory_action_log": {
+        return withCors(ok(await writeActionLog(body)));
+      }
+      case "action_logs":
+      case "inventory_action_logs": {
+        if (!requireAdmin(req)) {
+          return withCors(fail(403, "Admin token required"));
+        }
+        return withCors(ok(await listActionLogs(Number(body.limit ?? 200))));
+      }
+      case "health":
+      case "inventory_health": {
+        return withCors(ok({ ok: true }));
+      }
+      default:
+        return withCors(
+          fail(
+            404,
+            "Unknown action. Example: /api/product-directory/inventory_browse",
+          ),
+        );
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const status =
+      message.includes("required") ||
+      message.includes("Invalid") ||
+      message.includes("Select a folder")
+        ? 400
+        : 500;
+    return withCors(fail(status, message));
+  }
 }

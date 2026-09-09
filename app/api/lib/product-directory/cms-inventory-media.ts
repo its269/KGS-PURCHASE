@@ -33,15 +33,87 @@ export function mediaKindToColumn(
   switch (kind.trim().toLowerCase()) {
     case "images":
     case "image":
+    case "photo":
+    case "photos":
       return "image_url";
     case "brochure":
     case "brochures":
       return "brochure_url";
     case "videos":
     case "video":
+    case "youtube":
       return "youtube_url";
     default:
       return null;
+  }
+}
+
+/** CMS Product Documents category key from Product Directory folder suffix/name. */
+export function documentCategoryFromFolder(
+  folderIdOrName: string,
+): string | null {
+  const raw = folderIdOrName.trim().toLowerCase();
+  const suffixMatch = raw.match(
+    /^kc_fld_(application|cost-estimator|pre-installation-guide|installation-manual|operational-manual|machine-maintenance|software|calibration|parts-and-function|troubleshooting-guide)_/i,
+  );
+  const key = (suffixMatch?.[1] || raw).replace(/_/g, "-");
+  switch (key) {
+    case "application":
+      return "application";
+    case "cost-estimator":
+    case "cost estimator":
+      return "cost_estimator";
+    case "pre-installation-guide":
+    case "pre-installation guide":
+      return "pre_installation_guide";
+    case "installation-manual":
+    case "installation manual":
+      return "installation_manual";
+    case "operational-manual":
+    case "operational manual":
+      return "operational_manual";
+    case "machine-maintenance":
+    case "machine maintenance":
+      return "machine_maintenance";
+    case "software":
+      return "software";
+    case "calibration":
+      return "calibration";
+    case "parts-and-function":
+    case "parts and function":
+      return "parts_and_function";
+    case "troubleshooting-guide":
+    case "troubleshooting guide":
+      return "troubleshooting_guide";
+    default:
+      return null;
+  }
+}
+
+export function documentCategoryLabel(category: string): string {
+  switch (category) {
+    case "application":
+      return "Application";
+    case "cost_estimator":
+      return "Cost Estimator";
+    case "pre_installation_guide":
+      return "Pre-Installation Guide";
+    case "installation_manual":
+      return "Installation Manual";
+    case "operational_manual":
+      return "Operational Manual";
+    case "machine_maintenance":
+      return "Machine Maintenance";
+    case "software":
+      return "Software";
+    case "calibration":
+      return "Calibration";
+    case "parts_and_function":
+      return "Parts and Function";
+    case "troubleshooting_guide":
+      return "Troubleshooting guide";
+    default:
+      return category;
   }
 }
 

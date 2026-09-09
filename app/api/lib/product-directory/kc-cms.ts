@@ -2,6 +2,8 @@ import { randomBytes } from "crypto";
 import { getPool, type RowDataPacket } from "./db";
 import {
   cmsMediaProductId,
+  documentCategoryFromFolder,
+  documentCategoryLabel,
   expandMediaUrls,
   flowchartMediaKind,
   flatCmsFilesFromRows,
@@ -224,7 +226,19 @@ async function loadCmsMediaRows(
   const nameAliases = cmsItemClassNameAliases(ic.name);
   const sourceCode = (ic.source_code || "").trim();
   const mustHaveUrl = requireMediaUrl(kind, ic.category_id);
-  const urlClause = mustHaveUrl ? `AND COALESCE(p.${column}, '') <> ''` : "";
+  const isImages = column === "image_url";
+  // Photos may live only in product_inventory_images (CMS gallery), not image_url.
+  const urlClause = !mustHaveUrl
+    ? ""
+    : isImages
+      ? `AND (
+           COALESCE(p.image_url, '') <> ''
+           OR EXISTS (
+             SELECT 1 FROM product_inventory_images g
+             WHERE g.inventory_item_id = p.id
+           )
+         )`
+      : `AND COALESCE(p.${column}, '') <> ''`;
   const orderBy = `ORDER BY (COALESCE(p.${column}, '') = '') ASC, m.name, p.inventory_name`;
 
   const modelClause =
@@ -232,20 +246,46 @@ async function loadCmsMediaRows(
   const modelParam =
     modelId !== undefined ? [Number(modelId)] : [];
 
-  const mapRows = (rows: RowDataPacket[]): CmsMediaRow[] =>
-    rows.map((r) => ({
-      inventory_id: String(r.inventory_id),
-      inventory_name: String(r.inventory_name || r.inventory_id),
-      model_id: r.model_id,
-      model_name: r.model_name ? String(r.model_name) : null,
-      media_url: String(r.media_url || ""),
-    }));
+  const mapRows = async (rows: RowDataPacket[]): Promise<CmsMediaRow[]> => {
+    const out: CmsMediaRow[] = [];
+    for (const r of rows) {
+      const inventoryId = String(r.inventory_id);
+      const inventoryName = String(r.inventory_name || inventoryId);
+      const model_id = r.model_id;
+      const model_name = r.model_name ? String(r.model_name) : null;
+      const cover = String(r.media_url || "");
+      if (isImages) {
+        const gallery = await loadInventoryGalleryUrls(Number(r.id));
+        const urls = gallery.length > 0 ? gallery : expandMediaUrls(cover);
+        if (urls.length === 0) continue;
+        out.push({
+          inventory_id: inventoryId,
+          inventory_name: inventoryName,
+          model_id,
+          model_name,
+          // Pipe-join so groupCmsMediaBrowse expands to unique product ids.
+          media_url: urls.join("|"),
+        });
+        continue;
+      }
+      out.push({
+        inventory_id: inventoryId,
+        inventory_name: inventoryName,
+        model_id,
+        model_name,
+        media_url: cover,
+      });
+    }
+    return out;
+  };
+
+  const selectCols = `p.id, p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
+              p.${column} AS media_url`;
 
   // 1) Products already linked under this Product Directory item class.
   try {
     const [rows] = await getPool().query<RowDataPacket[]>(
-      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-              p.${column} AS media_url
+      `SELECT ${selectCols}
        FROM product_inventory_items p
        INNER JOIN kc_products kp
          ON BINARY kp.id = BINARY p.inventory_id AND kp.is_active = 1
@@ -271,8 +311,7 @@ async function loadCmsMediaRows(
       const nameIn = nameAliases.map(() => sqlNormLabel("?")).join(", ");
       const catIn = categoryAliases.map(() => sqlNormLabel("?")).join(", ");
       const [byKc] = await getPool().query<RowDataPacket[]>(
-        `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-                p.${column} AS media_url
+        `SELECT ${selectCols}
          FROM product_inventory_items p
          LEFT JOIN inventory_models m ON m.id = p.model_id
          WHERE p.deleted_at IS NULL
@@ -296,8 +335,7 @@ async function loadCmsMediaRows(
   // 3) Fallback: Acumatica item_class code (source_code) or exact KC name.
   try {
     const [fallback] = await getPool().query<RowDataPacket[]>(
-      `SELECT p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
-              p.${column} AS media_url
+      `SELECT ${selectCols}
        FROM product_inventory_items p
        LEFT JOIN inventory_models m ON m.id = p.model_id
        WHERE p.deleted_at IS NULL
@@ -983,6 +1021,16 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
     return { folders: await listCategories(), products: [] };
   }
 
+  // CMS Product Documents folders (Application, Installation Manual, …).
+  const docCategory = documentCategoryFromFolder(current);
+  if (docCategory) {
+    const match = current.match(/^kc_fld_[a-z0-9-]+_(.+)$/i);
+    const itemClassId = match?.[1] || "";
+    if (itemClassId) {
+      return itemClassDocuments(itemClassId, docCategory);
+    }
+  }
+
   const cmsModel = parseCmsModelFolderId(current);
   if (cmsModel) {
     const ic = await getItemClass(cmsModel.itemClassId);
@@ -1301,6 +1349,101 @@ export async function itemClassMedia(
     groupByModel: shouldGroupMediaByModel(icRow.category_id),
     allowEmptyUrl: !requireMediaUrl(kind, icRow.category_id),
   });
+}
+
+/**
+ * CMS Product Documents for one Product Directory item class + category
+ * (Application, Installation Manual, …). Reads shared DB only — no CMS code.
+ */
+export async function itemClassDocuments(
+  itemClassId: string,
+  documentCategory: string,
+): Promise<BrowseResult> {
+  await ensureTables();
+  const category =
+    documentCategoryFromFolder(documentCategory) ||
+    documentCategory.trim().toLowerCase();
+  if (!category) return { folders: [], products: [] };
+
+  const icRow = await getItemClass(itemClassId);
+  if (!icRow) return { folders: [], products: [] };
+  const parentCat = await getCategory(icRow.category_id);
+  const label = documentCategoryLabel(category);
+  const path = [ROOT_NAME, parentCat?.name || "", icRow.name, label].filter(
+    Boolean,
+  );
+  const categoryAliases = cmsCategoryAliases(parentCat?.name || "");
+  const nameAliases = cmsItemClassNameAliases(icRow.name);
+  const sourceCode = (icRow.source_code || "").trim();
+
+  type DocRow = {
+    attachment_id: number;
+    inventory_id: string;
+    inventory_name: string;
+    file_url: string;
+    file_name: string | null;
+  };
+
+  const mapProducts = (rows: DocRow[]): InventoryProduct[] => {
+    const products: InventoryProduct[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const url = resolveCmsMediaUrl(String(row.file_url || ""));
+      if (!url) continue;
+      const id = `attachment_${row.inventory_id}_${row.attachment_id}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      products.push({
+        id,
+        name:
+          String(row.file_name || "").trim() ||
+          String(row.inventory_name || row.inventory_id),
+        sku: String(row.inventory_id),
+        description: label,
+        file_url: url,
+        folder_id: `kc_fld_${category.replace(/_/g, "-")}_${itemClassId}`,
+        folder_path: path,
+      });
+    }
+    return products;
+  };
+
+  try {
+    const filters: string[] = [
+      "p.deleted_at IS NULL",
+      "LOWER(TRIM(p.item_status)) = 'active'",
+      "a.category = ?",
+    ];
+    const params: unknown[] = [category];
+
+    if (nameAliases.length > 0 && categoryAliases.length > 0) {
+      const nameIn = nameAliases.map(() => sqlNormLabel("?")).join(", ");
+      const catIn = categoryAliases.map(() => sqlNormLabel("?")).join(", ");
+      filters.push(`${sqlNormLabel("p.kc_item_class")} IN (${nameIn})`);
+      filters.push(`${sqlNormLabel("p.kc_category")} IN (${catIn})`);
+      params.push(...nameAliases, ...categoryAliases);
+    } else {
+      filters.push(`(
+        (TRIM(IFNULL(p.item_class,'')) <> '' AND ${sqlUtf8Eq("IFNULL(p.item_class,'')")})
+        OR (TRIM(IFNULL(p.kc_item_class,'')) <> '' AND ${sqlUtf8Eq("IFNULL(p.kc_item_class,'')")})
+      )`);
+      params.push(sourceCode || icRow.name, icRow.name);
+    }
+
+    const [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT a.id AS attachment_id, p.inventory_id, p.inventory_name,
+              a.file_url, a.file_name
+       FROM product_inventory_attachments a
+       INNER JOIN product_inventory_items p ON p.id = a.inventory_item_id
+       WHERE ${filters.join(" AND ")}
+       ORDER BY p.inventory_name, a.id`,
+      params,
+    );
+    return { folders: [], products: mapProducts(rows as unknown as DocRow[]) };
+  } catch (err) {
+    console.error("[product-directory] itemClassDocuments failed:", err);
+    return { folders: [], products: [] };
+  }
 }
 
 async function loadInventoryGalleryUrls(
