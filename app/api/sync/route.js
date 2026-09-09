@@ -10,6 +10,7 @@ import {
     isUnauthorizedError,
     hasSystemAcumaticaCredentials,
 } from "@/lib/sync-acumatica-auth";
+import { alignAllOpenPurchaseOrderStatuses } from "@/lib/po-open-status-align";
 import mysql from "mysql2/promise";
 import { isPoLineCompleted } from "@/lib/open-po-match.js";
 
@@ -1062,28 +1063,21 @@ export async function POST(request) {
                             if (orders.length < 50) break;
                         }
                         poRowsSynced = poTotal;
-                        // Never invent status locally. Align from Acumatica Status eq 'Open'
-                        // (complete set) — not the incidental sync-batch Open list, which
-                        // wrongly closed ERP-Open POs that still have receipt_date.
-                        await MySqlService.reconcilePurchaseOrderStatuses();
+                        // Global Open align for ALL vendors — never Softie-only and never
+                        // the incomplete sync-batch Open list (that closed ERP-Open + receipt).
                         try {
                             const alignStart = String(poStart || "2024-01-01").slice(0, 10);
-                            const erpOpenNbrs = await AcumaticaService.fetchOpenPurchaseOrderNbrs({
+                            const aligned = await alignAllOpenPurchaseOrderStatuses({
                                 cookie: effectiveCookie,
                                 startDate: alignStart,
+                                closeStale: true,
                             });
-                            if (erpOpenNbrs.length > 0) {
-                                const aligned = await MySqlService.applyAcumaticaOpenPoStatuses(
-                                    erpOpenNbrs,
-                                    { closeStale: true, sinceDate: alignStart }
+                            if (!aligned.skipped && (aligned.opened || aligned.closed || aligned.openSet)) {
+                                console.log(
+                                    `>>> [Sync API] PO status align (global): openSet=${aligned.openSet}, opened=${aligned.opened}, closed=${aligned.closed}`
                                 );
-                                if (aligned.opened || aligned.closed) {
-                                    console.log(
-                                        `>>> [Sync API] PO status align: openSet=${erpOpenNbrs.length}, opened=${aligned.opened}, closed=${aligned.closed}`
-                                    );
-                                }
-                            } else if (acuOpenOrderNbrs.length > 0) {
-                                // Fallback: open only — never close from a partial batch
+                            }
+                            if (aligned.skipped && acuOpenOrderNbrs.length > 0) {
                                 await MySqlService.applyAcumaticaOpenPoStatuses(acuOpenOrderNbrs, {
                                     closeStale: false,
                                 });

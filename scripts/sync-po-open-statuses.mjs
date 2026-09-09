@@ -1,6 +1,5 @@
 /**
- * Global: pull Acumatica Open PO numbers (2026+) and align MySQL statuses.
- * Fixes false reopens from the old receipt_date heuristic.
+ * Global: pull Acumatica Open PO numbers and align MySQL statuses for ALL vendors.
  *
  * Usage: node scripts/sync-po-open-statuses.mjs
  */
@@ -100,11 +99,10 @@ const pool = mysql.createPool({
 try {
     console.log("Logging in to Acumatica…");
     const cookie = await login();
-    console.log("Fetching Open POs from Acumatica…");
+    console.log("Fetching Open POs from Acumatica (ALL vendors)…");
     const openIds = await fetchOpenOrderNbrs(cookie, "2024-01-01");
-    console.log("Acumatica Open count (2024+):", openIds.length);
+    console.log("Acumatica Open count (global):", openIds.length);
 
-    // Ensure ERP Open → local Open
     let opened = 0;
     for (let i = 0; i < openIds.length; i += 200) {
         const chunk = openIds.slice(i, i + 200);
@@ -116,7 +114,6 @@ try {
         opened += Number(res?.affectedRows) || 0;
     }
 
-    // Revert false reopens (Open + receipt_date but not Open in ERP), same date window
     const phAll = openIds.map(() => "?").join(",");
     const [closeRes] = await pool.query(
         `UPDATE purchase_history
@@ -129,26 +126,42 @@ try {
     );
     const closed = Number(closeRes?.affectedRows) || 0;
 
-    console.log(`Aligned statuses: opened=${opened}, closed(false-reopens)=${closed}`);
+    console.log(`Aligned statuses (global): opened=${opened}, closed(false-reopens)=${closed}`);
 
-    // Verify Sofie
+    // Global proof: Open POs by vendor (top 15) — not Softie-only
+    const [byVendor] = await pool.query(
+        `SELECT COALESCE(NULLIF(TRIM(vendor_name), ''), vendor_id, '(unknown)') AS vendor,
+                COUNT(*) AS open_count
+         FROM purchase_history
+         WHERE status = 'Open'
+           AND DATE(order_date) >= '2024-01-01'
+         GROUP BY COALESCE(NULLIF(TRIM(vendor_name), ''), vendor_id, '(unknown)')
+         ORDER BY open_count DESC
+         LIMIT 15`
+    );
+    console.log("Local Open POs by vendor (top 15):");
+    console.table(byVendor);
+
+    const [[localOpen]] = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM purchase_history
+         WHERE status = 'Open' AND DATE(order_date) >= '2024-01-01'`
+    );
+    console.log(
+        `Local Open (2024+): ${localOpen.cnt} | Acumatica Open set: ${openIds.length}`
+    );
+
+    // Softie is only a sanity check among all vendors
     const manager = ["MPO260504", "MPO260431", "DVOP260049", "MPO260273"];
     const [sofie] = await pool.query(
-        `SELECT order_nbr, status FROM purchase_history
-         WHERE (vendor_id = 'VM000055' OR vendor_name LIKE '%sofie%')
-           AND status = 'Open'
-           AND DATE(order_date) >= '2026-01-01' AND DATE(order_date) <= '2026-12-31'
-         ORDER BY order_date DESC`
+        `SELECT order_nbr FROM purchase_history
+         WHERE order_nbr IN (?,?,?,?) AND status = 'Open'`,
+        manager
     );
-    console.log("Open Sofie in range after align:", sofie.map((r) => r.order_nbr));
-    const missing = manager.filter((n) => !sofie.some((r) => r.order_nbr === n));
-    const extra = sofie.filter((r) => !manager.includes(r.order_nbr)).map((r) => r.order_nbr);
-    console.log(missing.length ? `MISSING manager: ${missing}` : "PASS: manager 4 present");
-    console.log(extra.length ? `EXTRA beyond manager: ${extra}` : "PASS: exactly manager 4 (or subset)");
-
-    // Also show which manager IDs Acumatica considers Open
-    const acuSofie = openIds.filter((n) => manager.includes(n));
-    console.log("Manager IDs in Acumatica Open set:", acuSofie);
+    console.log(
+        sofie.length === 4
+            ? "Sanity Softie Open: 4/4 present"
+            : `Sanity Softie Open: ${sofie.length}/4 — ${sofie.map((r) => r.order_nbr).join(", ")}`
+    );
 } finally {
     await pool.end();
 }

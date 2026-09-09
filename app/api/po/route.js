@@ -10,6 +10,7 @@ import { getSystemAcumaticaCredential } from "@/lib/acumatica-system-auth";
 import { AcumaticaService } from "@/services/acumatica";
 import { MySqlService } from "@/services/mysql";
 import { getCached } from "@/lib/server-cache";
+import { alignAllOpenPurchaseOrderStatuses } from "@/lib/po-open-status-align";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -134,26 +135,17 @@ export async function GET(request) {
 
         if (source === "mysql") {
             try {
-                // Keep Open/Closed aligned with Acumatica (global, all vendors).
-                // Incomplete sync-batch Open lists used to close ERP-Open POs that still
-                // have receipts (Sofie DVOP260049 / MPO260273). Use Status eq 'Open' only.
-                await getCached("po:align-open-status-v2", 10 * 60_000, async () => {
-                    await MySqlService.reconcilePurchaseOrderStatuses();
+                // Global Open/Closed align for ALL vendors (Purchase Orders + Incoming PO
+                // both hit this route). Not Softie-specific.
+                await getCached("po:align-open-status-v3-global", 10 * 60_000, async () => {
                     const cred = poCred && poCred !== "__bypass__"
                         ? poCred
                         : await getSystemAcumaticaCredential();
-                    if (!cred || cred === "__bypass__") return { skipped: true };
-                    const startDate = "2024-01-01";
-                    const openIds = await AcumaticaService.fetchOpenPurchaseOrderNbrs({
+                    return alignAllOpenPurchaseOrderStatuses({
                         cookie: cred,
-                        startDate,
-                    });
-                    if (!openIds.length) return { opened: 0, closed: 0, openSet: 0 };
-                    const aligned = await MySqlService.applyAcumaticaOpenPoStatuses(openIds, {
+                        startDate: "2024-01-01",
                         closeStale: true,
-                        sinceDate: startDate,
                     });
-                    return { ...aligned, openSet: openIds.length };
                 });
 
                 let result = await MySqlService.getPurchaseOrders(fetchParams);
