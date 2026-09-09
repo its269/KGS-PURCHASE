@@ -617,25 +617,40 @@ function filterProductsByMediaType(
   if (key === "brochure") {
     return products.filter((p) => {
       const url = p.file_url.trim().toLowerCase();
-      if (!url) return true;
+      if (!url) return false;
+      // Never treat product photos / YouTube as brochures.
+      if (
+        url.includes(".png") ||
+        url.includes(".jpg") ||
+        url.includes(".jpeg") ||
+        url.includes(".webp") ||
+        url.includes(".gif") ||
+        url.includes("youtube.com") ||
+        url.includes("youtu.be")
+      ) {
+        return false;
+      }
       return (
         url.includes(".pdf") ||
         url.includes(".doc") ||
-        url.includes("brochure") ||
-        !url.includes(".mp4")
+        url.includes("brochure")
       );
     });
   }
   if (key === "images") {
     return products.filter((p) => {
       const url = p.file_url.trim().toLowerCase();
+      if (!url) return false;
+      if (url.includes(".pdf") || url.includes("brochure")) return false;
       return (
         url.includes(".png") ||
         url.includes(".jpg") ||
         url.includes(".jpeg") ||
         url.includes(".webp") ||
         url.includes(".gif") ||
-        url.includes("image")
+        url.includes("image") ||
+        url.includes("/gallery/") ||
+        url.includes("upload")
       );
     });
   }
@@ -643,6 +658,9 @@ function filterProductsByMediaType(
     return products.filter((p) => {
       const url = p.file_url.trim().toLowerCase();
       return (
+        url.includes("youtube.com") ||
+        url.includes("youtu.be") ||
+        url.includes("youtube-nocookie.com") ||
         url.includes(".mp4") ||
         url.includes(".mov") ||
         url.includes(".webm") ||
