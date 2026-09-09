@@ -795,6 +795,7 @@ export default function PurchaseOrdersPage() {
     const [userStatusTableFilter, setUserStatusTableFilter] = useState("");
     const [overdueShipOutFilter, setOverdueShipOutFilter] = useState(false);
     const [columnFilters, setColumnFilters] = useState(EMPTY_COLUMN_FILTERS);
+    const [debColumnFilters, setDebColumnFilters] = useState(EMPTY_COLUMN_FILTERS);
     const [exporting, setExporting] = useState(false);
 
     const setColumnFilter = useCallback((field, value) => {
@@ -810,6 +811,7 @@ export default function PurchaseOrdersPage() {
 
     const clearAllColumnFilters = useCallback(() => {
         setColumnFilters(EMPTY_COLUMN_FILTERS);
+        setDebColumnFilters(EMPTY_COLUMN_FILTERS);
         setUserStatusTableFilter("");
     }, []);
 
@@ -1026,13 +1028,40 @@ export default function PurchaseOrdersPage() {
         return () => clearTimeout(t);
     }, [search]);
 
+    // Debounce column filters so typing Vendor Name / Order # hits the API, not only the current page
+    useEffect(() => {
+        const t = setTimeout(() => setDebColumnFilters(columnFilters), 350);
+        return () => clearTimeout(t);
+    }, [columnFilters]);
+
     useEffect(() => {
         if (isInitialMount.current) {
             isInitialMount.current = false;
             return;
         }
         setPage(1);
-    }, [debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus, overdueShipOutFilter]);
+    }, [
+        debSearch,
+        startDate,
+        endDate,
+        status,
+        selectedBranch,
+        columnFilters.userStatus,
+        overdueShipOutFilter,
+        debColumnFilters.orderNbr,
+        debColumnFilters.vendorId,
+        debColumnFilters.vendorName,
+        debColumnFilters.status,
+        debColumnFilters.date,
+        debColumnFilters.origin,
+        debColumnFilters.containerNumber,
+        debColumnFilters.etd,
+        debColumnFilters.shipOutDate,
+        debColumnFilters.eta,
+        debColumnFilters.receivedDate,
+        debColumnFilters.remarks,
+        debColumnFilters.totalAmount,
+    ]);
 
     const userStatusOrderNbrs = useMemo(
         () => collectOrderNbrsByUserStatus(userInputs, columnFilters.userStatus),
@@ -1051,6 +1080,7 @@ export default function PurchaseOrdersPage() {
             if (columnFilters.userStatus && Array.isArray(userStatusOrderNbrs) && userStatusOrderNbrs.length === 0) {
                 setOrders([]);
                 setHasMore(false);
+                setTotalCount(0);
                 return;
             }
 
@@ -1060,25 +1090,63 @@ export default function PurchaseOrdersPage() {
                 if (!overdueNbrs.length) {
                     setOrders([]);
                     setHasMore(false);
+                    setTotalCount(0);
                     return;
                 }
             }
 
+            const col = debColumnFilters;
+            // Annotation / logistics filters still need a wider page so client filter is not stuck on 10 rows
+            const hasClientOnlyColumnFilters = !!(
+                col.origin
+                || col.containerNumber
+                || col.etd
+                || col.shipOutDate
+                || col.eta
+                || col.receivedDate
+                || col.remarks
+                || col.totalAmount
+            );
+            const pageSize = hasClientOnlyColumnFilters ? 100 : PAGE_SIZE;
+
             const params = new URLSearchParams({
-                page: String(page),
-                pageSize: String(PAGE_SIZE),
+                page: String(hasClientOnlyColumnFilters ? 1 : page),
+                pageSize: String(pageSize),
             });
+
+            // PO Date column filter narrows the range; otherwise use toolbar From/To
             if (!overdueShipOutFilter) {
-                params.set("startDate", startDate);
-                params.set("endDate", endDate);
+                if (col.date) {
+                    params.set("startDate", col.date);
+                    params.set("endDate", col.date);
+                } else {
+                    params.set("startDate", startDate);
+                    params.set("endDate", endDate);
+                }
             }
-            // User Status / overdue filters look up annotated order #s across all ERP statuses
-            // (default toolbar "Open" would hide Customs / Delayed / Cancelled matches).
-            // Keep Status when searching so vendor searches (e.g. Sofie + Open) match Acumatica.
-            if (!columnFilters.userStatus && !overdueShipOutFilter && status) {
-                params.set("status", status);
+
+            // Column Status overrides toolbar Status when set
+            if (!columnFilters.userStatus && !overdueShipOutFilter) {
+                const effectiveStatus = String(col.status || status || "").trim();
+                if (effectiveStatus) params.set("status", effectiveStatus);
             }
-            if (debSearch) params.set("search", debSearch);
+
+            // Server search: Order # column wins; else Vendor Name column and/or toolbar search
+            const orderNbrQ = String(col.orderNbr || "").trim();
+            const vendorNameQ = String(col.vendorName || "").trim();
+            const toolbarQ = String(debSearch || "").trim();
+            let searchQ = toolbarQ;
+            if (orderNbrQ) {
+                searchQ = orderNbrQ;
+            } else if (vendorNameQ) {
+                // Column Vendor Name must hit the API (not only the current page of 10)
+                searchQ = vendorNameQ;
+            }
+            if (searchQ) params.set("search", searchQ);
+
+            const vendorIdQ = String(col.vendorId || "").trim();
+            if (vendorIdQ) params.set("vendorId", vendorIdQ);
+
             if (selectedBranch) params.set("branch", selectedBranch);
 
             let nbrs = null;
@@ -1096,14 +1164,14 @@ export default function PurchaseOrdersPage() {
             }
             if (nbrs?.length) params.set("orderNbrs", nbrs.join(","));
 
-            const res = await fetchWithAuth(`/api/po?${params}`); 
+            const res = await fetchWithAuth(`/api/po?${params}`);
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.message || `HTTP ${res.status}`);
             }
             const data = await res.json();
             setOrders(data.orders ?? []);
-            setHasMore(data.hasMore ?? false);
+            setHasMore(hasClientOnlyColumnFilters ? false : (data.hasMore ?? false));
             setTotalCount(
                 typeof data.totalCount === "number" && Number.isFinite(data.totalCount)
                     ? data.totalCount
@@ -1115,7 +1183,19 @@ export default function PurchaseOrdersPage() {
         } finally {
             setLoading(false);
         }
-    }, [page, debSearch, startDate, endDate, status, selectedBranch, columnFilters.userStatus, userStatusOrderNbrs, overdueShipOutFilter, overdueShipOut.orderNbrs]);
+    }, [
+        page,
+        debSearch,
+        startDate,
+        endDate,
+        status,
+        selectedBranch,
+        columnFilters.userStatus,
+        userStatusOrderNbrs,
+        overdueShipOutFilter,
+        overdueShipOut.orderNbrs,
+        debColumnFilters,
+    ]);
 
     useEffect(() => {
         fetchOrders();
@@ -1200,6 +1280,25 @@ export default function PurchaseOrdersPage() {
         });
     }, [orders, userInputs, columnFilters, overdueShipOutFilter, overdueShipOut.orderNbrs]);
 
+    const hasClientOnlyColumnFilters = useMemo(() => {
+        const f = columnFilters;
+        return !!(
+            f.origin
+            || f.containerNumber
+            || f.etd
+            || f.shipOutDate
+            || f.eta
+            || f.receivedDate
+            || f.remarks
+            || f.totalAmount
+        );
+    }, [columnFilters]);
+
+    // Footer must match visible rows — never show "626 orders" when the table is empty
+    const paginationTotal = hasClientOnlyColumnFilters
+        ? displayedOrders.length
+        : (typeof totalCount === "number" ? totalCount : displayedOrders.length);
+
     return (
         <div className="po-root">
             <main className="po-main">
@@ -1232,7 +1331,7 @@ export default function PurchaseOrdersPage() {
                             <div className="po-summary-item">
                                 <span className="po-summary-label">Total Purchase Orders</span>
                                 <span className="po-summary-value">
-                                    {typeof totalCount === "number" ? totalCount : orders.length} Orders
+                                    {paginationTotal} Orders
                                 </span>
                             </div>
 
@@ -1700,13 +1799,13 @@ export default function PurchaseOrdersPage() {
 
                 {!loading && (
                     <PaginationBar
-                        page={page}
-                        pageSize={PAGE_SIZE}
-                        totalCount={totalCount}
-                        hasMore={hasMore}
+                        page={hasClientOnlyColumnFilters ? 1 : page}
+                        pageSize={hasClientOnlyColumnFilters ? Math.max(displayedOrders.length, 1) : PAGE_SIZE}
+                        totalCount={paginationTotal}
+                        hasMore={hasClientOnlyColumnFilters ? false : hasMore}
                         onPageChange={setPage}
                         itemLabel="orders"
-                        disabled={loading}
+                        disabled={loading || hasClientOnlyColumnFilters}
                     />
                 )}
             </main>
