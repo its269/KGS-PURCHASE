@@ -782,7 +782,7 @@ export default function PurchaseOrdersPage() {
     const [debSearch, setDebSearch] = useState("");
     const [startDate, setStartDate] = useState(() => yearStartIso());
     const [endDate, setEndDate] = useState(() => todayIso());
-    const [status, setStatus] = useState("Open");
+    const [status, setStatus] = useState("active");
     const [selectedBranch, setSelectedBranch] = useState("");
     const [branchOptions, setBranchOptions] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -858,7 +858,13 @@ export default function PurchaseOrdersPage() {
             if (savedSearch) setSearch(savedSearch);
             setStartDate(yearStart);
             setEndDate(today);
-            if (savedStatus) setStatus(savedStatus);
+            // Match Acumatica active PO inquiry (Open + On Hold + Pending Approval).
+            // Old default "Open" hid On Hold rows (e.g. EX MNLP260777).
+            if (!savedStatus || savedStatus === "Open" || savedStatus === "Hold") {
+                setStatus("active");
+            } else {
+                setStatus(savedStatus === "Hold" ? "On Hold" : savedStatus);
+            }
             if (savedBranch) setSelectedBranch(savedBranch);
 
             // Annotations only — list data always comes live from MySQL via /api/po
@@ -1422,11 +1428,12 @@ export default function PurchaseOrdersPage() {
                             value={status}
                             onChange={(e) => setStatus(e.target.value)}
                         >
+                            <option value="active">Active (Open + On Hold + Pending Approval)</option>
                             <option value="">All Statuses</option>
-                            <option value="Hold">Hold</option>
                             <option value="Open">Open</option>
-                            <option value="Balanced">Balanced</option>
+                            <option value="On Hold">On Hold</option>
                             <option value="Pending Approval">Pending Approval</option>
+                            <option value="Balanced">Balanced</option>
                             <option value="Completed">Completed</option>
                             <option value="Cancelled">Cancelled</option>
                             <option value="Closed">Closed</option>

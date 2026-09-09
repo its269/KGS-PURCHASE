@@ -391,8 +391,23 @@ export const MySqlService = {
             let params = [];
 
             if (status) {
-                whereClauses.push("h.status = ?");
-                params.push(status);
+                // Support multi-status: "Open,On Hold,Pending Approval" or preset "active"
+                const raw = String(status).trim();
+                const parts = raw.toLowerCase() === "active"
+                    ? ["Open", "On Hold", "Pending Approval"]
+                    : raw.split(",").map((s) => {
+                        const t = s.trim();
+                        if (/^hold$/i.test(t)) return "On Hold";
+                        if (/^canceled$/i.test(t)) return "Cancelled";
+                        return t;
+                    }).filter(Boolean);
+                if (parts.length === 1) {
+                    whereClauses.push("h.status = ?");
+                    params.push(parts[0]);
+                } else if (parts.length > 1) {
+                    whereClauses.push(`h.status IN (${parts.map(() => "?").join(",")})`);
+                    params.push(...parts);
+                }
             }
 
             if (startDate) {

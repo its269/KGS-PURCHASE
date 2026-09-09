@@ -64,7 +64,7 @@ export default function IncomingPOPage() {
     const [search, setSearch] = useState("");
     const [debSearch, setDebSearch] = useState("");
     const [startDate, setStartDate] = useState("");
-    const [status, setStatus] = useState("Open");
+    const [status, setStatus] = useState("active");
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [expanded, setExpanded] = useState({}); // orderNbr -> bool
@@ -79,13 +79,17 @@ export default function IncomingPOPage() {
         
         const savedSearch = localStorage.getItem("inc_po_filter_search") || "";
         const savedStart = localStorage.getItem("inc_po_filter_startDate") || "";
-        const savedStatus = localStorage.getItem("inc_po_filter_status") || "Open";
+        const savedStatus = localStorage.getItem("inc_po_filter_status") || "active";
 
         Promise.resolve().then(() => {
             setPage(initialPage);
             setSearch(savedSearch);
             setStartDate(savedStart);
-            setStatus(savedStatus);
+            if (!savedStatus || savedStatus === "Open" || savedStatus === "Hold") {
+                setStatus("active");
+            } else {
+                setStatus(savedStatus === "Hold" ? "On Hold" : savedStatus);
+            }
             isInitialMount.current = false;
         });
     }, []);
@@ -172,11 +176,12 @@ export default function IncomingPOPage() {
                             value={status}
                             onChange={(e) => setStatus(e.target.value)}
                         >
+                            <option value="active">Active (Open + On Hold + Pending Approval)</option>
                             <option value="">All Statuses</option>
-                            <option value="Hold">Hold</option>
                             <option value="Open">Open</option>
-                            <option value="Balanced">Balanced</option>
+                            <option value="On Hold">On Hold</option>
                             <option value="Pending Approval">Pending Approval</option>
+                            <option value="Balanced">Balanced</option>
                             <option value="Pending Printing">Pending Printing</option>
                             <option value="Pending Email">Pending Email</option>
                             <option value="Completed">Completed</option>
@@ -185,10 +190,10 @@ export default function IncomingPOPage() {
                         </select>
                     </div>
 
-                    {(startDate || status !== "Open") && (
+                    {(startDate || status !== "active") && (
                         <button
                             className="po-reset-btn"
-                            onClick={() => { setStartDate(""); setStatus("Open"); }}
+                            onClick={() => { setStartDate(""); setStatus("active"); }}
                         >
                             Reset
                         </button>
