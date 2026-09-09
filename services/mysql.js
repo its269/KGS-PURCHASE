@@ -606,11 +606,12 @@ export const MySqlService = {
     },
 
     /**
-     * Align local Open/Closed with an authoritative set of Acumatica Open order numbers.
-     * Any local Open not in the ERP Open set (and with a receipt_date — the false-repair
-     * pattern) is set back to Closed. Every ERP Open order is forced to Open locally.
+     * Align local statuses with an authoritative Acumatica Open set (global).
+     * Always force ERP Open → local Open.
+     * Optionally close local Open+receipt_date rows not in that set (undo false reopens),
+     * scoped by sinceDate so a partial Open list cannot close ERP-Open POs.
      */
-    async applyAcumaticaOpenPoStatuses(openOrderNbrs) {
+    async applyAcumaticaOpenPoStatuses(openOrderNbrs, { closeStale = true, sinceDate = "" } = {}) {
         const openIds = [...new Set(
             (openOrderNbrs || []).map((n) => String(n || "").trim()).filter(Boolean)
         )];
@@ -628,17 +629,23 @@ export const MySqlService = {
             opened += Number(res?.affectedRows) || 0;
         }
 
-        // Revert false reopens: local Open + receipt_date, but NOT Open in Acumatica
-        const phAll = openIds.map(() => "?").join(",");
-        const [closeRes] = await purchasePool.query(
-            `UPDATE purchase_history
-             SET status = 'Closed'
-             WHERE status = 'Open'
-               AND receipt_date IS NOT NULL
-               AND order_nbr NOT IN (${phAll})`,
-            openIds
-        );
-        const closed = Number(closeRes?.affectedRows) || 0;
+        let closed = 0;
+        if (closeStale) {
+            const phAll = openIds.map(() => "?").join(",");
+            const since = String(sinceDate || "").slice(0, 10);
+            const sinceClause = since ? " AND DATE(order_date) >= ?" : "";
+            const params = since ? [...openIds, since] : openIds;
+            const [closeRes] = await purchasePool.query(
+                `UPDATE purchase_history
+                 SET status = 'Closed'
+                 WHERE status = 'Open'
+                   AND receipt_date IS NOT NULL
+                   AND order_nbr NOT IN (${phAll})
+                   ${sinceClause}`,
+                params
+            );
+            closed = Number(closeRes?.affectedRows) || 0;
+        }
 
         if (opened > 0 || closed > 0) {
             invalidateCache("po:");

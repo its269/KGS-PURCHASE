@@ -59,12 +59,11 @@ async function login() {
     throw new Error("Acumatica login failed");
 }
 
-async function fetchOpenOrderNbrs(cookie, startDate = "2026-01-01") {
+async function fetchOpenOrderNbrs(cookie, startDate = "2024-01-01") {
     const open = new Set();
     let skip = 0;
-    const top = 50;
-    // Same filter shape as Incoming PO sync (Acumatica rejects some $select/$filter combos)
-    const filter = `Date ge datetimeoffset'${startDate}T00:00:00Z' and Status ne 'Cancelled'`;
+    const top = 100;
+    const filter = `Status eq 'Open' and Date ge datetimeoffset'${startDate}T00:00:00Z'`;
 
     while (true) {
         const url = `${ACU}/PurchaseOrder?$top=${top}&$skip=${skip}&$filter=${encodeURIComponent(filter)}`;
@@ -79,14 +78,13 @@ async function fetchOpenOrderNbrs(cookie, startDate = "2026-01-01") {
         const rows = data.value || (Array.isArray(data) ? data : []);
         if (!rows.length) break;
         for (const row of rows) {
-            const status = String(getF(row, "Status") || "").trim();
             const nbr = String(getF(row, "OrderNbr") || "").trim();
-            if (nbr && status === "Open") open.add(nbr);
+            if (nbr) open.add(nbr);
         }
-        console.log(`Scanned ${skip + rows.length} POs → Open so far: ${open.size}`);
+        console.log(`Scanned ${skip + rows.length} Open POs → unique: ${open.size}`);
         if (rows.length < top) break;
         skip += rows.length;
-        if (skip > 20000) break;
+        if (skip > 50000) break;
     }
     return [...open];
 }
@@ -103,8 +101,8 @@ try {
     console.log("Logging in to Acumatica…");
     const cookie = await login();
     console.log("Fetching Open POs from Acumatica…");
-    const openIds = await fetchOpenOrderNbrs(cookie);
-    console.log("Acumatica Open count (2026+):", openIds.length);
+    const openIds = await fetchOpenOrderNbrs(cookie, "2024-01-01");
+    console.log("Acumatica Open count (2024+):", openIds.length);
 
     // Ensure ERP Open → local Open
     let opened = 0;
@@ -118,14 +116,15 @@ try {
         opened += Number(res?.affectedRows) || 0;
     }
 
-    // Revert false reopens (Open + receipt_date but not Open in ERP)
+    // Revert false reopens (Open + receipt_date but not Open in ERP), same date window
     const phAll = openIds.map(() => "?").join(",");
     const [closeRes] = await pool.query(
         `UPDATE purchase_history
          SET status = 'Closed'
          WHERE status = 'Open'
            AND receipt_date IS NOT NULL
-           AND order_nbr NOT IN (${phAll})`,
+           AND order_nbr NOT IN (${phAll})
+           AND DATE(order_date) >= '2024-01-01'`,
         openIds
     );
     const closed = Number(closeRes?.affectedRows) || 0;
@@ -138,7 +137,7 @@ try {
         `SELECT order_nbr, status FROM purchase_history
          WHERE (vendor_id = 'VM000055' OR vendor_name LIKE '%sofie%')
            AND status = 'Open'
-           AND DATE(order_date) >= '2026-01-01' AND DATE(order_date) <= '2026-09-08'
+           AND DATE(order_date) >= '2026-01-01' AND DATE(order_date) <= '2026-12-31'
          ORDER BY order_date DESC`
     );
     console.log("Open Sofie in range after align:", sofie.map((r) => r.order_nbr));

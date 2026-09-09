@@ -1305,6 +1305,37 @@ export const AcumaticaService = {
         return { orders, hasMore };
     },
 
+    /**
+     * Authoritative Open PO numbers from Acumatica (all vendors/branches).
+     * Uses Status eq 'Open' so ERP-Open rows with receipts are not missed.
+     */
+    async fetchOpenPurchaseOrderNbrs({ cookie, startDate = "2024-01-01" } = {}) {
+        if (!cookie || cookie === "__bypass__") return [];
+        const open = new Set();
+        const top = 100;
+        let skip = 0;
+        const start = String(startDate || "2024-01-01").slice(0, 10);
+        const filter = start
+            ? `Status eq 'Open' and Date ge datetimeoffset'${start}T00:00:00Z'`
+            : `Status eq 'Open'`;
+
+        while (true) {
+            const url = `${ACU_BASE}/PurchaseOrder?$top=${top}&$skip=${skip}&$filter=${encodeURIComponent(filter)}`;
+            const res = await this.fetchWithRetry(url, cookie);
+            const data = await res.json();
+            const rows = data.value || (Array.isArray(data) ? data : []);
+            if (!rows.length) break;
+            for (const row of rows) {
+                const nbr = String(getF(row, "OrderNbr") || "").trim();
+                if (nbr) open.add(nbr);
+            }
+            if (rows.length < top) break;
+            skip += rows.length;
+            if (skip > 50000) break;
+        }
+        return [...open];
+    },
+
     /** Fetch line items for specific order numbers (used when MySQL lines are missing) */
     async getPurchaseOrderLinesByNbrs(orderNbrs, cookie) {
         const nbrs = [...new Set(orderNbrs.map(n => String(n || "").trim()).filter(Boolean))];
