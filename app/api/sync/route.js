@@ -999,21 +999,12 @@ export async function POST(request) {
                                 if (String(status || "").trim() === "Open" && orderNbr) {
                                     acuOpenOrderNbrs.push(String(orderNbr).trim());
                                 }
-                                historyRows.push({
-                                    order_nbr: orderNbr,
-                                    vendor_id: getF(o, "VendorID"),
-                                    vendor_name: getF(o, "VendorName"),
-                                    status,
-                                    order_date: getF(o, "Date"),
-                                    promised_date: getF(o, "PromisedOn"),
-                                    receipt_date: resolveReceiptDate(o, receiptDateByOrder),
-                                    total_amount: parseFloat(getF(o, "OrderTotal") || 0)
-                                });
 
                                 let details = o.Details || o.Transactions || [];
                                 if (details.value) details = details.value;
                                 if (!Array.isArray(details)) details = [];
 
+                                let lineExtSum = 0;
                                 for (const d of details) {
                                     const orderQty = parseFloat(getAny(d, "OrderQty", "Qty") || 0);
                                     const receivedQty = parseFloat(getAny(
@@ -1031,6 +1022,8 @@ export async function POST(request) {
                                         getAny(d, "BranchID", "Branch") ||
                                         ""
                                     ).trim();
+                                    const extCost = parseFloat(getAny(d, "ExtendedCost", "LineAmount") || 0) || 0;
+                                    lineExtSum += extCost;
                                     lineRows.push({
                                         order_nbr: getF(o, "OrderNbr"),
                                         line_nbr: parseInt(getF(d, "LineNbr") || 0),
@@ -1042,14 +1035,29 @@ export async function POST(request) {
                                         uom: getF(d, "UOM"),
                                         warehouse_id: warehouseId || null,
                                         branch_id: warehouseId || null,
-                                        ext_cost: parseFloat(getAny(d, "ExtendedCost", "LineAmount") || 0),
+                                        ext_cost: extCost,
                                         last_sync: new Date()
                                     });
                                 }
+
+                                const orderTotal = parseFloat(getF(o, "OrderTotal") || 0) || 0;
+                                const controlTotal = parseFloat(getF(o, "ControlTotal") || 0) || 0;
+                                historyRows.push({
+                                    order_nbr: orderNbr,
+                                    vendor_id: getF(o, "VendorID"),
+                                    vendor_name: getF(o, "VendorName"),
+                                    status,
+                                    order_date: getF(o, "Date"),
+                                    promised_date: getF(o, "PromisedOn"),
+                                    receipt_date: resolveReceiptDate(o, receiptDateByOrder),
+                                    // Prefer OrderTotal; On Hold drafts often only populate ControlTotal / lines
+                                    total_amount: orderTotal || controlTotal || lineExtSum
+                                });
                             }
                             if (historyRows.length > 0) await MySqlService.upsertPurchaseHistory(historyRows);
                             if (lineRows.length > 0) await MySqlService.upsertPurchaseOrderDetails(lineRows);
                             await MySqlService.backfillPurchaseHistoryVendorNames();
+                            await MySqlService.repairPurchaseOrderAmounts();
 
                             poTotal += orders.length;
                             poSkip += orders.length;

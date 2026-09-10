@@ -141,11 +141,19 @@ export async function GET(request) {
                     const cred = poCred && poCred !== "__bypass__"
                         ? poCred
                         : await getSystemAcumaticaCredential();
-                    return alignAllOpenPurchaseOrderStatuses({
+                    const aligned = await alignAllOpenPurchaseOrderStatuses({
                         cookie: cred,
                         startDate: "2024-01-01",
                         closeStale: true,
                     });
+                    return aligned;
+                });
+
+                // Repair blank vendors + header amounts once per short window (data quality)
+                await getCached("po:repair-data-v1", 15 * 60_000, async () => {
+                    const vendors = await MySqlService.backfillPurchaseHistoryVendorNames();
+                    const amounts = await MySqlService.repairPurchaseOrderAmounts();
+                    return { vendors, amounts };
                 });
 
                 let result = await MySqlService.getPurchaseOrders(fetchParams);

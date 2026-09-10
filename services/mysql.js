@@ -372,11 +372,11 @@ export const MySqlService = {
      * Fetch purchase orders from MySQL (for Purchase Orders module).
      * No TTL cache — lists must stay live after sync / receipt updates.
      */
-    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main", orderNbrs = null } = {}) {
-        return this._getPurchaseOrdersImpl({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId, orderNbrs });
+    async getPurchaseOrders({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main", orderNbrs = null, excludeZeroQty = true } = {}) {
+        return this._getPurchaseOrdersImpl({ page, pageSize, search, status, startDate, endDate, branch, vendorId, companyId, orderNbrs, excludeZeroQty });
     },
 
-    async _getPurchaseOrdersImpl({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main", orderNbrs = null } = {}) {
+    async _getPurchaseOrdersImpl({ page = 1, pageSize = 50, search = "", status = "", startDate = "", endDate = "", branch = "", vendorId = "", companyId = "main", orderNbrs = null, excludeZeroQty = true } = {}) {
         const offset = (page - 1) * pageSize;
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
@@ -451,6 +451,15 @@ export const MySqlService = {
                 params.push(...ids);
             }
 
+            // Match Acumatica "Order Qty != 0": hide empty draft POs with no positive line qty
+            if (excludeZeroQty && !(Array.isArray(orderNbrs) && orderNbrs.length > 0)) {
+                whereClauses.push(`EXISTS (
+                    SELECT 1 FROM purchase_order_details dqty
+                    WHERE dqty.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                      AND dqty.qty > 0
+                )`);
+            }
+
             if (branch) {
                 // Match Acumatica Branch + related warehouse destinations (e.g. MAIN → MAIN WH11).
                 // COLLATE required: purchase_history is utf8mb4_0900_ai_ci, dest/details are unicode_ci.
@@ -484,12 +493,20 @@ export const MySqlService = {
                     `SELECT 
                         h.order_nbr as orderNbr,
                         h.vendor_id as vendorId,
-                        COALESCE(NULLIF(TRIM(h.vendor_name), ''), v.vendor_name) as vendorName,
+                        COALESCE(NULLIF(TRIM(h.vendor_name), ''), v.vendor_name, h.vendor_id) as vendorName,
                         h.status,
                         h.order_date as date,
                         h.promised_date as promisedDate,
                         h.receipt_date as receiptDate,
-                        h.total_amount as totalAmount
+                        COALESCE(
+                            NULLIF(h.total_amount, 0),
+                            (
+                                SELECT SUM(d.ext_cost)
+                                FROM purchase_order_details d
+                                WHERE d.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                            ),
+                            0
+                        ) as totalAmount
                      FROM purchase_history h
                      LEFT JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
                      ${wherePart}
@@ -572,7 +589,7 @@ export const MySqlService = {
                 status = VALUES(status),
                 promised_date = VALUES(promised_date),
                 receipt_date = COALESCE(VALUES(receipt_date), receipt_date),
-                total_amount = VALUES(total_amount),
+                total_amount = IF(VALUES(total_amount) > 0, VALUES(total_amount), COALESCE(NULLIF(total_amount, 0), VALUES(total_amount))),
                 last_sync = VALUES(last_sync)
             `;
             const values = rows.map(r => [
@@ -880,11 +897,12 @@ export const MySqlService = {
     },
 
     /**
-     * Backfill missing purchase_history.vendor_name from the vendors table.
+     * Backfill missing purchase_history.vendor_name from vendors table and sibling PO rows.
      */
     async backfillPurchaseHistoryVendorNames() {
         try {
-            const [result] = await purchasePool.query(`
+            let updated = 0;
+            const [fromVendors] = await purchasePool.query(`
                 UPDATE purchase_history h
                 INNER JOIN vendors v ON v.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
                 SET h.vendor_name = v.vendor_name
@@ -892,9 +910,51 @@ export const MySqlService = {
                   AND v.vendor_name IS NOT NULL
                   AND TRIM(v.vendor_name) != ''
             `);
-            return result?.affectedRows || 0;
+            updated += Number(fromVendors?.affectedRows) || 0;
+
+            // Same vendor_id already has a name on another PO — copy it
+            const [fromSibling] = await purchasePool.query(`
+                UPDATE purchase_history h
+                INNER JOIN (
+                    SELECT vendor_id, MAX(NULLIF(TRIM(vendor_name), '')) AS vendor_name
+                    FROM purchase_history
+                    WHERE vendor_id IS NOT NULL AND TRIM(COALESCE(vendor_name, '')) != ''
+                    GROUP BY vendor_id
+                ) src ON src.vendor_id COLLATE utf8mb4_unicode_ci = h.vendor_id
+                SET h.vendor_name = src.vendor_name
+                WHERE (h.vendor_name IS NULL OR TRIM(h.vendor_name) = '')
+                  AND src.vendor_name IS NOT NULL
+            `);
+            updated += Number(fromSibling?.affectedRows) || 0;
+            if (updated > 0) invalidateCache("po:");
+            return updated;
         } catch (err) {
             console.error("[MySQL backfillPurchaseHistoryVendorNames Error]", err);
+            return 0;
+        }
+    },
+
+    /**
+     * Repair header total_amount from line extended costs when header is 0 but lines have value.
+     */
+    async repairPurchaseOrderAmounts() {
+        try {
+            const [result] = await purchasePool.query(`
+                UPDATE purchase_history h
+                INNER JOIN (
+                    SELECT order_nbr, SUM(ext_cost) AS line_total
+                    FROM purchase_order_details
+                    GROUP BY order_nbr
+                    HAVING SUM(ext_cost) > 0
+                ) x ON x.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                SET h.total_amount = x.line_total
+                WHERE h.total_amount IS NULL OR h.total_amount = 0
+            `);
+            const n = Number(result?.affectedRows) || 0;
+            if (n > 0) invalidateCache("po:");
+            return n;
+        } catch (err) {
+            console.error("[MySQL repairPurchaseOrderAmounts Error]", err);
             return 0;
         }
     },
