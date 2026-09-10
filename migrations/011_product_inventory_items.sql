@@ -1,5 +1,5 @@
--- Migration 011: product_inventory_items — Acumatica sync destination
--- inventory_items remains the view/read-only source for the UI.
+-- Migration 011: product_inventory_items — Acumatica sync destination + Inventory UI reads
+-- (Legacy inventory_items is not kept in sync; app reads product_inventory_items.)
 -- Destination: MYSQL_INVENTORY_DATABASE (default db_kelin_inventory)
 
 CREATE TABLE IF NOT EXISTS `product_inventory_items` (

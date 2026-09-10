@@ -84,11 +84,11 @@ instrumentPool(pool, "inventory");
 instrumentPool(purchasePool, "purchase");
 
 /**
- * inventory_items — view/read only (UI + API queries).
- * product_inventory_items — sync/write destination (Acumatica inventory sync).
+ * product_inventory_items — Acumatica sync destination AND Inventory UI source of truth.
+ * Legacy `inventory_items` is a stale product-directory table; do not use it for stock reads.
  */
-export const INVENTORY_VIEW_TABLE = "inventory_items";
 export const INVENTORY_SYNC_TABLE = "product_inventory_items";
+export const INVENTORY_VIEW_TABLE = INVENTORY_SYNC_TABLE;
 
 function isTransientMysqlError(err) {
     const code = String(err?.code || "");
@@ -154,13 +154,13 @@ function salesLookbackSql(days = SALES_LOOKBACK_DAYS) {
 /** Join catalog metadata when reading per-branch warehouse stock rows. */
 function inventoryFromClause(layout) {
     if (layout === "warehouse") {
-        return `FROM inventory_items i
-                LEFT JOIN inventory_items c
+        return `FROM \`${INVENTORY_VIEW_TABLE}\` i
+                LEFT JOIN \`${INVENTORY_VIEW_TABLE}\` c
                   ON c.inventory_id = i.inventory_id
                  AND c.company_id = i.company_id
                  AND c.default_warehouse = '__catalog__'`;
     }
-    return `FROM inventory_items i`;
+    return `FROM \`${INVENTORY_VIEW_TABLE}\` i`;
 }
 
 function inventoryPlanningCols(alias = "c") {
@@ -1467,13 +1467,13 @@ export const MySqlService = {
                             MIN(w.site_id) AS site_id,
                             MIN(w.default_warehouse) AS default_warehouse,
                             MAX(w.last_sync) AS last_sync
-                        FROM inventory_items w
+                        FROM \`${INVENTORY_VIEW_TABLE}\` w
                         WHERE w.company_id = ?
                           AND w.default_warehouse != '__catalog__'
                           AND ${stockMatch.clause}
                         GROUP BY w.inventory_id, w.company_id
                     ) i
-                    LEFT JOIN inventory_items c
+                    LEFT JOIN \`${INVENTORY_VIEW_TABLE}\` c
                       ON c.inventory_id = i.inventory_id
                      AND c.company_id = i.company_id
                      AND c.default_warehouse = '__catalog__'
@@ -1603,7 +1603,7 @@ export const MySqlService = {
                         MIN(w.branch_id) AS branch_id,
                         MIN(w.site_id) AS site_id,
                         MIN(w.default_warehouse) AS default_warehouse
-                    FROM inventory_items w
+                    FROM \`${INVENTORY_VIEW_TABLE}\` w
                     WHERE w.company_id = ?
                       AND w.default_warehouse != '__catalog__'
                       AND ${match.clause}
@@ -1621,7 +1621,7 @@ export const MySqlService = {
                         MIN(w.branch_id) AS branch_id,
                         MIN(w.site_id) AS site_id,
                         MIN(w.default_warehouse) AS default_warehouse
-                    FROM inventory_items w
+                    FROM \`${INVENTORY_VIEW_TABLE}\` w
                     WHERE w.company_id = ?
                       AND w.default_warehouse != '__catalog__'
                     GROUP BY w.inventory_id, w.company_id
@@ -1670,7 +1670,7 @@ export const MySqlService = {
 
         const query = `
             SELECT ${selectCols}
-            FROM inventory_items i
+            FROM \`${INVENTORY_VIEW_TABLE}\` i
             ${stockJoin}
             ${wherePart}
             ORDER BY i.inventory_id ASC
@@ -1685,7 +1685,7 @@ export const MySqlService = {
 
         const [[{ total }]] = await pool.query(
             `SELECT COUNT(*) as total
-             FROM inventory_items i
+             FROM \`${INVENTORY_VIEW_TABLE}\` i
              ${stockJoin}
              ${wherePart}`,
             [...stockParams, ...params]
@@ -1736,14 +1736,14 @@ export const MySqlService = {
                 i.vendor_id AS VendorID,
                 i.lead_time_days AS LeadTimeDays,
                 0 AS QtySold
-             FROM inventory_items i
+             FROM \`${INVENTORY_VIEW_TABLE}\` i
              ${wherePart}
              ORDER BY i.on_hand DESC, TRIM(i.inventory_id) ASC
              LIMIT ${limitInt} OFFSET ${offsetInt}`,
             params
         );
         const [[{ total }]] = await pool.query(
-            `SELECT COUNT(*) AS total FROM inventory_items i ${wherePart}`,
+            `SELECT COUNT(*) AS total FROM \`${INVENTORY_VIEW_TABLE}\` i ${wherePart}`,
             params
         );
 
@@ -1791,7 +1791,7 @@ export const MySqlService = {
                 i.safety_stock as SafetyStock,
                 i.moq as MOQ,
                 COALESCE(s.total_qty, 0) as QtySold
-             FROM inventory_items i
+             FROM \`${INVENTORY_VIEW_TABLE}\` i
              LEFT JOIN ${netSalesQtySubquery(db, salesEx)} s ON i.inventory_id = s.inventory_id
              ${wherePart}
              ORDER BY i.inventory_id ASC
@@ -1799,7 +1799,7 @@ export const MySqlService = {
 
         const [rows] = await pool.query(query, [...salesParams, ...params]);
         const [[{ total }]] = await pool.query(
-            `SELECT COUNT(*) as total FROM inventory_items i ${wherePart}`,
+            `SELECT COUNT(*) as total FROM \`${INVENTORY_VIEW_TABLE}\` i ${wherePart}`,
             params
         );
 
@@ -1839,7 +1839,7 @@ export const MySqlService = {
      * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
     async getGlobalStats(branch = "", search = "", companyId = "main") {
-        const cacheKey = `global-stats-v5:${companyId}:${branch}:${search}`;
+        const cacheKey = `global-stats-v6:${companyId}:${branch}:${search}`;
         return getCached(cacheKey, 120_000, () => this._computeGlobalStats(branch, search, companyId));
     },
 
@@ -1942,7 +1942,7 @@ export const MySqlService = {
                 `SELECT
                     COALESCE(SUM(COALESCE(i.on_hand, 0)), 0) AS damageStock,
                     COUNT(DISTINCT CASE WHEN COALESCE(i.on_hand, 0) > 0 THEN i.inventory_id END) AS damageCount
-                 FROM inventory_items i
+                 FROM \`${INVENTORY_VIEW_TABLE}\` i
                  ${damageWhere}`,
                 damageParams
             );
@@ -1953,7 +1953,7 @@ export const MySqlService = {
             if (search && catalogCount > 0) {
                 const searchTerm = normalizeInventorySearch(search);
                 const [[catSearch]] = await pool.query(
-                    `SELECT COUNT(*) AS c FROM inventory_items
+                    `SELECT COUNT(*) AS c FROM \`${INVENTORY_VIEW_TABLE}\`
                      WHERE company_id = ? AND default_warehouse = '__catalog__'
                        AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(inventory_name,'')) LIKE UPPER(?))`,
                     [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
@@ -1999,7 +1999,7 @@ export const MySqlService = {
             if (layout === "warehouse" && branch) {
                 whereClauses.push(
                     `EXISTS (
-                        SELECT 1 FROM inventory_items w
+                        SELECT 1 FROM \`${INVENTORY_VIEW_TABLE}\` w
                         WHERE w.company_id = i.company_id
                           AND w.inventory_id = i.inventory_id
                           AND w.default_warehouse != '__catalog__'
@@ -2012,7 +2012,7 @@ export const MySqlService = {
             const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
             const [rows] = await pool.query(
                 `SELECT TRIM(i.inventory_id) AS inventory_id
-                 FROM inventory_items i
+                 FROM \`${INVENTORY_VIEW_TABLE}\` i
                  ${wherePart}`,
                 params
             );
@@ -2133,7 +2133,7 @@ export const MySqlService = {
                     MAX(i.moq) as moq,
                     SUM(COALESCE(i.on_hand, 0)) as totalOnHand,
                     GROUP_CONCAT(DISTINCT CASE WHEN i.on_hand > 0 THEN i.branch_id END SEPARATOR ', ') as branches
-                 FROM inventory_items i
+                 FROM \`${INVENTORY_VIEW_TABLE}\` i
                  ${whereClause} 
                  GROUP BY TRIM(i.inventory_id)
                  ORDER BY TRIM(i.inventory_id) ASC 
@@ -2145,7 +2145,7 @@ export const MySqlService = {
                     `SELECT 
                         COUNT(DISTINCT TRIM(i.inventory_id)) as total,
                         SUM(COALESCE(i.on_hand, 0)) as overallStock
-                     FROM inventory_items i ${whereClause}`,
+                     FROM \`${INVENTORY_VIEW_TABLE}\` i ${whereClause}`,
                     params
                 ),
             ]);
@@ -2189,7 +2189,7 @@ export const MySqlService = {
         try {
             const [catalog] = await pool.query(
                 `SELECT DISTINCT TRIM(item_class) AS itemClass
-                 FROM inventory_items
+                 FROM \`${INVENTORY_VIEW_TABLE}\`
                  WHERE company_id = ?
                    AND default_warehouse = '__catalog__'
                    AND item_class IS NOT NULL AND TRIM(item_class) != ''
@@ -2201,7 +2201,7 @@ export const MySqlService = {
             }
             const [rows] = await pool.query(
                 `SELECT DISTINCT TRIM(item_class) AS itemClass
-                 FROM inventory_items
+                 FROM \`${INVENTORY_VIEW_TABLE}\`
                  WHERE company_id = ?
                    AND default_warehouse != '__catalog__'
                    AND item_class IS NOT NULL AND TRIM(item_class) != ''
@@ -2289,7 +2289,7 @@ export const MySqlService = {
                     w.company_id,
                     SUM(COALESCE(w.on_hand, 0)) AS on_hand,
                     GROUP_CONCAT(DISTINCT CASE WHEN w.on_hand > 0 THEN w.branch_id END SEPARATOR ', ') AS branches
-                FROM inventory_items w
+                FROM \`${INVENTORY_VIEW_TABLE}\` w
                 WHERE w.company_id = ?
                   AND w.default_warehouse != '__catalog__'
                 GROUP BY TRIM(w.inventory_id), w.company_id
@@ -2304,7 +2304,7 @@ export const MySqlService = {
                     w.company_id,
                     SUM(COALESCE(w.on_hand, 0)) AS on_hand,
                     GROUP_CONCAT(DISTINCT CASE WHEN w.on_hand > 0 THEN w.branch_id END SEPARATOR ', ') AS branches
-                FROM inventory_items w
+                FROM \`${INVENTORY_VIEW_TABLE}\` w
                 WHERE w.company_id = ?
                   AND w.default_warehouse != '__catalog__'
                   AND UPPER(TRIM(w.branch_id)) = UPPER(TRIM(?))
@@ -2327,16 +2327,16 @@ export const MySqlService = {
                 i.moq as moq,
                 COALESCE(w.on_hand, 0) as totalOnHand,
                 COALESCE(w.branches, '') as branches
-             FROM inventory_items i
+             FROM \`${INVENTORY_VIEW_TABLE}\` i
              ${stockJoin}
              ${whereClause}
              ORDER BY TRIM(i.inventory_id) ASC
              LIMIT ${lim} ${cursorId ? "" : `OFFSET ${offsetInt}`}`;
 
         const stockWhere = `
-            FROM inventory_items w
+            FROM \`${INVENTORY_VIEW_TABLE}\` w
             ${classFilter
-                ? `INNER JOIN inventory_items c
+                ? `INNER JOIN \`${INVENTORY_VIEW_TABLE}\` c
                      ON TRIM(c.inventory_id) = TRIM(w.inventory_id)
                     AND c.company_id = w.company_id
                     AND c.default_warehouse = '__catalog__'
@@ -2354,7 +2354,7 @@ export const MySqlService = {
         const [[rows], [[{ total }]], [[{ overallStock }]], [[{ dimsSetCount, dimsUnsetCount }]]] = await Promise.all([
             pool.query(query, [...stockParams, ...params]),
             pool.query(
-                `SELECT COUNT(*) AS total FROM inventory_items i ${whereClause}`,
+                `SELECT COUNT(*) AS total FROM \`${INVENTORY_VIEW_TABLE}\` i ${whereClause}`,
                 params
             ),
             pool.query(
@@ -2365,7 +2365,7 @@ export const MySqlService = {
                 `SELECT
                     COALESCE(SUM(CASE WHEN ${dimsExistsSql} THEN 1 ELSE 0 END), 0) AS dimsSetCount,
                     COALESCE(SUM(CASE WHEN NOT ${dimsExistsSql} THEN 1 ELSE 0 END), 0) AS dimsUnsetCount
-                 FROM inventory_items i ${summaryWhere}`,
+                 FROM \`${INVENTORY_VIEW_TABLE}\` i ${summaryWhere}`,
                 summaryParams
             ),
         ]);
@@ -2684,7 +2684,7 @@ export const MySqlService = {
                     MAX(i.item_status) as itemStatus,
                     MAX(i.item_class) as itemClass,
                     COALESCE(SUM(GREATEST(0, COALESCE(i.available, i.on_hand, 0))), 0) as totalOnHand
-                 FROM inventory_items i
+                 FROM \`${INVENTORY_VIEW_TABLE}\` i
                  WHERE ${whereClauses.join(" AND ")}
                  GROUP BY TRIM(i.inventory_id)
                  ORDER BY TRIM(i.inventory_id) ASC`,
@@ -2738,7 +2738,7 @@ export const MySqlService = {
                 const catalogCompanyId = isEcomBranch ? "ecommerce" : effectiveCompanyId;
                 const [catalogRows] = await pool.query(
                     `SELECT TRIM(inventory_id) AS inventoryId, inventory_name AS description, item_class AS itemClass
-                     FROM inventory_items
+                     FROM \`${INVENTORY_VIEW_TABLE}\`
                      WHERE company_id = ? AND default_warehouse = '__catalog__'
                        AND UPPER(REPLACE(TRIM(inventory_id), ' ', '')) IN (${placeholders})`,
                     [catalogCompanyId, ...missingKeys]
@@ -2796,7 +2796,7 @@ export const MySqlService = {
             const placeholders = keys.map(() => "?").join(", ");
             const [rows] = await pool.query(
                 `SELECT TRIM(inventory_id) AS inventoryId, inventory_name AS description, item_class AS itemClass
-                 FROM inventory_items
+                 FROM \`${INVENTORY_VIEW_TABLE}\`
                  WHERE company_id = ? AND default_warehouse = '__catalog__'
                    AND UPPER(TRIM(inventory_id)) IN (${placeholders})`,
                 [companyId, ...keys]
@@ -2830,7 +2830,7 @@ export const MySqlService = {
                     available as available,
                     last_sync as lastSync,
                     company_id as companyId
-                 FROM inventory_items 
+                 FROM \`${INVENTORY_VIEW_TABLE}\` 
                  WHERE TRIM(UPPER(inventory_id)) = TRIM(UPPER(?))
                  AND company_id = ?
                  AND default_warehouse != '__catalog__'`,
@@ -2960,13 +2960,13 @@ export const MySqlService = {
 
     async getInventoryBranchIds(companyId = "main") {
         try {
-            const branchEx = sqlExcludeBranches("inventory_items");
+            const branchEx = sqlExcludeBranches("i");
             let query;
             let params;
 
             if (companyId === "ecommerce") {
-                const ecomOnly = sqlOnlyEcomBranches("inventory_items");
-                query = `SELECT DISTINCT branch_id FROM inventory_items
+                const ecomOnly = sqlOnlyEcomBranches("i");
+                query = `SELECT DISTINCT branch_id FROM \`${INVENTORY_VIEW_TABLE}\` i
                          WHERE company_id = 'ecommerce'
                            AND branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__'
                            AND ${ecomOnly.clause}
@@ -2974,7 +2974,7 @@ export const MySqlService = {
                          ORDER BY branch_id ASC`;
                 params = [...ecomOnly.params, ...branchEx.params];
             } else {
-                query = `SELECT DISTINCT branch_id FROM inventory_items
+                query = `SELECT DISTINCT branch_id FROM \`${INVENTORY_VIEW_TABLE}\` i
                          WHERE company_id IN ('main', 'ecommerce')
                            AND branch_id IS NOT NULL AND branch_id != '' AND branch_id != '__catalog__'
                            AND ${branchEx.clause}
@@ -3027,7 +3027,7 @@ export const MySqlService = {
     async getProductCatalog() {
         try {
             const [rows] = await pool.execute(
-                `SELECT DISTINCT inventory_id, item_class, inventory_name as description FROM inventory_items`
+                `SELECT DISTINCT inventory_id, item_class, inventory_name as description FROM \`${INVENTORY_VIEW_TABLE}\``
             );
             return rows;
         } catch (err) {
@@ -3048,7 +3048,7 @@ export const MySqlService = {
                 params.push(branch);
             }
             const [[{ total }]] = await pool.query(
-                `SELECT SUM(COALESCE(on_hand, 0)) as total FROM inventory_items WHERE ${whereClause}`,
+                `SELECT SUM(COALESCE(on_hand, 0)) as total FROM \`${INVENTORY_VIEW_TABLE}\` WHERE ${whereClause}`,
                 params
             );
             return Number(total) || 0;
@@ -3597,8 +3597,7 @@ export const MySqlService = {
     },
 
     /**
-     * Ensure product_inventory_items exists (sync destination).
-     * View path continues to use inventory_items.
+     * Ensure product_inventory_items exists (sync destination + Inventory UI reads).
      */
     async ensureProductInventoryItemsTable() {
         const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
@@ -3930,6 +3929,7 @@ export const MySqlService = {
             }
             await connection.commit();
             invalidateCache("branches:");
+            invalidateCache("global-stats-v6:");
             invalidateCache("global-stats-v5:");
             invalidateCache("global-stats-v4:");
             invalidateCache("global-stats-v3:");
@@ -4180,7 +4180,7 @@ export const MySqlService = {
             const [orphans] = await connection.query(`
                 SELECT COUNT(*) as count 
                 FROM product_periodic_sales s
-                LEFT JOIN \`${inventoryDb}\`.inventory_items i ON s.inventory_id = i.inventory_id
+                LEFT JOIN \`${inventoryDb}\`.\`${INVENTORY_VIEW_TABLE}\` i ON s.inventory_id = i.inventory_id
                 WHERE i.inventory_id IS NULL
             `);
             
@@ -4190,7 +4190,7 @@ export const MySqlService = {
             if (orphans[0].count > 0) {
                 await connection.query(`
                     UPDATE product_periodic_sales s
-                    LEFT JOIN \`${inventoryDb}\`.inventory_items i ON s.inventory_id = i.inventory_id
+                    LEFT JOIN \`${inventoryDb}\`.\`${INVENTORY_VIEW_TABLE}\` i ON s.inventory_id = i.inventory_id
                     SET s.item_class = 'ORPHANED'
                     WHERE i.inventory_id IS NULL
                 `);
@@ -4408,7 +4408,7 @@ export const MySqlService = {
 
     async inventoryIdExists(inventoryId) {
         const [[row]] = await pool.query(
-            `SELECT 1 FROM inventory_items WHERE TRIM(UPPER(inventory_id)) = TRIM(UPPER(?)) LIMIT 1`,
+            `SELECT 1 FROM \`${INVENTORY_VIEW_TABLE}\` WHERE TRIM(UPPER(inventory_id)) = TRIM(UPPER(?)) LIMIT 1`,
             [inventoryId]
         );
         return !!row;
@@ -4459,7 +4459,7 @@ export const MySqlService = {
             // Update item_class and posting_class from inventory_items catalog where missing
             const sql = `
                 UPDATE product_periodic_sales s
-                JOIN \`${inventoryDb}\`.inventory_items i ON s.inventory_id = i.inventory_id
+                JOIN \`${inventoryDb}\`.\`${INVENTORY_VIEW_TABLE}\` i ON s.inventory_id = i.inventory_id
                 SET 
                     s.item_class = COALESCE(s.item_class, i.item_class),
                     s.posting_class = COALESCE(s.posting_class, i.posting_class)
@@ -4582,7 +4582,7 @@ export const MySqlService = {
                     const ph = pageIds.map(() => "?").join(",");
                     const [catRows] = await pool.query(
                         `SELECT UPPER(TRIM(inventory_id)) AS inventory_id, MAX(inventory_name) AS description
-                         FROM \`${inventoryDb}\`.inventory_items
+                         FROM \`${inventoryDb}\`.\`${INVENTORY_VIEW_TABLE}\`
                          WHERE UPPER(TRIM(inventory_id)) IN (${ph})
                          GROUP BY UPPER(TRIM(inventory_id))`,
                         pageIds.map((id) => id.toUpperCase())
@@ -4834,7 +4834,7 @@ export const MySqlService = {
                         SUM(CASE WHEN s.order_type IN ('Invoice','Debit Memo') THEN ABS(s.qty) ELSE 0 END) AS qty_sold,
                         SUM(CASE WHEN s.order_type IN ('Invoice','Debit Memo') THEN ABS(s.total_amount) ELSE 0 END) AS total_sales
                  FROM product_periodic_sales s
-                 INNER JOIN \`${inv}\`.inventory_items i
+                 INNER JOIN \`${inv}\`.\`${INVENTORY_VIEW_TABLE}\` i
                    ON UPPER(TRIM(s.inventory_id)) = UPPER(TRIM(i.inventory_id))
                   AND ${invBranchClause}
                   AND i.default_warehouse != '__catalog__'
@@ -6561,7 +6561,7 @@ export const MySqlService = {
             }
         } catch { /* fall through */ }
         return {
-            qualified: `\`${inventoryDb}\`.inventory_items`,
+            qualified: `\`${inventoryDb}\`.\`${INVENTORY_VIEW_TABLE}\``,
             warehouseCol: "default_warehouse",
             nameCol: "inventory_name",
         };
@@ -6993,7 +6993,7 @@ export const MySqlService = {
         }
         const [[{ inventoryQty }]] = await pool.query(
             `SELECT COALESCE(SUM(ABS(COALESCE(w.available, w.on_hand, 0))), 0) AS inventoryQty
-             FROM inventory_items w
+             FROM \`${INVENTORY_VIEW_TABLE}\` w
              WHERE ${stockWhere.join(" AND ")}`,
             stockParams
         );

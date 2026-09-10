@@ -110,7 +110,7 @@ export async function POST(request) {
 
         // Ensure product_inventory_items exists (SYNC / write destination)
         await MySqlService.ensureProductInventoryItemsTable();
-        console.log(`>>> [Sync API] Inventory sync target: ${INVENTORY_SYNC_TABLE}; view source: inventory_items`);
+        console.log(`>>> [Sync API] Inventory sync target/source: ${INVENTORY_SYNC_TABLE}`);
 
         // Ensure product_periodic_sales table exists
         await conn.query(`
