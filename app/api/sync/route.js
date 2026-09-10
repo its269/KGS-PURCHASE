@@ -1058,6 +1058,7 @@ export async function POST(request) {
                             if (lineRows.length > 0) await MySqlService.upsertPurchaseOrderDetails(lineRows);
                             await MySqlService.backfillPurchaseHistoryVendorNames();
                             await MySqlService.repairPurchaseOrderAmounts();
+                            await MySqlService.normalizePurchaseOrderStatusAliases();
 
                             poTotal += orders.length;
                             poSkip += orders.length;

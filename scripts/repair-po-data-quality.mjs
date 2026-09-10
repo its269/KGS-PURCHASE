@@ -52,6 +52,17 @@ const [amounts] = await pool.query(`
 `);
 console.log("amounts repaired from lines:", amounts.affectedRows);
 
+const [holdFix] = await pool.query(
+  `UPDATE purchase_history SET status = 'On Hold' WHERE status = 'Hold'`
+);
+const [canceledFix] = await pool.query(
+  `UPDATE purchase_history SET status = 'Cancelled' WHERE status = 'Canceled'`
+);
+console.log("status aliases fixed:", {
+  hold: holdFix.affectedRows,
+  canceled: canceledFix.affectedRows,
+});
+
 const [[blank]] = await pool.query(`
   SELECT COUNT(*) cnt FROM purchase_history
   WHERE status IN ('Open','On Hold','Pending Approval')

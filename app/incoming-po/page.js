@@ -34,6 +34,7 @@ const IconChevronDown = () => (
 function poStatusClass(status) {
     const s = (status || "").toLowerCase();
     if (s === "open") return "po-status-open";
+    if (s === "on hold" || s === "hold") return "po-status-default";
     if (s === "closed") return "po-status-closed";
     if (s === "completed") return "po-status-completed";
     if (s === "cancelled" || s === "canceled") return "po-status-cancelled";
@@ -41,6 +42,13 @@ function poStatusClass(status) {
 }
 
 function fmt(n) { return Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function todayIso() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function yearStartIso() {
+    return `${new Date().getFullYear()}-01-01`;
+}
 function fmtDate(d) {
     if (!d) return "—";
     const raw = String(d).trim();
@@ -61,9 +69,11 @@ export default function IncomingPOPage() {
     const [orders, setOrders] = useState([]);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(false);
+    const [totalCount, setTotalCount] = useState(null);
     const [search, setSearch] = useState("");
     const [debSearch, setDebSearch] = useState("");
-    const [startDate, setStartDate] = useState("");
+    const [startDate, setStartDate] = useState(yearStartIso());
+    const [endDate, setEndDate] = useState(todayIso());
     const [status, setStatus] = useState("active");
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -76,15 +86,15 @@ export default function IncomingPOPage() {
     useEffect(() => {
         const savedPage = localStorage.getItem("inc_po_filter_page");
         const initialPage = savedPage ? parseInt(savedPage) : 1;
-        
+
         const savedSearch = localStorage.getItem("inc_po_filter_search") || "";
-        const savedStart = localStorage.getItem("inc_po_filter_startDate") || "";
         const savedStatus = localStorage.getItem("inc_po_filter_status") || "active";
 
         Promise.resolve().then(() => {
             setPage(initialPage);
             setSearch(savedSearch);
-            setStartDate(savedStart);
+            setStartDate(yearStartIso());
+            setEndDate(todayIso());
             if (!savedStatus || savedStatus === "Open" || savedStatus === "Hold") {
                 setStatus("active");
             } else {
@@ -100,9 +110,10 @@ export default function IncomingPOPage() {
             localStorage.setItem("inc_po_filter_page", page.toString());
             localStorage.setItem("inc_po_filter_search", search);
             localStorage.setItem("inc_po_filter_startDate", startDate);
+            localStorage.setItem("inc_po_filter_endDate", endDate);
             localStorage.setItem("inc_po_filter_status", status);
         }
-    }, [page, search, startDate, status]);
+    }, [page, search, startDate, endDate, status]);
 
     useEffect(() => {
         const t = setTimeout(() => setDebSearch(search), 150);
@@ -112,7 +123,7 @@ export default function IncomingPOPage() {
     useEffect(() => {
         if (isInitialMount.current) return;
         setPage(1);
-    }, [debSearch, startDate, status]);
+    }, [debSearch, startDate, endDate, status]);
 
     const fetchOrders = useCallback(async () => {
         setLoading(true);
@@ -121,7 +132,8 @@ export default function IncomingPOPage() {
             const params = new URLSearchParams({
                 page: String(page),
                 pageSize: String(PAGE_SIZE),
-                startDate: startDate,
+                startDate,
+                endDate,
             });
             if (status) params.set("status", status);
             if (debSearch) params.set("search", debSearch);
@@ -134,13 +146,18 @@ export default function IncomingPOPage() {
             const data = await res.json();
             setOrders(data.orders ?? []);
             setHasMore(data.hasMore ?? false);
+            setTotalCount(
+                typeof data.totalCount === "number" && Number.isFinite(data.totalCount)
+                    ? data.totalCount
+                    : null
+            );
         } catch (err) {
             if (err.message === "Unauthorized") return;
             setError(err.message || "Failed to load incoming purchase orders.");
         } finally {
             setLoading(false);
         }
-    }, [page, debSearch, startDate, status]);
+    }, [page, debSearch, startDate, endDate, status]);
 
     useEffect(() => {
         fetchOrders();
@@ -153,7 +170,7 @@ export default function IncomingPOPage() {
             <main className="po-main">
                 <div className="db-page-title" data-tour="page-title">
                     <h1>Incoming Purchase Orders</h1>
-                    <p>Track and manage open purchase orders live from Acumatica ERP.</p>
+                    <p>Track Active purchase orders (Open, On Hold, Pending Approval) from Acumatica ERP.</p>
                 </div>
 
                 <div className="po-toolbar" data-tour="toolbar">
@@ -165,6 +182,17 @@ export default function IncomingPOPage() {
                             style={{ width: '150px' }}
                             value={startDate}
                             onChange={(e) => setStartDate(e.target.value)}
+                        />
+                    </div>
+
+                    <div className="po-filter-group">
+                        <span className="po-filter-label">To:</span>
+                        <input
+                            type="date"
+                            className="po-select-box"
+                            style={{ width: '150px' }}
+                            value={endDate}
+                            onChange={(e) => setEndDate(e.target.value)}
                         />
                     </div>
 
@@ -190,10 +218,14 @@ export default function IncomingPOPage() {
                         </select>
                     </div>
 
-                    {(startDate || status !== "active") && (
+                    {(startDate !== yearStartIso() || endDate !== todayIso() || status !== "active") && (
                         <button
                             className="po-reset-btn"
-                            onClick={() => { setStartDate(""); setStatus("active"); }}
+                            onClick={() => {
+                                setStartDate(yearStartIso());
+                                setEndDate(todayIso());
+                                setStatus("active");
+                            }}
                         >
                             Reset
                         </button>
@@ -325,9 +357,11 @@ export default function IncomingPOPage() {
                     <PaginationBar
                         page={page}
                         pageSize={PAGE_SIZE}
+                        totalCount={totalCount}
                         hasMore={hasMore}
                         onPageChange={setPage}
                         itemLabel="orders"
+                        disabled={loading}
                     />
                 )}
             </main>

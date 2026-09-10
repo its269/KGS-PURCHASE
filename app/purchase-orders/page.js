@@ -397,7 +397,6 @@ const COLUMN_FILTER_META = [
 
 const PO_STATUS_FILTER_OPTIONS = [
     "On Hold",
-    "Hold",
     "Open",
     "Balanced",
     "Pending Approval",
@@ -1269,7 +1268,7 @@ export default function PurchaseOrdersPage() {
             // ETD from Acumatica PromisedOn; fall back to legacy annotation if sync is empty
             const etdValue = o.promisedDate || ui.etd;
             if (f.origin && (ui.origin || "") !== f.origin) return false;
-            if (f.status && String(o.status || "").toLowerCase() !== f.status.toLowerCase()) return false;
+            if (f.status && normalizePoStatus(o.status).toLowerCase() !== normalizePoStatus(f.status).toLowerCase()) return false;
             if (!multiTextIncludes(ui.containerNumber, f.containerNumber)) return false;
             if (f.date && toDateKey(o.date) !== f.date) return false;
             if (f.etd && toDateKey(etdValue) !== f.etd) return false;
@@ -1342,17 +1341,17 @@ export default function PurchaseOrdersPage() {
                             </div>
 
                             <div className="po-summary-item" style={{ color: summaryStats.pendingEtaCount > 0 ? 'var(--status-danger)' : 'inherit' }}>
-                                <span className="po-summary-label">Pending ETA Updates</span>
+                                <span className="po-summary-label">Pending ETA (this page)</span>
                                 <span className="po-summary-value">{summaryStats.pendingEtaCount}</span>
                             </div>
 
                             <div className="po-summary-item">
-                                <span className="po-summary-label">Open Status</span>
+                                <span className="po-summary-label">Open (this page)</span>
                                 <span className="po-summary-value">{summaryStats.openCount}</span>
                             </div>
 
                             <div className="po-summary-item po-summary-total">
-                                <span className="po-summary-label">Total Value</span>
+                                <span className="po-summary-label">Value (this page)</span>
                                 <span className="po-summary-value">₱{fmt(summaryStats.totalValue)}</span>
                             </div>
                         </div>

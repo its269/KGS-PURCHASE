@@ -149,11 +149,12 @@ export async function GET(request) {
                     return aligned;
                 });
 
-                // Repair blank vendors + header amounts once per short window (data quality)
-                await getCached("po:repair-data-v1", 15 * 60_000, async () => {
+                // Repair blank vendors + header amounts + status aliases once per short window
+                await getCached("po:repair-data-v2", 15 * 60_000, async () => {
+                    const aliases = await MySqlService.normalizePurchaseOrderStatusAliases();
                     const vendors = await MySqlService.backfillPurchaseHistoryVendorNames();
                     const amounts = await MySqlService.repairPurchaseOrderAmounts();
-                    return { vendors, amounts };
+                    return { aliases, vendors, amounts };
                 });
 
                 let result = await MySqlService.getPurchaseOrders(fetchParams);
@@ -173,38 +174,35 @@ export async function GET(request) {
                     }
                 }
 
-                if (result.orders.length > 0) {
-                    const allMissingLines = result.orders.every(o => !o.lines?.length);
+                // Always return MySQL list results (including empty). Do not fall through to
+                // live Acumatica — that path ignores Active multi-status and excludeZeroQty.
+                const allMissingLines = result.orders.length > 0
+                    && result.orders.every((o) => !o.lines?.length);
 
-                    if (allMissingLines && poCred) {
-                        try {
-                            const live = await fetchLivePurchaseOrders(fetchParams, poCred);
-                            if (live.orders.length > 0 && live.orders.some(o => o.lines?.length)) {
-                                await persistLinesToMySQL(live.orders);
-                                return NextResponse.json({
-                                    ...live,
-                                    orders: await enrichVendorNames(live.orders),
-                                    source: "acumatica",
-                                    page,
-                                    pageSize,
-                                }, NO_STORE);
-                            }
-                        } catch (liveErr) {
-                            console.error("[PO Live Fallback]", liveErr.message);
+                if (allMissingLines && poCred) {
+                    try {
+                        const live = await fetchLivePurchaseOrders(fetchParams, poCred);
+                        if (live.orders.length > 0 && live.orders.some((o) => o.lines?.length)) {
+                            await persistLinesToMySQL(live.orders);
+                            result = await MySqlService.getPurchaseOrders(fetchParams);
                         }
+                    } catch (liveErr) {
+                        console.error("[PO Live Fallback]", liveErr.message);
                     }
-
-                    const enriched = await enrichMissingLines(result.orders, fetchParams, poCred);
-                    const wasEnriched = enriched.some((o, i) => (o.lines?.length || 0) > (result.orders[i].lines?.length || 0));
-
-                    return NextResponse.json({
-                        ...result,
-                        orders: await enrichVendorNames(enriched),
-                        source: wasEnriched ? "mysql+enriched" : "mysql",
-                        page,
-                        pageSize,
-                    }, NO_STORE);
                 }
+
+                const enriched = await enrichMissingLines(result.orders, fetchParams, poCred);
+                const wasEnriched = enriched.some(
+                    (o, i) => (o.lines?.length || 0) > (result.orders[i]?.lines?.length || 0)
+                );
+
+                return NextResponse.json({
+                    ...result,
+                    orders: await enrichVendorNames(enriched),
+                    source: wasEnriched ? "mysql+enriched" : "mysql",
+                    page,
+                    pageSize,
+                }, NO_STORE);
             } catch (mError) {
                 console.error("[MySQL PO Error]", mError.message);
             }

@@ -393,14 +393,18 @@ export const MySqlService = {
             if (status) {
                 // Support multi-status: "Open,On Hold,Pending Approval" or preset "active"
                 const raw = String(status).trim();
-                const parts = raw.toLowerCase() === "active"
-                    ? ["Open", "On Hold", "Pending Approval"]
+                let parts = raw.toLowerCase() === "active"
+                    ? ["Open", "On Hold", "Hold", "Pending Approval"]
                     : raw.split(",").map((s) => {
                         const t = s.trim();
                         if (/^hold$/i.test(t)) return "On Hold";
                         if (/^canceled$/i.test(t)) return "Cancelled";
                         return t;
                     }).filter(Boolean);
+                // Matching "On Hold" also includes legacy "Hold" rows
+                if (parts.includes("On Hold") && !parts.includes("Hold")) {
+                    parts = [...parts, "Hold"];
+                }
                 if (parts.length === 1) {
                     whereClauses.push("h.status = ?");
                     params.push(parts[0]);
@@ -451,12 +455,21 @@ export const MySqlService = {
                 params.push(...ids);
             }
 
-            // Match Acumatica "Order Qty != 0": hide empty draft POs with no positive line qty
+            // Match Acumatica "Order Qty != 0", but keep amount-only headers if lines not synced yet
             if (excludeZeroQty && !(Array.isArray(orderNbrs) && orderNbrs.length > 0)) {
-                whereClauses.push(`EXISTS (
-                    SELECT 1 FROM purchase_order_details dqty
-                    WHERE dqty.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
-                      AND dqty.qty > 0
+                whereClauses.push(`(
+                    EXISTS (
+                        SELECT 1 FROM purchase_order_details dqty
+                        WHERE dqty.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                          AND dqty.qty > 0
+                    )
+                    OR (
+                        NOT EXISTS (
+                            SELECT 1 FROM purchase_order_details dany
+                            WHERE dany.order_nbr COLLATE utf8mb4_unicode_ci = h.order_nbr COLLATE utf8mb4_unicode_ci
+                        )
+                        AND COALESCE(h.total_amount, 0) > 0
+                    )
                 )`);
             }
 
@@ -587,14 +600,20 @@ export const MySqlService = {
                 vendor_id = VALUES(vendor_id),
                 vendor_name = COALESCE(NULLIF(VALUES(vendor_name), ''), vendor_name),
                 status = VALUES(status),
-                promised_date = VALUES(promised_date),
+                order_date = COALESCE(VALUES(order_date), order_date),
+                promised_date = COALESCE(NULLIF(VALUES(promised_date), ''), promised_date),
                 receipt_date = COALESCE(VALUES(receipt_date), receipt_date),
                 total_amount = IF(VALUES(total_amount) > 0, VALUES(total_amount), COALESCE(NULLIF(total_amount, 0), VALUES(total_amount))),
                 last_sync = VALUES(last_sync)
             `;
-            const values = rows.map(r => [
-                r.order_nbr, r.vendor_id, r.vendor_name, r.status, r.order_date, r.promised_date, r.receipt_date, r.total_amount, new Date()
-            ]);
+            const values = rows.map(r => {
+                let status = String(r.status || "").trim();
+                if (/^hold$/i.test(status)) status = "On Hold";
+                if (/^canceled$/i.test(status)) status = "Cancelled";
+                return [
+                    r.order_nbr, r.vendor_id, r.vendor_name, status, r.order_date, r.promised_date, r.receipt_date, r.total_amount, new Date()
+                ];
+            });
             await connection.query(sql, [values]);
             await connection.commit();
             invalidateCache("itemVendorMap");
@@ -930,6 +949,31 @@ export const MySqlService = {
             return updated;
         } catch (err) {
             console.error("[MySQL backfillPurchaseHistoryVendorNames Error]", err);
+            return 0;
+        }
+    },
+
+    /**
+     * Normalize legacy status spellings so Active / On Hold filters stay consistent.
+     */
+    async normalizePurchaseOrderStatusAliases() {
+        try {
+            let n = 0;
+            const [hold] = await purchasePool.query(
+                `UPDATE purchase_history SET status = 'On Hold' WHERE status = 'Hold'`
+            );
+            n += Number(hold?.affectedRows) || 0;
+            const [canceled] = await purchasePool.query(
+                `UPDATE purchase_history SET status = 'Cancelled' WHERE status = 'Canceled'`
+            );
+            n += Number(canceled?.affectedRows) || 0;
+            if (n > 0) {
+                invalidateCache("po:");
+                invalidateCache("openPo:");
+            }
+            return n;
+        } catch (err) {
+            console.error("[MySQL normalizePurchaseOrderStatusAliases Error]", err);
             return 0;
         }
     },
