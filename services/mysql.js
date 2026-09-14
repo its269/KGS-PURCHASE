@@ -1358,6 +1358,8 @@ export const MySqlService = {
 
         try {
             await this.ensureInventoryPlanningColumns();
+            // Catalog rows can be wiped while warehouse stock remains — rebuild before listing.
+            await this.ensureCatalogRowsFromWarehouse(effectiveCompanyId);
 
             if (filter === "damage") {
                 return await this._getDamageInventory({
@@ -1660,8 +1662,8 @@ export const MySqlService = {
             i.inventory_id as InventoryID,
             COALESCE(i.inventory_name, i.inventory_id) as Description,
             COALESCE(i.item_class, '') as ItemClass,
-            COALESCE(w.branch_id, ?) as Branch,
-            COALESCE(w.site_id, w.default_warehouse, ?) as SiteID,
+            COALESCE(NULLIF(TRIM(w.branch_id), ''), NULLIF(TRIM(w.default_warehouse), ''), ?) as Branch,
+            COALESCE(NULLIF(TRIM(w.site_id), ''), NULLIF(TRIM(w.default_warehouse), ''), ?) as SiteID,
             COALESCE(w.on_hand, 0) as OnHand,
             COALESCE(w.available, w.on_hand, 0) as Available,
             COALESCE(i.default_price, 0) as DefaultPrice,
@@ -1852,6 +1854,8 @@ export const MySqlService = {
                 return { ...EMPTY_GLOBAL_STATS };
             }
 
+            await this.ensureCatalogRowsFromWarehouse(effectiveCompanyId);
+
             const catalogCount = await countCatalogRows(effectiveCompanyId);
             const warehouseRows = await countWarehouseRows(effectiveCompanyId);
 
@@ -1947,10 +1951,11 @@ export const MySqlService = {
                 damageParams
             );
 
-            // Product count prefers full catalog (Stock Items import) so branch filters
-            // do not hide items that simply have 0 stock at that site yet.
-            let productCount = catalogCount > 0 ? catalogCount : (Number(stats.totalProducts) || 0);
-            if (search && catalogCount > 0) {
+            // Prefer catalog count, but never under-report when warehouse has more distinct items
+            // (happens if catalog rows were wiped while stock levels remain).
+            const warehouseProducts = Number(stats.totalProducts) || 0;
+            let productCount = Math.max(catalogCount, warehouseProducts);
+            if (search) {
                 const searchTerm = normalizeInventorySearch(search);
                 const [[catSearch]] = await pool.query(
                     `SELECT COUNT(*) AS c FROM \`${INVENTORY_VIEW_TABLE}\`
@@ -1958,7 +1963,7 @@ export const MySqlService = {
                        AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(inventory_name,'')) LIKE UPPER(?))`,
                     [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
                 );
-                productCount = Number(catSearch?.c) || 0;
+                productCount = Math.max(Number(catSearch?.c) || 0, warehouseProducts);
             }
 
             return {
@@ -3956,6 +3961,100 @@ export const MySqlService = {
             throw err;
         } finally {
             connection.release();
+        }
+    },
+
+    /**
+     * Recreate missing __catalog__ product rows from warehouse stock metadata.
+     * Prevents Inventory list showing only a handful of CMS leftovers when stock
+     * levels exist but catalog rows were deleted or collapsed.
+     */
+    async ensureCatalogRowsFromWarehouse(companyId = "main") {
+        try {
+            const [result] = await pool.query(
+                `INSERT INTO \`${INVENTORY_SYNC_TABLE}\`
+                    (inventory_id, company_id, default_warehouse, inventory_name, item_class,
+                     default_price, item_status, base_unit, type, posting_class,
+                     vendor_id, lead_time_days, safety_stock, moq, last_sync)
+                 SELECT
+                    TRIM(w.inventory_id),
+                    w.company_id,
+                    '__catalog__',
+                    MAX(NULLIF(TRIM(w.inventory_name), '')),
+                    MAX(NULLIF(TRIM(w.item_class), '')),
+                    MAX(w.default_price),
+                    MAX(NULLIF(TRIM(w.item_status), '')),
+                    MAX(NULLIF(TRIM(w.base_unit), '')),
+                    MAX(NULLIF(TRIM(w.type), '')),
+                    MAX(NULLIF(TRIM(w.posting_class), '')),
+                    MAX(NULLIF(TRIM(w.vendor_id), '')),
+                    MAX(w.lead_time_days),
+                    MAX(w.safety_stock),
+                    MAX(w.moq),
+                    MAX(w.last_sync)
+                 FROM \`${INVENTORY_SYNC_TABLE}\` w
+                 WHERE w.company_id = ?
+                   AND w.default_warehouse != '__catalog__'
+                   AND TRIM(COALESCE(w.inventory_id, '')) != ''
+                   AND NOT EXISTS (
+                        SELECT 1 FROM \`${INVENTORY_SYNC_TABLE}\` c
+                        WHERE c.company_id = w.company_id
+                          AND c.default_warehouse = '__catalog__'
+                          AND TRIM(c.inventory_id) = TRIM(w.inventory_id)
+                   )
+                 GROUP BY TRIM(w.inventory_id), w.company_id`,
+                [companyId]
+            );
+            const inserted = result.affectedRows || 0;
+            if (inserted > 0) {
+                invalidateCache(`cat-count:${INVENTORY_SYNC_TABLE}:`);
+                invalidateCache("global-stats-v6:");
+                console.log(
+                    `[MySQL] ensureCatalogRowsFromWarehouse(${companyId}): restored ${inserted} catalog rows`
+                );
+            }
+            return inserted;
+        } catch (err) {
+            console.error("[MySQL ensureCatalogRowsFromWarehouse Error]", err);
+            return 0;
+        }
+    },
+
+    async countDistinctWarehouses(companyId = "main") {
+        try {
+            const [[row]] = await pool.query(
+                `SELECT COUNT(DISTINCT default_warehouse) AS c
+                 FROM \`${INVENTORY_SYNC_TABLE}\`
+                 WHERE company_id = ?
+                   AND default_warehouse IS NOT NULL
+                   AND default_warehouse != '__catalog__'
+                   AND TRIM(default_warehouse) != ''`,
+                [companyId]
+            );
+            return Number(row?.c) || 0;
+        } catch (err) {
+            console.error("[MySQL countDistinctWarehouses Error]", err);
+            return 0;
+        }
+    },
+
+    /** Warehouses refreshed at/after sync start (used to guard stale prune). */
+    async countFreshWarehouses(syncStartedAt, companyId = "main") {
+        try {
+            const cutoff = new Date(new Date(syncStartedAt).getTime() - 2 * 60 * 1000);
+            const [[row]] = await pool.query(
+                `SELECT COUNT(DISTINCT default_warehouse) AS c
+                 FROM \`${INVENTORY_SYNC_TABLE}\`
+                 WHERE company_id = ?
+                   AND default_warehouse != '__catalog__'
+                   AND last_sync IS NOT NULL
+                   AND last_sync >= ?`,
+                [companyId, cutoff]
+            );
+            return Number(row?.c) || 0;
+        } catch (err) {
+            console.error("[MySQL countFreshWarehouses Error]", err);
+            return 0;
         }
     },
 

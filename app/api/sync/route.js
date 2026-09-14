@@ -822,9 +822,22 @@ export async function POST(request) {
                             const writtenMain = await MySqlService.countWarehouseRows("main", INVENTORY_SYNC_TABLE);
                             const writtenEcom = await MySqlService.countWarehouseRows("ecommerce", INVENTORY_SYNC_TABLE);
                             if (writtenMain + writtenEcom > 0) {
-                                const removedMain = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "main");
-                                const removedEcom = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "ecommerce");
-                                console.log(`>>> [Sync API] Removed stale stock rows from ${INVENTORY_SYNC_TABLE}: main=${removedMain}, ecommerce=${removedEcom}`);
+                                // Guard: never prune when this run barely refreshed warehouses
+                                // (e.g. MAIN-only summary) — that wiped CEBU/ILOILO/etc. before.
+                                const freshMain = await MySqlService.countFreshWarehouses(inventorySyncStartedAt, "main");
+                                const freshEcom = await MySqlService.countFreshWarehouses(inventorySyncStartedAt, "ecommerce");
+                                const minWarehousesToPrune = 5;
+                                if (freshMain + freshEcom < minWarehousesToPrune) {
+                                    console.warn(
+                                        `>>> [Sync API] Skipping stale cleanup — only ${freshMain}+${freshEcom} warehouses refreshed (need ≥${minWarehousesToPrune}).`
+                                    );
+                                } else {
+                                    const removedMain = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "main");
+                                    const removedEcom = await MySqlService.deleteStaleInventoryLevels(inventorySyncStartedAt, "ecommerce");
+                                    console.log(`>>> [Sync API] Removed stale stock rows from ${INVENTORY_SYNC_TABLE}: main=${removedMain}, ecommerce=${removedEcom}`);
+                                }
+                                await MySqlService.ensureCatalogRowsFromWarehouse("main").catch(() => 0);
+                                await MySqlService.ensureCatalogRowsFromWarehouse("ecommerce").catch(() => 0);
                             } else {
                                 console.warn(`>>> [Sync API] Skipping stale cleanup — no warehouse rows in ${INVENTORY_SYNC_TABLE} after upsert.`);
                             }
