@@ -357,6 +357,23 @@ export function flatCmsFilesFromRows(
       });
     }
   }
+  // Default name order; callers with saved ranks should use applyCmsMediaSortOrder.
   products.sort((a, b) => a.name.localeCompare(b.name));
   return products;
+}
+
+/** Apply admin-saved ranks; unknown ids sort after ranked ones by name. */
+export function applyCmsMediaSortOrder<T extends { id: string; name: string }>(
+  products: T[],
+  ranks: Map<string, number>,
+): T[] {
+  if (ranks.size === 0) {
+    return [...products].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return [...products].sort((a, b) => {
+    const ra = ranks.has(a.id) ? ranks.get(a.id)! : Number.POSITIVE_INFINITY;
+    const rb = ranks.has(b.id) ? ranks.get(b.id)! : Number.POSITIVE_INFINITY;
+    if (ra !== rb) return ra - rb;
+    return a.name.localeCompare(b.name);
+  });
 }

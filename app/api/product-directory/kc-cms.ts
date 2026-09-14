@@ -6,6 +6,7 @@ import {
   documentCategoryLabel,
   expandMediaUrls,
   flowchartMediaKind,
+  applyCmsMediaSortOrder,
   flatCmsFilesFromRows,
   groupCmsMediaBrowse,
   inventoryIdFromFlatCmsFileProductId,
@@ -104,6 +105,16 @@ export async function ensureTables(): Promise<void> {
       KEY idx_created (created_at),
       KEY idx_action (action),
       KEY idx_actor (actor_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kc_cms_media_sort (
+      item_class_id VARCHAR(64) NOT NULL,
+      media_kind VARCHAR(32) NOT NULL,
+      product_id VARCHAR(128) NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (item_class_id, media_kind, product_id),
+      KEY idx_media_sort (item_class_id, media_kind, sort_order)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   // Display: Auxiliary, Inks, Machine, Media (id `tools` = Auxiliary).
@@ -817,7 +828,7 @@ async function virtualFlowchartBrowse(
     allowEmptyUrl: !requireMediaUrl(kind, ic?.category_id),
   });
   if (grouped.folders.length > 0 || grouped.products.length > 0) {
-    return grouped;
+    return applyBrochureSortIfNeeded(itemClassId, kind, grouped);
   }
 
   const real = await findFlowchartFolder(itemClassId, folderLabel);
@@ -831,6 +842,19 @@ async function virtualFlowchartBrowse(
   return {
     folders: [],
     products: await listItemClassMediaProducts(itemClassId, folderLabel, path),
+  };
+}
+
+async function applyBrochureSortIfNeeded(
+  itemClassId: string,
+  kind: string,
+  browse: BrowseResult,
+): Promise<BrowseResult> {
+  if (kind !== "brochure" || browse.products.length === 0) return browse;
+  const ranks = await loadCmsMediaSortRanks(itemClassId, "brochure");
+  return {
+    folders: browse.folders,
+    products: applyCmsMediaSortOrder(browse.products, ranks),
   };
 }
 
@@ -1132,7 +1156,11 @@ export async function browse(folderId?: string | null): Promise<BrowseResult> {
         },
       );
       if (grouped.folders.length > 0 || grouped.products.length > 0) {
-        return grouped;
+        return applyBrochureSortIfNeeded(
+          folder.item_class_id,
+          cmsKind,
+          grouped,
+        );
       }
     }
     if (await isProductsContainerFolder(folder)) {
@@ -1363,10 +1391,70 @@ export async function itemClassMedia(
     Boolean,
   );
   const rows = await loadCmsMediaRows(itemClassId, kind);
-  return groupCmsMediaBrowse(rows, kind, itemClassId, path, {
+  const browse = groupCmsMediaBrowse(rows, kind, itemClassId, path, {
     groupByModel: shouldGroupMediaByModel(icRow.category_id),
     allowEmptyUrl: !requireMediaUrl(kind, icRow.category_id),
   });
+  return applyBrochureSortIfNeeded(itemClassId, kind, browse);
+}
+
+export async function loadCmsMediaSortRanks(
+  itemClassId: string,
+  mediaKind: string,
+): Promise<Map<string, number>> {
+  await ensureTables();
+  const [rows] = await getPool().query<RowDataPacket[]>(
+    `SELECT product_id, sort_order FROM kc_cms_media_sort
+     WHERE item_class_id=? AND media_kind=?`,
+    [itemClassId, mediaKind],
+  );
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    map.set(String(row.product_id), Number(row.sort_order) || 0);
+  }
+  return map;
+}
+
+export async function reorderCmsMedia(body: Record<string, unknown>) {
+  await ensureTables();
+  const itemClassId = String(body.item_class_id ?? "").trim();
+  const mediaKind = String(body.media_kind ?? "").trim().toLowerCase();
+  const productIds = Array.isArray(body.product_ids)
+    ? body.product_ids.map((id) => String(id).trim()).filter(Boolean)
+    : [];
+  if (!itemClassId) throw new Error("item_class_id is required");
+  if (mediaKind !== "brochure") {
+    throw new Error("media_kind must be brochure");
+  }
+  if (productIds.length === 0) throw new Error("product_ids is required");
+
+  const db = getPool();
+  await db.query(
+    `DELETE FROM kc_cms_media_sort WHERE item_class_id=? AND media_kind=?`,
+    [itemClassId, mediaKind],
+  );
+  for (let i = 0; i < productIds.length; i++) {
+    await db.query(
+      `INSERT INTO kc_cms_media_sort
+       (item_class_id, media_kind, product_id, sort_order) VALUES (?,?,?,?)`,
+      [itemClassId, mediaKind, productIds[i], i],
+    );
+  }
+
+  try {
+    await writeActionLog({
+      action: "reordered_media",
+      actor_id: String(body.actor_id ?? ""),
+      actor_name: String(body.actor_name ?? ""),
+      target_id: itemClassId,
+      target_name: mediaKind,
+      detail: `count=${productIds.length}`,
+    });
+  } catch {
+    /* non-fatal if action not yet allow-listed */
+  }
+
+  return { ok: true, count: productIds.length };
 }
 
 /**
@@ -1700,7 +1788,12 @@ export async function softDeleteProduct(productId: string): Promise<void> {
   );
 }
 
-const ALLOWED_ACTIONS = new Set(["opened_product", "searched", "downloaded"]);
+const ALLOWED_ACTIONS = new Set([
+  "opened_product",
+  "searched",
+  "downloaded",
+  "reordered_media",
+]);
 
 export async function writeActionLog(body: Record<string, unknown>) {
   await ensureTables();

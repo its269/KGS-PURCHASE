@@ -8,6 +8,7 @@ import {
   itemClassDocuments,
   itemClassMedia,
   listActionLogs,
+  reorderCmsMedia,
   search,
   softDeleteFolder,
   softDeleteProduct,
@@ -150,6 +151,13 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         if (!productId) return withCors(fail(400, "product_id is required"));
         await softDeleteProduct(productId);
         return withCors(ok({ deleted: true }));
+      }
+      case "media_reorder":
+      case "inventory_media_reorder": {
+        if (!requireAdmin(req)) {
+          return withCors(fail(403, "Admin token required"));
+        }
+        return withCors(ok(await reorderCmsMedia(body)));
       }
       case "action_log":
       case "inventory_action_log": {
