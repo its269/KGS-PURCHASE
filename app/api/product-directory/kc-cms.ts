@@ -171,27 +171,38 @@ async function getItemClass(id: string): Promise<IcRow | null> {
   return rows[0] ?? null;
 }
 
-/** CMS uses longer names than Product Directory item-class folders. */
+/** CMS uses longer / alternate names than Product Directory item-class folders. */
 function cmsItemClassNameAliases(itemClassName: string): string[] {
   const name = itemClassName.trim();
   if (!name) return [];
   const key = name.toLowerCase();
-  const extra: Record<string, string[]> = {
-    "eco solvent": ["Ecosolvent Printer", "Eco-Solvent Printer", "Eco Solvent"],
-    solvent: ["Solvent Printer", "Solvent"],
-    "heat press": ["Heat Press Machine", "Heat Press"],
-    embroidery: ["Embroidery Machine", "Embroidery"],
-    laminator: ["Laminating machine", "Laminating Machine", "Laminator"],
-    "cnc router": ["Router Machine", "CNC Router"],
-    "cutter plotter": ["Digital Cutter Machine", "Cutter Plotter"],
-    "flatbed cutter": ["Digital Cutter Machine", "Flatbed Cutter"],
-    "uv printer": ["UV Printer"],
-    "laser machine": ["Laser Machine"],
-    "3d printer": ["3D Printer", "Signmaking machine", "Signmaking Machine"],
-    accessories: ["Accessories"],
-  };
+  const groups: string[][] = [
+    ["Ecosolvent Printer", "Eco-Solvent Printer", "Eco Solvent", "Eco solvent"],
+    ["Solvent Printer", "Solvent"],
+    ["Heat Press Machine", "Heat Press"],
+    ["Embroidery Machine", "Embroidery"],
+    ["Laminating machine", "Laminating Machine", "Laminator"],
+    ["Router Machine", "CNC Router", "Cnc router"],
+    [
+      "Digital Cutter Machine",
+      "Digital Cutter",
+      "Cutter Plotter",
+      "Flatbed Cutter",
+      "Flatbed cutter",
+    ],
+    ["UV Printer", "Uv printer"],
+    ["Laser Machine", "Laser machine"],
+    ["3D Printer", "Signmaking machine", "Signmaking Machine", "3d printer"],
+    ["Accessories"],
+    ["Sublimation", "Sublimation Ink", "Sublimation Printer"],
+  ];
   const out = new Set<string>([name]);
-  for (const alias of extra[key] ?? []) out.add(alias);
+  for (const group of groups) {
+    const hit = group.some((alias) => alias.toLowerCase() === key);
+    if (hit) {
+      for (const alias of group) out.add(alias);
+    }
+  }
   return [...out];
 }
 
@@ -201,6 +212,15 @@ function cmsCategoryAliases(categoryName: string): string[] {
   const key = name.toLowerCase();
   if (key === "tools" || key === "auxiliary") {
     return ["Tools", "Auxiliary"];
+  }
+  if (key === "machine" || key === "machines") {
+    return ["Machine", "Machines"];
+  }
+  if (key === "inks" || key === "ink") {
+    return ["Inks", "Ink"];
+  }
+  if (key === "media") {
+    return ["Media"];
   }
   return name ? [name] : [];
 }
@@ -293,6 +313,25 @@ async function loadCmsMediaRows(
   const selectCols = `p.id, p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
               p.${column} AS media_url`;
 
+  // Merge every matching source. Do NOT early-return on kc_products alone —
+  // that hid CMS uploads that only match via KC Category + KC Item Class.
+  const byInventoryId = new Map<string, CmsMediaRow>();
+  const mergeMapped = (rows: CmsMediaRow[]) => {
+    for (const row of rows) {
+      const key = row.inventory_id.trim();
+      if (!key) continue;
+      const existing = byInventoryId.get(key);
+      if (!existing) {
+        byInventoryId.set(key, row);
+        continue;
+      }
+      // Prefer the row that already has a media URL.
+      if (!existing.media_url.trim() && row.media_url.trim()) {
+        byInventoryId.set(key, row);
+      }
+    }
+  };
+
   // 1) Products already linked under this Product Directory item class.
   try {
     const [rows] = await getPool().query<RowDataPacket[]>(
@@ -311,7 +350,7 @@ async function loadCmsMediaRows(
        ${orderBy}`,
       [itemClassId, ...modelParam],
     );
-    if (rows.length > 0) return mapRows(rows);
+    if (rows.length > 0) mergeMapped(await mapRows(rows));
   } catch (err) {
     console.error("[product-directory] CMS media via kc_products failed:", err);
   }
@@ -334,7 +373,7 @@ async function loadCmsMediaRows(
          ${orderBy}`,
         [...nameAliases, ...categoryAliases, ...modelParam],
       );
-      if (byKc.length > 0) return mapRows(byKc);
+      if (byKc.length > 0) mergeMapped(await mapRows(byKc));
     } catch (err) {
       console.error(
         "[product-directory] CMS media via kc_category/kc_item_class failed:",
@@ -360,11 +399,14 @@ async function loadCmsMediaRows(
        ${orderBy}`,
       [sourceCode || ic.name, ic.name, ...modelParam],
     );
-    return mapRows(fallback);
+    if (fallback.length > 0) mergeMapped(await mapRows(fallback));
   } catch (err) {
     console.error("[product-directory] CMS media fallback failed:", err);
-    return [];
   }
+
+  return [...byInventoryId.values()].sort((a, b) =>
+    a.inventory_name.localeCompare(b.inventory_name),
+  );
 }
 
 async function getFolder(id: string): Promise<FolderRow | null> {
