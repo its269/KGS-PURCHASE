@@ -106,9 +106,18 @@ export async function ensureTables(): Promise<void> {
       KEY idx_action (action),
       KEY idx_actor (actor_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-  // Do not create/write kc_cms_media_sort here — Product Directory must not
-  // alter shared inventory schema beyond the existing kc_* catalog tables.
-  // Brochure reorder storage is disabled until a dedicated, approved migration.
+  // Product Directory–owned sort ranks (our API only). Never touches CMS
+  // product_inventory_* tables. Created/used via KGS product-directory routes.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kc_cms_media_sort (
+      item_class_id VARCHAR(64) NOT NULL,
+      media_kind VARCHAR(32) NOT NULL,
+      product_id VARCHAR(128) NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (item_class_id, media_kind, product_id),
+      KEY idx_media_sort (item_class_id, media_kind, sort_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   // Display: Auxiliary, Inks, Machine, Media (id `tools` = Auxiliary).
   for (const [cid, name, sort] of [
@@ -1392,17 +1401,62 @@ export async function itemClassMedia(
 }
 
 export async function loadCmsMediaSortRanks(
-  _itemClassId: string,
-  _mediaKind: string,
+  itemClassId: string,
+  mediaKind: string,
 ): Promise<Map<string, number>> {
-  // Brochure sort table disabled — do not query/create shared inventory schema.
-  return new Map();
+  await ensureTables();
+  const [rows] = await getPool().query<RowDataPacket[]>(
+    `SELECT product_id, sort_order FROM kc_cms_media_sort
+     WHERE item_class_id=? AND media_kind=?`,
+    [itemClassId, mediaKind],
+  );
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    map.set(String(row.product_id), Number(row.sort_order) || 0);
+  }
+  return map;
 }
 
-export async function reorderCmsMedia(_body: Record<string, unknown>) {
-  throw new Error(
-    "Brochure reorder is disabled (no writes to db_kelin_inventory sort tables)",
+export async function reorderCmsMedia(body: Record<string, unknown>) {
+  await ensureTables();
+  const itemClassId = String(body.item_class_id ?? "").trim();
+  const mediaKind = String(body.media_kind ?? "").trim().toLowerCase();
+  const productIds = Array.isArray(body.product_ids)
+    ? body.product_ids.map((id) => String(id).trim()).filter(Boolean)
+    : [];
+  if (!itemClassId) throw new Error("item_class_id is required");
+  if (mediaKind !== "brochure") {
+    throw new Error("media_kind must be brochure");
+  }
+  if (productIds.length === 0) throw new Error("product_ids is required");
+
+  const db = getPool();
+  await db.query(
+    `DELETE FROM kc_cms_media_sort WHERE item_class_id=? AND media_kind=?`,
+    [itemClassId, mediaKind],
   );
+  for (let i = 0; i < productIds.length; i++) {
+    await db.query(
+      `INSERT INTO kc_cms_media_sort
+       (item_class_id, media_kind, product_id, sort_order) VALUES (?,?,?,?)`,
+      [itemClassId, mediaKind, productIds[i], i],
+    );
+  }
+
+  try {
+    await writeActionLog({
+      action: "reordered_media",
+      actor_id: String(body.actor_id ?? ""),
+      actor_name: String(body.actor_name ?? ""),
+      target_id: itemClassId,
+      target_name: mediaKind,
+      detail: `count=${productIds.length}`,
+    });
+  } catch {
+    /* non-fatal if action not yet allow-listed */
+  }
+
+  return { ok: true, count: productIds.length };
 }
 
 /**
