@@ -240,7 +240,9 @@ async function loadCmsMediaRows(
   const sourceCode = (ic.source_code || "").trim();
   const mustHaveUrl = requireMediaUrl(kind, ic.category_id);
   const isImages = column === "image_url";
+  const isBrochure = column === "brochure_url";
   // Photos may live only in product_inventory_images (CMS gallery), not image_url.
+  // Brochures may live in product_inventory_attachments (category=brochure) and/or brochure_url.
   const urlClause = !mustHaveUrl
     ? ""
     : isImages
@@ -251,7 +253,16 @@ async function loadCmsMediaRows(
              WHERE g.inventory_item_id = p.id
            )
          )`
-      : `AND COALESCE(p.${column}, '') <> ''`;
+      : isBrochure
+        ? `AND (
+             COALESCE(p.brochure_url, '') <> ''
+             OR EXISTS (
+               SELECT 1 FROM product_inventory_attachments a
+               WHERE a.inventory_item_id = p.id
+                 AND LOWER(TRIM(a.category)) = 'brochure'
+             )
+           )`
+        : `AND COALESCE(p.${column}, '') <> ''`;
   const orderBy = `ORDER BY (COALESCE(p.${column}, '') = '') ASC, m.name, p.inventory_name`;
 
   const modelClause =
@@ -277,6 +288,18 @@ async function loadCmsMediaRows(
           model_id,
           model_name,
           // Pipe-join so groupCmsMediaBrowse expands to unique product ids.
+          media_url: urls.join("|"),
+        });
+        continue;
+      }
+      if (isBrochure) {
+        const urls = await mergeBrochureUrls(Number(r.id), cover);
+        if (urls.length === 0) continue;
+        out.push({
+          inventory_id: inventoryId,
+          inventory_name: inventoryName,
+          model_id,
+          model_name,
           media_url: urls.join("|"),
         });
         continue;
@@ -1575,6 +1598,47 @@ async function loadInventoryGalleryUrls(
   }
 }
 
+/** CMS multi-brochure uploads under Product Documents / attachments (category=brochure). */
+async function loadBrochureAttachmentUrls(
+  inventoryItemId: number,
+): Promise<string[]> {
+  if (!Number.isFinite(inventoryItemId) || inventoryItemId <= 0) {
+    return [];
+  }
+  try {
+    const [rows] = await getPool().query<RowDataPacket[]>(
+      `SELECT file_url FROM product_inventory_attachments
+       WHERE inventory_item_id = ?
+         AND LOWER(TRIM(category)) = 'brochure'
+       ORDER BY id ASC`,
+      [inventoryItemId],
+    );
+    return rows
+      .map((r) => resolveCmsMediaUrl(String(r.file_url ?? "")))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Cover brochure_url + attachment brochures, deduped (stable order). */
+async function mergeBrochureUrls(
+  inventoryItemId: number,
+  brochureUrlColumn: string,
+): Promise<string[]> {
+  const fromColumn = expandMediaUrls(brochureUrlColumn);
+  const fromAttachments = await loadBrochureAttachmentUrls(inventoryItemId);
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const url of [...fromColumn, ...fromAttachments]) {
+    const key = url.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    urls.push(url);
+  }
+  return urls;
+}
+
 /**
  * All CMS media files for one Product Database inventory row
  * (KelinConnect /product-database/inventory/{id} uploads).
@@ -1622,6 +1686,10 @@ export async function getProductMedia(
   const ic = String(row.kc_item_class || "").trim();
   const folderPath = [ROOT_NAME, cat, ic].filter(Boolean);
   const galleryImageUrls = await loadInventoryGalleryUrls(Number(row.id));
+  const brochureUrls = await mergeBrochureUrls(
+    Number(row.id),
+    String(row.brochure_url ?? ""),
+  );
 
   const entries = [
     { kind: "images", column: "image_url" as const, label: "Photo" },
@@ -1634,7 +1702,9 @@ export async function getProductMedia(
     const urls =
       entry.kind === "images" && galleryImageUrls.length > 0
         ? galleryImageUrls
-        : expandMediaUrls(String(row[entry.column] ?? ""));
+        : entry.kind === "brochure"
+          ? brochureUrls
+          : expandMediaUrls(String(row[entry.column] ?? ""));
     urls.forEach((url, index) => {
       products.push({
         id: cmsMediaProductId(inventoryId, entry.kind, index),
