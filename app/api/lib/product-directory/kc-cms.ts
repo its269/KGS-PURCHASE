@@ -106,16 +106,9 @@ export async function ensureTables(): Promise<void> {
       KEY idx_action (action),
       KEY idx_actor (actor_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS kc_cms_media_sort (
-      item_class_id VARCHAR(64) NOT NULL,
-      media_kind VARCHAR(32) NOT NULL,
-      product_id VARCHAR(128) NOT NULL,
-      sort_order INT NOT NULL DEFAULT 0,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (item_class_id, media_kind, product_id),
-      KEY idx_media_sort (item_class_id, media_kind, sort_order)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  // Do not create/write kc_cms_media_sort here — Product Directory must not
+  // alter shared inventory schema beyond the existing kc_* catalog tables.
+  // Brochure reorder storage is disabled until a dedicated, approved migration.
 
   // Display: Auxiliary, Inks, Machine, Media (id `tools` = Auxiliary).
   for (const [cid, name, sort] of [
@@ -171,38 +164,27 @@ async function getItemClass(id: string): Promise<IcRow | null> {
   return rows[0] ?? null;
 }
 
-/** CMS uses longer / alternate names than Product Directory item-class folders. */
+/** CMS uses longer names than Product Directory item-class folders. */
 function cmsItemClassNameAliases(itemClassName: string): string[] {
   const name = itemClassName.trim();
   if (!name) return [];
   const key = name.toLowerCase();
-  const groups: string[][] = [
-    ["Ecosolvent Printer", "Eco-Solvent Printer", "Eco Solvent", "Eco solvent"],
-    ["Solvent Printer", "Solvent"],
-    ["Heat Press Machine", "Heat Press"],
-    ["Embroidery Machine", "Embroidery"],
-    ["Laminating machine", "Laminating Machine", "Laminator"],
-    ["Router Machine", "CNC Router", "Cnc router"],
-    [
-      "Digital Cutter Machine",
-      "Digital Cutter",
-      "Cutter Plotter",
-      "Flatbed Cutter",
-      "Flatbed cutter",
-    ],
-    ["UV Printer", "Uv printer"],
-    ["Laser Machine", "Laser machine"],
-    ["3D Printer", "Signmaking machine", "Signmaking Machine", "3d printer"],
-    ["Accessories"],
-    ["Sublimation", "Sublimation Ink", "Sublimation Printer"],
-  ];
+  const extra: Record<string, string[]> = {
+    "eco solvent": ["Ecosolvent Printer", "Eco-Solvent Printer", "Eco Solvent"],
+    solvent: ["Solvent Printer", "Solvent"],
+    "heat press": ["Heat Press Machine", "Heat Press"],
+    embroidery: ["Embroidery Machine", "Embroidery"],
+    laminator: ["Laminating machine", "Laminating Machine", "Laminator"],
+    "cnc router": ["Router Machine", "CNC Router"],
+    "cutter plotter": ["Digital Cutter Machine", "Cutter Plotter"],
+    "flatbed cutter": ["Digital Cutter Machine", "Flatbed Cutter"],
+    "uv printer": ["UV Printer"],
+    "laser machine": ["Laser Machine"],
+    "3d printer": ["3D Printer", "Signmaking machine", "Signmaking Machine"],
+    accessories: ["Accessories"],
+  };
   const out = new Set<string>([name]);
-  for (const group of groups) {
-    const hit = group.some((alias) => alias.toLowerCase() === key);
-    if (hit) {
-      for (const alias of group) out.add(alias);
-    }
-  }
+  for (const alias of extra[key] ?? []) out.add(alias);
   return [...out];
 }
 
@@ -212,15 +194,6 @@ function cmsCategoryAliases(categoryName: string): string[] {
   const key = name.toLowerCase();
   if (key === "tools" || key === "auxiliary") {
     return ["Tools", "Auxiliary"];
-  }
-  if (key === "machine" || key === "machines") {
-    return ["Machine", "Machines"];
-  }
-  if (key === "inks" || key === "ink") {
-    return ["Inks", "Ink"];
-  }
-  if (key === "media") {
-    return ["Media"];
   }
   return name ? [name] : [];
 }
@@ -313,25 +286,6 @@ async function loadCmsMediaRows(
   const selectCols = `p.id, p.inventory_id, p.inventory_name, p.model_id, m.name AS model_name,
               p.${column} AS media_url`;
 
-  // Merge every matching source. Do NOT early-return on kc_products alone —
-  // that hid CMS uploads that only match via KC Category + KC Item Class.
-  const byInventoryId = new Map<string, CmsMediaRow>();
-  const mergeMapped = (rows: CmsMediaRow[]) => {
-    for (const row of rows) {
-      const key = row.inventory_id.trim();
-      if (!key) continue;
-      const existing = byInventoryId.get(key);
-      if (!existing) {
-        byInventoryId.set(key, row);
-        continue;
-      }
-      // Prefer the row that already has a media URL.
-      if (!existing.media_url.trim() && row.media_url.trim()) {
-        byInventoryId.set(key, row);
-      }
-    }
-  };
-
   // 1) Products already linked under this Product Directory item class.
   try {
     const [rows] = await getPool().query<RowDataPacket[]>(
@@ -350,7 +304,7 @@ async function loadCmsMediaRows(
        ${orderBy}`,
       [itemClassId, ...modelParam],
     );
-    if (rows.length > 0) mergeMapped(await mapRows(rows));
+    if (rows.length > 0) return mapRows(rows);
   } catch (err) {
     console.error("[product-directory] CMS media via kc_products failed:", err);
   }
@@ -373,7 +327,7 @@ async function loadCmsMediaRows(
          ${orderBy}`,
         [...nameAliases, ...categoryAliases, ...modelParam],
       );
-      if (byKc.length > 0) mergeMapped(await mapRows(byKc));
+      if (byKc.length > 0) return mapRows(byKc);
     } catch (err) {
       console.error(
         "[product-directory] CMS media via kc_category/kc_item_class failed:",
@@ -399,14 +353,11 @@ async function loadCmsMediaRows(
        ${orderBy}`,
       [sourceCode || ic.name, ic.name, ...modelParam],
     );
-    if (fallback.length > 0) mergeMapped(await mapRows(fallback));
+    return mapRows(fallback);
   } catch (err) {
     console.error("[product-directory] CMS media fallback failed:", err);
+    return [];
   }
-
-  return [...byInventoryId.values()].sort((a, b) =>
-    a.inventory_name.localeCompare(b.inventory_name),
-  );
 }
 
 async function getFolder(id: string): Promise<FolderRow | null> {
@@ -1441,62 +1392,17 @@ export async function itemClassMedia(
 }
 
 export async function loadCmsMediaSortRanks(
-  itemClassId: string,
-  mediaKind: string,
+  _itemClassId: string,
+  _mediaKind: string,
 ): Promise<Map<string, number>> {
-  await ensureTables();
-  const [rows] = await getPool().query<RowDataPacket[]>(
-    `SELECT product_id, sort_order FROM kc_cms_media_sort
-     WHERE item_class_id=? AND media_kind=?`,
-    [itemClassId, mediaKind],
-  );
-  const map = new Map<string, number>();
-  for (const row of rows) {
-    map.set(String(row.product_id), Number(row.sort_order) || 0);
-  }
-  return map;
+  // Brochure sort table disabled — do not query/create shared inventory schema.
+  return new Map();
 }
 
-export async function reorderCmsMedia(body: Record<string, unknown>) {
-  await ensureTables();
-  const itemClassId = String(body.item_class_id ?? "").trim();
-  const mediaKind = String(body.media_kind ?? "").trim().toLowerCase();
-  const productIds = Array.isArray(body.product_ids)
-    ? body.product_ids.map((id) => String(id).trim()).filter(Boolean)
-    : [];
-  if (!itemClassId) throw new Error("item_class_id is required");
-  if (mediaKind !== "brochure") {
-    throw new Error("media_kind must be brochure");
-  }
-  if (productIds.length === 0) throw new Error("product_ids is required");
-
-  const db = getPool();
-  await db.query(
-    `DELETE FROM kc_cms_media_sort WHERE item_class_id=? AND media_kind=?`,
-    [itemClassId, mediaKind],
+export async function reorderCmsMedia(_body: Record<string, unknown>) {
+  throw new Error(
+    "Brochure reorder is disabled (no writes to db_kelin_inventory sort tables)",
   );
-  for (let i = 0; i < productIds.length; i++) {
-    await db.query(
-      `INSERT INTO kc_cms_media_sort
-       (item_class_id, media_kind, product_id, sort_order) VALUES (?,?,?,?)`,
-      [itemClassId, mediaKind, productIds[i], i],
-    );
-  }
-
-  try {
-    await writeActionLog({
-      action: "reordered_media",
-      actor_id: String(body.actor_id ?? ""),
-      actor_name: String(body.actor_name ?? ""),
-      target_id: itemClassId,
-      target_name: mediaKind,
-      detail: `count=${productIds.length}`,
-    });
-  } catch {
-    /* non-fatal if action not yet allow-listed */
-  }
-
-  return { ok: true, count: productIds.length };
 }
 
 /**
