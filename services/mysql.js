@@ -84,11 +84,14 @@ instrumentPool(pool, "inventory");
 instrumentPool(purchasePool, "purchase");
 
 /**
- * product_inventory_items — Acumatica sync destination AND Inventory UI source of truth.
- * Legacy `inventory_items` is a stale product-directory table; do not use it for stock reads.
+ * product_inventory_items — CMS / Connect catalog (ONE row per SKU; DB trigger blocks twins).
+ * forecast_item_stock — Acumatica multi-warehouse stock (Inventory UI source of truth).
+ * Do not use product_inventory_items for per-warehouse on-hand — CMS collapses it.
  */
 export const INVENTORY_SYNC_TABLE = "product_inventory_items";
+/** @deprecated Prefer forecast_item_stock for stock reads; kept for CMS catalog joins. */
 export const INVENTORY_VIEW_TABLE = INVENTORY_SYNC_TABLE;
+export const FORECAST_STOCK_TABLE = "forecast_item_stock";
 
 function isTransientMysqlError(err) {
     const code = String(err?.code || "");
@@ -116,7 +119,17 @@ async function withMysqlRetry(label, fn, retries = 3) {
 }
 
 async function countWarehouseRows(companyId = "main", table = INVENTORY_VIEW_TABLE) {
-    return getCached(`wh-count:${table}:${companyId}`, 60_000, async () => {
+    return getCached(`wh-count:fis-or-${table}:${companyId}`, 60_000, async () => {
+        try {
+            const [[fis]] = await purchasePool.query(
+                `SELECT COUNT(*) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+                 WHERE company_id = ? AND warehouse_id != '__catalog__'`,
+                [companyId]
+            );
+            if (Number(fis?.c) > 0) return Number(fis.c);
+        } catch {
+            /* fall through to legacy table */
+        }
         const [[row]] = await pool.query(
             `SELECT COUNT(*) AS c FROM \`${table}\`
              WHERE company_id = ? AND default_warehouse != '__catalog__'`,
@@ -127,7 +140,24 @@ async function countWarehouseRows(companyId = "main", table = INVENTORY_VIEW_TAB
 }
 
 async function countCatalogRows(companyId = "main", table = INVENTORY_VIEW_TABLE) {
-    return getCached(`cat-count:${table}:${companyId}`, 60_000, async () => {
+    return getCached(`cat-count:fis-or-${table}:${companyId}`, 60_000, async () => {
+        try {
+            const [[fis]] = await purchasePool.query(
+                `SELECT COUNT(*) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+                 WHERE company_id = ? AND warehouse_id = '__catalog__'`,
+                [companyId]
+            );
+            if (Number(fis?.c) > 0) return Number(fis.c);
+            // Forecast may only have warehouse rows — distinct items still count as catalog size
+            const [[distinct]] = await purchasePool.query(
+                `SELECT COUNT(DISTINCT TRIM(inventory_id)) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+                 WHERE company_id = ? AND warehouse_id != '__catalog__'`,
+                [companyId]
+            );
+            if (Number(distinct?.c) > 0) return Number(distinct.c);
+        } catch {
+            /* fall through */
+        }
         const [[row]] = await pool.query(
             `SELECT COUNT(*) AS c FROM \`${table}\`
              WHERE company_id = ? AND default_warehouse = '__catalog__'`,
@@ -152,7 +182,18 @@ function salesLookbackSql(days = SALES_LOOKBACK_DAYS) {
 }
 
 /** Join catalog metadata when reading per-branch warehouse stock rows. */
-function inventoryFromClause(layout) {
+function inventoryFromClause(layout, { useForecast = false, purchaseDb = "db_purchase" } = {}) {
+    if (useForecast) {
+        const t = `\`${purchaseDb}\`.\`${FORECAST_STOCK_TABLE}\``;
+        if (layout === "warehouse") {
+            return `FROM ${t} i
+                LEFT JOIN ${t} c
+                  ON c.inventory_id = i.inventory_id
+                 AND c.company_id = i.company_id
+                 AND c.warehouse_id = '__catalog__'`;
+        }
+        return `FROM ${t} i`;
+    }
     if (layout === "warehouse") {
         return `FROM \`${INVENTORY_VIEW_TABLE}\` i
                 LEFT JOIN \`${INVENTORY_VIEW_TABLE}\` c
@@ -313,7 +354,15 @@ export const MySqlService = {
      */
     async getLastInventorySyncTime() {
         try {
-            // Watermark from sync destination (not the view-only legacy table)
+            // Prefer multi-warehouse stock watermark (CMS catalog table is one-row-per-SKU).
+            try {
+                const [[fis]] = await purchasePool.query(
+                    `SELECT MAX(last_sync) as lastSync FROM \`${FORECAST_STOCK_TABLE}\``
+                );
+                if (fis?.lastSync) return fis.lastSync;
+            } catch {
+                /* fall through */
+            }
             const [[res]] = await pool.query(
                 `SELECT MAX(last_sync) as lastSync FROM \`${INVENTORY_SYNC_TABLE}\``
             );
@@ -1590,11 +1639,27 @@ export const MySqlService = {
         const limitInt = parseInt(pageSize, 10);
         const offsetInt = parseInt(offset, 10);
         const displayBranch = branch || (destinations[0] || "");
+        const inventoryDb = process.env.MYSQL_INVENTORY_DATABASE || "db_kelin_inventory";
+
+        // Multi-warehouse stock lives in forecast_item_stock (CMS blocks twins on product_inventory_items).
+        await this.ensureForecastItemStockTable();
+        const [[fisWh]] = await purchasePool.query(
+            `SELECT COUNT(*) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+             WHERE company_id = ? AND warehouse_id != '__catalog__'`,
+            [effectiveCompanyId]
+        );
+        const useForecast = Number(fisWh?.c) > 0;
+        const stockTable = useForecast ? FORECAST_STOCK_TABLE : INVENTORY_VIEW_TABLE;
+        const whCol = useForecast ? "warehouse_id" : "default_warehouse";
+        const nameCol = useForecast ? "item_name" : "inventory_name";
+        const queryPool = useForecast ? purchasePool : pool;
 
         let stockJoin = "";
         let stockParams = [];
         if (hasWarehouse && destinations.length) {
-            const match = sqlMatchBranchWarehouses("w", destinations);
+            const match = useForecast
+                ? sqlMatchForecastWarehouses("w", destinations, whCol)
+                : sqlMatchBranchWarehouses("w", destinations);
             stockJoin = `
                 LEFT JOIN (
                     SELECT
@@ -1604,10 +1669,10 @@ export const MySqlService = {
                         SUM(COALESCE(w.available, w.on_hand, 0)) AS available,
                         MIN(w.branch_id) AS branch_id,
                         MIN(w.site_id) AS site_id,
-                        MIN(w.default_warehouse) AS default_warehouse
-                    FROM \`${INVENTORY_VIEW_TABLE}\` w
+                        MIN(w.${whCol}) AS default_warehouse
+                    FROM \`${stockTable}\` w
                     WHERE w.company_id = ?
-                      AND w.default_warehouse != '__catalog__'
+                      AND w.${whCol} != '__catalog__'
                       AND ${match.clause}
                     GROUP BY w.inventory_id, w.company_id
                 ) w ON w.inventory_id = i.inventory_id AND w.company_id = i.company_id`;
@@ -1622,31 +1687,38 @@ export const MySqlService = {
                         SUM(COALESCE(w.available, w.on_hand, 0)) AS available,
                         MIN(w.branch_id) AS branch_id,
                         MIN(w.site_id) AS site_id,
-                        MIN(w.default_warehouse) AS default_warehouse
-                    FROM \`${INVENTORY_VIEW_TABLE}\` w
+                        MIN(w.${whCol}) AS default_warehouse
+                    FROM \`${stockTable}\` w
                     WHERE w.company_id = ?
-                      AND w.default_warehouse != '__catalog__'
+                      AND w.${whCol} != '__catalog__'
                     GROUP BY w.inventory_id, w.company_id
                 ) w ON w.inventory_id = i.inventory_id AND w.company_id = i.company_id`;
             stockParams = [effectiveCompanyId];
         }
 
-        const whereClauses = ["i.company_id = ?", "i.default_warehouse = '__catalog__'"];
+        // Prefer forecast catalog; if missing, distinct warehouse IDs as product list.
+        const [[fisCat]] = useForecast
+            ? await purchasePool.query(
+                `SELECT COUNT(*) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+                 WHERE company_id = ? AND warehouse_id = '__catalog__'`,
+                [effectiveCompanyId]
+              )
+            : [[{ c: 0 }]];
+        const catalogFromForecast = useForecast && Number(fisCat?.c) > 0;
+        const synthesizeCatalog = useForecast && !catalogFromForecast;
+
+        const whereClauses = synthesizeCatalog
+            ? [`i.company_id = ?`]
+            : [`i.company_id = ?`, `i.${whCol} = '__catalog__'`];
         const params = [effectiveCompanyId];
 
         if (searchTerm) {
-            // Case-insensitive contains on ID and description
             whereClauses.push(
-                "(UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.inventory_name, '')) LIKE UPPER(?))"
+                `(UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.${nameCol}, '')) LIKE UPPER(?))`
             );
             params.push(`%${searchTerm}%`, `%${searchTerm}%`);
         }
 
-        if (effectiveCompanyId === "main") {
-            // Catalog rows typically have NULL branch_id — keep them visible
-        }
-
-        // Stock health filters only apply when we have warehouse qty joined
         if (filter && hasWarehouse) {
             if (filter === "low_stock") {
                 whereClauses.push("COALESCE(w.on_hand, 0) > 0 AND COALESCE(w.on_hand, 0) < 10");
@@ -1658,39 +1730,67 @@ export const MySqlService = {
         }
 
         const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
+        // Planning fields live on CMS product row (one per SKU).
+        const planningJoin = useForecast
+            ? `LEFT JOIN \`${inventoryDb}\`.\`${INVENTORY_SYNC_TABLE}\` p
+                 ON TRIM(p.inventory_id) = TRIM(i.inventory_id)
+                AND p.company_id = i.company_id`
+            : "";
+        const planningAlias = useForecast ? "p" : "i";
+
         const selectCols = `
             i.inventory_id as InventoryID,
-            COALESCE(i.inventory_name, i.inventory_id) as Description,
+            COALESCE(i.${nameCol}, i.inventory_id) as Description,
             COALESCE(i.item_class, '') as ItemClass,
             COALESCE(NULLIF(TRIM(w.branch_id), ''), NULLIF(TRIM(w.default_warehouse), ''), ?) as Branch,
             COALESCE(NULLIF(TRIM(w.site_id), ''), NULLIF(TRIM(w.default_warehouse), ''), ?) as SiteID,
             COALESCE(w.on_hand, 0) as OnHand,
             COALESCE(w.available, w.on_hand, 0) as Available,
             COALESCE(i.default_price, 0) as DefaultPrice,
-            ${inventoryPlanningCols("i")},
+            ${inventoryPlanningCols(planningAlias)},
             0 as QtySold`;
+
+        const fromBody = !synthesizeCatalog
+            ? `FROM \`${stockTable}\` i
+               ${planningJoin}
+               ${stockJoin}`
+            : `FROM (
+                 SELECT company_id, TRIM(inventory_id) AS inventory_id,
+                        MAX(${nameCol}) AS ${nameCol},
+                        MAX(item_class) AS item_class,
+                        MAX(default_price) AS default_price,
+                        MAX(item_status) AS item_status,
+                        '__catalog__' AS ${whCol}
+                 FROM \`${stockTable}\`
+                 WHERE company_id = ?
+                   AND ${whCol} != '__catalog__'
+                 GROUP BY company_id, TRIM(inventory_id)
+               ) i
+               ${planningJoin}
+               ${stockJoin}`;
+
+        const fromParams = synthesizeCatalog ? [effectiveCompanyId] : [];
 
         const query = `
             SELECT ${selectCols}
-            FROM \`${INVENTORY_VIEW_TABLE}\` i
-            ${stockJoin}
+            ${fromBody}
             ${wherePart}
             ORDER BY i.inventory_id ASC
             LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
-        const [rows] = await pool.query(query, [
+        const [rows] = await queryPool.query(query, [
             displayBranch || null,
             displayBranch || null,
+            ...fromParams,
             ...stockParams,
             ...params,
         ]);
 
-        const [[{ total }]] = await pool.query(
+        const [[{ total }]] = await queryPool.query(
             `SELECT COUNT(*) as total
-             FROM \`${INVENTORY_VIEW_TABLE}\` i
-             ${stockJoin}
+             ${fromBody}
              ${wherePart}`,
-            [...stockParams, ...params]
+            [...fromParams, ...stockParams, ...params]
         );
 
         return {
@@ -1703,6 +1803,72 @@ export const MySqlService = {
 
     /** Damage / discounted warehouse stock for the Damage KPI modal. */
     async _getDamageInventory({ page, pageSize, offset, searchTerm, effectiveCompanyId }) {
+        await this.ensureForecastItemStockTable();
+        const [[fisDmg]] = await purchasePool.query(
+            `SELECT COUNT(*) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+             WHERE company_id = ?
+               AND (
+                 UPPER(TRIM(COALESCE(warehouse_id,''))) LIKE '%DAMAGE%'
+                 OR UPPER(TRIM(COALESCE(warehouse_id,''))) LIKE '%DISCOUNTED%'
+               )
+               AND COALESCE(on_hand, 0) > 0`,
+            [effectiveCompanyId]
+        );
+        const useForecast = Number(fisDmg?.c) > 0;
+        const limitInt = parseInt(pageSize, 10) || 50;
+        const offsetInt = parseInt(offset, 10) || 0;
+
+        if (useForecast) {
+            const whereClauses = [
+                "i.company_id = ?",
+                "i.warehouse_id != '__catalog__'",
+                `(UPPER(TRIM(COALESCE(i.warehouse_id,''))) LIKE '%DAMAGE%'
+                  OR UPPER(TRIM(COALESCE(i.warehouse_id,''))) LIKE '%DISCOUNTED%'
+                  OR UPPER(TRIM(COALESCE(i.branch_id,''))) LIKE '%DAMAGE%'
+                  OR UPPER(TRIM(COALESCE(i.branch_id,''))) LIKE '%DISCOUNTED%')`,
+                "COALESCE(i.on_hand, 0) > 0",
+            ];
+            const params = [effectiveCompanyId];
+            if (searchTerm) {
+                whereClauses.push(
+                    "(UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.item_name,'')) LIKE UPPER(?))"
+                );
+                params.push(`%${searchTerm}%`, `%${searchTerm}%`);
+            }
+            const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
+            const [rows] = await purchasePool.query(
+                `SELECT
+                    TRIM(i.inventory_id) AS InventoryID,
+                    i.item_name AS Description,
+                    i.item_class AS ItemClass,
+                    i.branch_id AS Branch,
+                    i.site_id AS SiteID,
+                    i.on_hand AS OnHand,
+                    i.available AS Available,
+                    i.default_price AS DefaultPrice,
+                    NULL AS SafetyStock,
+                    NULL AS MOQ,
+                    NULL AS VendorID,
+                    NULL AS LeadTimeDays,
+                    0 AS QtySold
+                 FROM \`${FORECAST_STOCK_TABLE}\` i
+                 ${wherePart}
+                 ORDER BY i.on_hand DESC, TRIM(i.inventory_id) ASC
+                 LIMIT ${limitInt} OFFSET ${offsetInt}`,
+                params
+            );
+            const [[{ total }]] = await purchasePool.query(
+                `SELECT COUNT(*) AS total FROM \`${FORECAST_STOCK_TABLE}\` i ${wherePart}`,
+                params
+            );
+            return {
+                data: mapInventoryRows(rows),
+                totalCount: Number(total) || 0,
+                hasMore: (Number(total) || 0) > offsetInt + limitInt,
+                dataMode: "damage",
+            };
+        }
+
         const damageEx = sqlOnlyDamageBranches("i");
         const whereClauses = [
             "i.company_id = ?",
@@ -1720,8 +1886,6 @@ export const MySqlService = {
         }
 
         const wherePart = `WHERE ${whereClauses.join(" AND ")}`;
-        const limitInt = parseInt(pageSize, 10) || 50;
-        const offsetInt = parseInt(offset, 10) || 0;
 
         const [rows] = await pool.query(
             `SELECT
@@ -1841,7 +2005,7 @@ export const MySqlService = {
      * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
     async getGlobalStats(branch = "", search = "", companyId = "main") {
-        const cacheKey = `global-stats-v6:${companyId}:${branch}:${search}`;
+        const cacheKey = `global-stats-v7:${companyId}:${branch}:${search}`;
         return getCached(cacheKey, 120_000, () => this._computeGlobalStats(branch, search, companyId));
     },
 
@@ -1854,6 +2018,7 @@ export const MySqlService = {
                 return { ...EMPTY_GLOBAL_STATS };
             }
 
+            await this.ensureForecastItemStockTable();
             await this.ensureCatalogRowsFromWarehouse(effectiveCompanyId);
 
             const catalogCount = await countCatalogRows(effectiveCompanyId);
@@ -1869,38 +2034,59 @@ export const MySqlService = {
                 };
             }
 
+            await this.ensureForecastItemStockTable();
+            const [[fisWh]] = await purchasePool.query(
+                `SELECT COUNT(*) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+                 WHERE company_id = ? AND warehouse_id != '__catalog__'`,
+                [effectiveCompanyId]
+            );
+            const useForecast = Number(fisWh?.c) > 0;
+            const whCol = useForecast ? "warehouse_id" : "default_warehouse";
+            const nameCol = useForecast ? "item_name" : "inventory_name";
+            const queryPool = useForecast ? purchasePool : pool;
+
             let whereClauses = [
                 "i.company_id = ?",
-                "i.default_warehouse IS NOT NULL",
-                "i.default_warehouse != '__catalog__'",
+                `i.${whCol} IS NOT NULL`,
+                `i.${whCol} != '__catalog__'`,
             ];
             let params = [effectiveCompanyId];
 
-            const branchEx = sqlExcludeBranches("i");
-            whereClauses.push(branchEx.clause);
-            params.push(...branchEx.params);
+            if (useForecast) {
+                const damageEx = sqlExcludeForecastDamage("i", whCol);
+                whereClauses.push(damageEx.clause);
+                params.push(...damageEx.params);
+            } else {
+                const branchEx = sqlExcludeBranches("i");
+                whereClauses.push(branchEx.clause);
+                params.push(...branchEx.params);
+            }
 
             if (branch) {
                 const destinations = getStockWarehouseIdsForBranch(branch);
-                const match = sqlMatchBranchWarehouses("i", destinations);
+                const match = useForecast
+                    ? sqlMatchForecastWarehouses("i", destinations, whCol)
+                    : sqlMatchBranchWarehouses("i", destinations);
                 whereClauses.push(match.clause);
                 params.push(...match.params);
             }
 
-            if (effectiveCompanyId === "main") {
-                const ecomEx = sqlExcludeEcomBranches("i");
-                whereClauses.push(ecomEx.clause);
-                params.push(...ecomEx.params);
-            } else if (effectiveCompanyId === "ecommerce") {
-                const ecomOnly = sqlOnlyEcomBranches("i");
-                whereClauses.push(ecomOnly.clause);
-                params.push(...ecomOnly.params);
+            if (!useForecast) {
+                if (effectiveCompanyId === "main") {
+                    const ecomEx = sqlExcludeEcomBranches("i");
+                    whereClauses.push(ecomEx.clause);
+                    params.push(...ecomEx.params);
+                } else if (effectiveCompanyId === "ecommerce") {
+                    const ecomOnly = sqlOnlyEcomBranches("i");
+                    whereClauses.push(ecomOnly.clause);
+                    params.push(...ecomOnly.params);
+                }
             }
 
             if (search) {
                 const searchTerm = normalizeInventorySearch(search);
                 whereClauses.push(
-                    "(UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(c.inventory_name, i.inventory_name, '')) LIKE UPPER(?))"
+                    `(UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(c.${nameCol}, i.${nameCol}, '')) LIKE UPPER(?))`
                 );
                 params.push(`%${searchTerm}%`, `%${searchTerm}%`);
             }
@@ -1912,8 +2098,8 @@ export const MySqlService = {
                 ? [...salesEx.params, branch]
                 : [...salesEx.params];
 
-            const fromClause = inventoryFromClause("warehouse");
-            const priceExpr = "COALESCE(c.default_price, i.default_price, 0)";
+            const fromClause = inventoryFromClause("warehouse", { useForecast, purchaseDb });
+            const priceExpr = `COALESCE(c.default_price, i.default_price, 0)`;
 
             const query = `
                 SELECT
@@ -1930,40 +2116,64 @@ export const MySqlService = {
                  LEFT JOIN ${netSalesQtySubquery(purchaseDb, salesEx, branch)} s ON i.inventory_id = s.inventory_id
                  ${wherePart}`;
 
-            const [[stats]] = await pool.query(query, [...salesParams, ...params]);
+            const [[stats]] = await queryPool.query(query, [...salesParams, ...params]);
 
-            // Damage warehouse rows (synced separately; excluded from sellable totals above)
-            const damageEx = sqlOnlyDamageBranches("i");
-            const damageParams = [effectiveCompanyId, ...damageEx.params];
-            let damageWhere = `WHERE i.company_id = ? AND i.default_warehouse != '__catalog__' AND ${damageEx.clause}`;
+            // Damage warehouse rows
+            const damageParams = [effectiveCompanyId];
+            let damageWhere;
+            if (useForecast) {
+                damageWhere = `WHERE i.company_id = ? AND i.warehouse_id != '__catalog__'
+                  AND (
+                    UPPER(TRIM(COALESCE(i.warehouse_id,''))) LIKE '%DAMAGE%'
+                    OR UPPER(TRIM(COALESCE(i.warehouse_id,''))) LIKE '%DISCOUNTED%'
+                    OR UPPER(TRIM(COALESCE(i.branch_id,''))) LIKE '%DAMAGE%'
+                    OR UPPER(TRIM(COALESCE(i.branch_id,''))) LIKE '%DISCOUNTED%'
+                  )`;
+            } else {
+                const damageEx = sqlOnlyDamageBranches("i");
+                damageWhere = `WHERE i.company_id = ? AND i.default_warehouse != '__catalog__' AND ${damageEx.clause}`;
+                damageParams.push(...damageEx.params);
+            }
             if (search) {
                 const searchTerm = normalizeInventorySearch(search);
                 damageWhere +=
-                    " AND (UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.inventory_name,'')) LIKE UPPER(?))";
+                    ` AND (UPPER(i.inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(i.${nameCol},'')) LIKE UPPER(?))`;
                 damageParams.push(`%${searchTerm}%`, `%${searchTerm}%`);
             }
-            const [[damageStats]] = await pool.query(
+            const damageFrom = useForecast
+                ? `\`${purchaseDb}\`.\`${FORECAST_STOCK_TABLE}\``
+                : `\`${INVENTORY_VIEW_TABLE}\``;
+            const [[damageStats]] = await queryPool.query(
                 `SELECT
                     COALESCE(SUM(COALESCE(i.on_hand, 0)), 0) AS damageStock,
                     COUNT(DISTINCT CASE WHEN COALESCE(i.on_hand, 0) > 0 THEN i.inventory_id END) AS damageCount
-                 FROM \`${INVENTORY_VIEW_TABLE}\` i
+                 FROM ${damageFrom} i
                  ${damageWhere}`,
                 damageParams
             );
 
             // Prefer catalog count, but never under-report when warehouse has more distinct items
-            // (happens if catalog rows were wiped while stock levels remain).
             const warehouseProducts = Number(stats.totalProducts) || 0;
             let productCount = Math.max(catalogCount, warehouseProducts);
             if (search) {
                 const searchTerm = normalizeInventorySearch(search);
-                const [[catSearch]] = await pool.query(
-                    `SELECT COUNT(*) AS c FROM \`${INVENTORY_VIEW_TABLE}\`
-                     WHERE company_id = ? AND default_warehouse = '__catalog__'
-                       AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(inventory_name,'')) LIKE UPPER(?))`,
-                    [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
-                );
-                productCount = Math.max(Number(catSearch?.c) || 0, warehouseProducts);
+                if (useForecast) {
+                    const [[catSearch]] = await purchasePool.query(
+                        `SELECT COUNT(*) AS c FROM \`${FORECAST_STOCK_TABLE}\`
+                         WHERE company_id = ? AND warehouse_id = '__catalog__'
+                           AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(item_name,'')) LIKE UPPER(?))`,
+                        [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
+                    );
+                    productCount = Math.max(Number(catSearch?.c) || 0, warehouseProducts);
+                } else {
+                    const [[catSearch]] = await pool.query(
+                        `SELECT COUNT(*) AS c FROM \`${INVENTORY_VIEW_TABLE}\`
+                         WHERE company_id = ? AND default_warehouse = '__catalog__'
+                           AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(inventory_name,'')) LIKE UPPER(?))`,
+                        [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
+                    );
+                    productCount = Math.max(Number(catSearch?.c) || 0, warehouseProducts);
+                }
             }
 
             return {
@@ -3934,10 +4144,13 @@ export const MySqlService = {
             }
             await connection.commit();
             invalidateCache("branches:");
+            invalidateCache("global-stats-v7:");
             invalidateCache("global-stats-v6:");
             invalidateCache("global-stats-v5:");
             invalidateCache("global-stats-v4:");
             invalidateCache("global-stats-v3:");
+            invalidateCache(`wh-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
+            invalidateCache(`cat-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
             invalidateCache(`wh-count:${INVENTORY_SYNC_TABLE}:`);
             invalidateCache(`cat-count:${INVENTORY_SYNC_TABLE}:`);
             await this.upsertForecastItemStockRows(
@@ -3965,41 +4178,36 @@ export const MySqlService = {
     },
 
     /**
-     * Recreate missing __catalog__ product rows from warehouse stock metadata.
-     * Prevents Inventory list showing only a handful of CMS leftovers when stock
-     * levels exist but catalog rows were deleted or collapsed.
+     * Ensure multi-warehouse stock catalog rows exist in forecast_item_stock.
+     * NOTE: product_inventory_items is CMS one-row-per-SKU (trigger blocks twins) —
+     * do not try to insert __catalog__ alongside warehouse rows there.
      */
     async ensureCatalogRowsFromWarehouse(companyId = "main") {
         try {
-            const [result] = await pool.query(
-                `INSERT INTO \`${INVENTORY_SYNC_TABLE}\`
-                    (inventory_id, company_id, default_warehouse, inventory_name, item_class,
-                     default_price, item_status, base_unit, type, posting_class,
-                     vendor_id, lead_time_days, safety_stock, moq, last_sync)
+            await this.ensureForecastItemStockTable();
+            const [result] = await purchasePool.query(
+                `INSERT INTO \`${FORECAST_STOCK_TABLE}\`
+                    (company_id, inventory_id, warehouse_id, item_name, item_class,
+                     default_price, on_hand, available, item_status, last_sync)
                  SELECT
-                    TRIM(w.inventory_id),
                     w.company_id,
+                    TRIM(w.inventory_id),
                     '__catalog__',
-                    MAX(NULLIF(TRIM(w.inventory_name), '')),
+                    MAX(NULLIF(TRIM(w.item_name), '')),
                     MAX(NULLIF(TRIM(w.item_class), '')),
                     MAX(w.default_price),
+                    0,
+                    0,
                     MAX(NULLIF(TRIM(w.item_status), '')),
-                    MAX(NULLIF(TRIM(w.base_unit), '')),
-                    MAX(NULLIF(TRIM(w.type), '')),
-                    MAX(NULLIF(TRIM(w.posting_class), '')),
-                    MAX(NULLIF(TRIM(w.vendor_id), '')),
-                    MAX(w.lead_time_days),
-                    MAX(w.safety_stock),
-                    MAX(w.moq),
                     MAX(w.last_sync)
-                 FROM \`${INVENTORY_SYNC_TABLE}\` w
+                 FROM \`${FORECAST_STOCK_TABLE}\` w
                  WHERE w.company_id = ?
-                   AND w.default_warehouse != '__catalog__'
+                   AND w.warehouse_id != '__catalog__'
                    AND TRIM(COALESCE(w.inventory_id, '')) != ''
                    AND NOT EXISTS (
-                        SELECT 1 FROM \`${INVENTORY_SYNC_TABLE}\` c
+                        SELECT 1 FROM \`${FORECAST_STOCK_TABLE}\` c
                         WHERE c.company_id = w.company_id
-                          AND c.default_warehouse = '__catalog__'
+                          AND c.warehouse_id = '__catalog__'
                           AND TRIM(c.inventory_id) = TRIM(w.inventory_id)
                    )
                  GROUP BY TRIM(w.inventory_id), w.company_id`,
@@ -4007,10 +4215,10 @@ export const MySqlService = {
             );
             const inserted = result.affectedRows || 0;
             if (inserted > 0) {
-                invalidateCache(`cat-count:${INVENTORY_SYNC_TABLE}:`);
-                invalidateCache("global-stats-v6:");
+                invalidateCache(`cat-count:fis-or-`);
+                invalidateCache("global-stats-v7:");
                 console.log(
-                    `[MySQL] ensureCatalogRowsFromWarehouse(${companyId}): restored ${inserted} catalog rows`
+                    `[MySQL] ensureCatalogRowsFromWarehouse(${companyId}): restored ${inserted} forecast catalog rows`
                 );
             }
             return inserted;
