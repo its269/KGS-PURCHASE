@@ -645,8 +645,9 @@ export async function POST(request) {
                     }
                 }
 
-                // 2. INVENTORY — one KGSC fetch, split stock into main vs ecommerce (ECOMMERCE branch)
+                // 2. INVENTORY — multi-warehouse stock goes to forecast_item_stock (CMS is one-SKU)
                 if (options.inventory) {
+                  try {
                     let invCookie = effectiveCookie;
                     let totalSynced = 0;
                     try {
@@ -852,6 +853,17 @@ export async function POST(request) {
                         inventoryRowsSynced = totalLevelsSynced || totalSynced;
                         send({ section: "Inventory", status: "done", details: `Inventory sync complete (${totalLevelsSynced} stock rows).`, progress: 100 });
                     }
+                  } catch (invErr) {
+                    console.error(">>> [Sync API] Inventory sync error:", invErr.message);
+                    await MySqlService.logSyncEvent(options.mode, "Inventory", "error", 0, invErr.message);
+                    send({
+                        section: "Inventory",
+                        status: "error",
+                        details: `Inventory sync error: ${invErr.message}`,
+                        progress: 0,
+                    });
+                    // Continue Sales / PO — do not fail the whole Quick Sync on CMS SKU conflicts.
+                  }
                 }
 
                 // 3. SALES (SalesInvoice + AR credit/debit memos, line-level branch)

@@ -101,6 +101,15 @@ function isTransientMysqlError(err) {
     );
 }
 
+/** Connect CMS trigger: product_inventory_items allows only one row per inventory_id. */
+function isCmsSkuTwinError(err) {
+    const msg = String(err?.sqlMessage || err?.message || "");
+    return (
+        err?.errno === 1644 ||
+        /one row per SKU|Refusing duplicate inventory_id/i.test(msg)
+    );
+}
+
 async function withMysqlRetry(label, fn, retries = 3) {
     let lastErr = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
@@ -2005,7 +2014,7 @@ export const MySqlService = {
      * Calculate global stats (Total Value, Low Stock, Dead Stock, Overstock, etc.)
      */
     async getGlobalStats(branch = "", search = "", companyId = "main") {
-        const cacheKey = `global-stats-v7:${companyId}:${branch}:${search}`;
+        const cacheKey = `global-stats-v8:${companyId}:${branch}:${search}`;
         return getCached(cacheKey, 120_000, () => this._computeGlobalStats(branch, search, companyId));
     },
 
@@ -2152,9 +2161,12 @@ export const MySqlService = {
                 damageParams
             );
 
-            // Prefer catalog count, but never under-report when warehouse has more distinct items
+            // Prefer catalog count for all-branches; when a branch is selected use that site's SKU count
+            // so "products in MAIN" matches Total Stocks scope (not network-wide catalog).
             const warehouseProducts = Number(stats.totalProducts) || 0;
-            let productCount = Math.max(catalogCount, warehouseProducts);
+            let productCount = branch
+                ? warehouseProducts || catalogCount
+                : Math.max(catalogCount, warehouseProducts);
             if (search) {
                 const searchTerm = normalizeInventorySearch(search);
                 if (useForecast) {
@@ -2164,7 +2176,8 @@ export const MySqlService = {
                            AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(item_name,'')) LIKE UPPER(?))`,
                         [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
                     );
-                    productCount = Math.max(Number(catSearch?.c) || 0, warehouseProducts);
+                    const catHits = Number(catSearch?.c) || 0;
+                    productCount = branch ? warehouseProducts || catHits : Math.max(catHits, warehouseProducts);
                 } else {
                     const [[catSearch]] = await pool.query(
                         `SELECT COUNT(*) AS c FROM \`${INVENTORY_VIEW_TABLE}\`
@@ -2172,7 +2185,8 @@ export const MySqlService = {
                            AND (UPPER(inventory_id) LIKE UPPER(?) OR UPPER(COALESCE(inventory_name,'')) LIKE UPPER(?))`,
                         [effectiveCompanyId, `%${searchTerm}%`, `%${searchTerm}%`]
                     );
-                    productCount = Math.max(Number(catSearch?.c) || 0, warehouseProducts);
+                    const catHits = Number(catSearch?.c) || 0;
+                    productCount = branch ? warehouseProducts || catHits : Math.max(catHits, warehouseProducts);
                 }
             }
 
@@ -3973,7 +3987,8 @@ export const MySqlService = {
     _planningColsReady: false,
 
     /**
-     * Bulk-update catalog fields on product_inventory_items (sync destination).
+     * Bulk-update catalog fields on product_inventory_items (CMS one-row-per-SKU).
+     * Also mirrors catalog into forecast_item_stock (Inventory source of truth).
      */
     async upsertInventoryItems(items, companyId = "main") {
         if (!items.length) return;
@@ -3981,71 +3996,98 @@ export const MySqlService = {
         const CHUNK = 200;
         const now = new Date();
         const safeNum = (v) => { const n = Number(v); return (isNaN(n) ? null : n); };
-        const connection = await pool.getConnection();
-        try {
-            await connection.beginTransaction();
-            for (let i = 0; i < items.length; i += CHUNK) {
-                const chunk = items.slice(i, i + CHUNK);
-                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
-                const values = chunk.flatMap(item => [
-                    String(item.inventory_id || "").trim(),
-                    companyId,
-                    '__catalog__',
-                    item.description,
-                    item.item_class,
-                    safeNum(item.default_price),
-                    item.item_status || 'active',
-                    item.base_unit || '',
-                    item.item_type || '',
-                    item.posting_class || '',
-                    item.vendor_id || null,
-                    item.lead_time_days != null ? parseInt(item.lead_time_days, 10) : null,
-                    safeNum(item.safety_stock),
-                    safeNum(item.moq),
-                    now,
-                ]);
-                await connection.query(
-                    `INSERT INTO \`${INVENTORY_SYNC_TABLE}\`
-                        (inventory_id, company_id, default_warehouse, inventory_name, item_class,
-                        default_price, item_status, base_unit, type, posting_class,
-                        vendor_id, lead_time_days, safety_stock, moq, last_sync)
-                    VALUES ${placeholders}
-                    ON DUPLICATE KEY UPDATE
-                        inventory_name = VALUES(inventory_name),
-                        item_class     = VALUES(item_class),
-                        default_price  = VALUES(default_price),
-                        item_status    = VALUES(item_status),
-                        base_unit      = VALUES(base_unit),
-                        type           = COALESCE(NULLIF(VALUES(type),''), type),
-                        posting_class  = COALESCE(NULLIF(VALUES(posting_class),''), posting_class),
-                        vendor_id      = COALESCE(NULLIF(VALUES(vendor_id),''), vendor_id),
-                        lead_time_days = COALESCE(VALUES(lead_time_days), lead_time_days),
-                        safety_stock   = COALESCE(VALUES(safety_stock), safety_stock),
-                        moq            = COALESCE(VALUES(moq), moq),
-                        last_sync      = VALUES(last_sync)`,
-                    values
-                );
+
+        // Forecast catalog first — Inventory KPIs read from here.
+        await this.upsertForecastItemStockRows(
+            items.map((item) => ({
+                inventory_id: item.inventory_id,
+                warehouse_id: "__catalog__",
+                item_name: item.description,
+                item_class: item.item_class,
+                default_price: item.default_price,
+                on_hand: 0,
+                available: 0,
+                item_status: item.item_status,
+            })),
+            companyId
+        );
+
+        // CMS product table: update existing SKU row, or insert once if missing.
+        // Never insert a second warehouse/catalog twin (Connect trigger blocks it).
+        for (let i = 0; i < items.length; i += CHUNK) {
+            const chunk = items.slice(i, i + CHUNK);
+            for (const item of chunk) {
+                const invId = String(item.inventory_id || "").trim();
+                if (!invId) continue;
+                try {
+                    const [upd] = await pool.query(
+                        `UPDATE \`${INVENTORY_SYNC_TABLE}\`
+                         SET inventory_name = COALESCE(?, inventory_name),
+                             item_class = COALESCE(?, item_class),
+                             default_price = COALESCE(?, default_price),
+                             item_status = COALESCE(?, item_status),
+                             base_unit = COALESCE(NULLIF(?, ''), base_unit),
+                             type = COALESCE(NULLIF(?, ''), type),
+                             posting_class = COALESCE(NULLIF(?, ''), posting_class),
+                             vendor_id = COALESCE(NULLIF(?, ''), vendor_id),
+                             lead_time_days = COALESCE(?, lead_time_days),
+                             safety_stock = COALESCE(?, safety_stock),
+                             moq = COALESCE(?, moq),
+                             last_sync = ?
+                         WHERE company_id = ? AND TRIM(inventory_id) = ?`,
+                        [
+                            item.description || null,
+                            item.item_class || null,
+                            safeNum(item.default_price),
+                            item.item_status || "active",
+                            item.base_unit || "",
+                            item.item_type || "",
+                            item.posting_class || "",
+                            item.vendor_id || null,
+                            item.lead_time_days != null ? parseInt(item.lead_time_days, 10) : null,
+                            safeNum(item.safety_stock),
+                            safeNum(item.moq),
+                            now,
+                            companyId,
+                            invId,
+                        ]
+                    );
+                    if ((upd.affectedRows || 0) > 0) continue;
+                    await pool.query(
+                        `INSERT INTO \`${INVENTORY_SYNC_TABLE}\`
+                            (inventory_id, company_id, default_warehouse, inventory_name, item_class,
+                             default_price, item_status, base_unit, type, posting_class,
+                             vendor_id, lead_time_days, safety_stock, moq, last_sync)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                        [
+                            invId,
+                            companyId,
+                            "__catalog__",
+                            item.description || null,
+                            item.item_class || null,
+                            safeNum(item.default_price),
+                            item.item_status || "active",
+                            item.base_unit || "",
+                            item.item_type || "",
+                            item.posting_class || "",
+                            item.vendor_id || null,
+                            item.lead_time_days != null ? parseInt(item.lead_time_days, 10) : null,
+                            safeNum(item.safety_stock),
+                            safeNum(item.moq),
+                            now,
+                        ]
+                    );
+                } catch (err) {
+                    if (isCmsSkuTwinError(err)) {
+                        console.warn(
+                            `[MySQL upsertInventoryItems] CMS one-SKU skip insert for ${invId}`
+                        );
+                        continue;
+                    }
+                    console.error("[MySQL upsertInventoryItems Error]", err);
+                    throw err;
+                }
             }
-            await connection.commit();
-            await this.upsertForecastItemStockRows(
-                items.map((item) => ({
-                    inventory_id: item.inventory_id,
-                    warehouse_id: "__catalog__",
-                    item_name: item.description,
-                    item_class: item.item_class,
-                    default_price: item.default_price,
-                    on_hand: 0,
-                    available: 0,
-                    item_status: item.item_status,
-                })),
-                companyId
-            );
-        } catch (err) {
-            await connection.rollback();
-            console.error('[MySQL upsertInventoryItems Error]', err);
-            throw err;
-        } finally {
-            connection.release();
         }
     },
 
@@ -4089,91 +4131,98 @@ export const MySqlService = {
     },
 
     /**
-     * Bulk upsert inventory levels into product_inventory_items (sync destination).
+     * Write warehouse stock levels.
+     * Source of truth = forecast_item_stock (multi-warehouse).
+     * CMS product_inventory_items stays one row per SKU — only mirror MAIN qty onto that row.
      */
     async upsertInventoryLevels(levels, companyId = "main") {
         if (!levels.length) return;
-        await this.ensureProductInventoryItemsTable();
-        const CHUNK = 200;
         const now = new Date();
-        const safeNum = (v) => { const n = Number(v); return (isNaN(n) ? null : n); };
-        const connection = await pool.getConnection();
-        try {
-            await connection.beginTransaction();
-            for (let i = 0; i < levels.length; i += CHUNK) {
-                const chunk = levels.slice(i, i + CHUNK);
-                const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
-                const values = chunk.flatMap(l => [
-                    String(l.inventory_id || "").trim(),
-                    companyId,
-                    String(l.warehouse_id || l.branch_id || "").trim(),
-                    l.description || null,
-                    l.item_class ?? "",
-                    safeNum(l.default_price),
-                    l.item_status || 'active',
-                    l.base_unit || '',
-                    l.item_type || '',
-                    l.posting_class || '',
-                    String(l.branch_id || "").trim(),
-                    String(l.site_id || "").trim(),
-                    safeNum(l.on_hand) ?? 0,
-                    safeNum(l.available) ?? 0,
-                    now,
-                ]);
-                await connection.query(
-                    `INSERT INTO \`${INVENTORY_SYNC_TABLE}\`
-                        (inventory_id, company_id, default_warehouse, inventory_name, item_class,
-                        default_price, item_status, base_unit, type, posting_class,
-                        branch_id, site_id, on_hand, available, last_sync)
-                    VALUES ${placeholders}
-                    ON DUPLICATE KEY UPDATE
-                        on_hand        = VALUES(on_hand),
-                        available      = VALUES(available),
-                        branch_id      = VALUES(branch_id),
-                        site_id        = VALUES(site_id),
-                        inventory_name = COALESCE(VALUES(inventory_name), inventory_name),
-                        item_class     = COALESCE(VALUES(item_class),     item_class),
-                        default_price  = COALESCE(VALUES(default_price),  default_price),
-                        item_status    = COALESCE(VALUES(item_status),    item_status),
-                        base_unit      = COALESCE(VALUES(base_unit),      base_unit),
-                        type           = COALESCE(NULLIF(VALUES(type),''), type),
-                        posting_class  = COALESCE(NULLIF(VALUES(posting_class),''), posting_class),
-                        last_sync      = VALUES(last_sync)`,
-                    values
-                );
+        const safeNum = (v) => {
+            const n = Number(v);
+            return Number.isFinite(n) ? n : 0;
+        };
+
+        // 1) Multi-warehouse stock for Inventory UI
+        await this.upsertForecastItemStockRows(
+            levels.map((l) => ({
+                inventory_id: l.inventory_id,
+                warehouse_id: l.warehouse_id || l.branch_id || "",
+                branch_id: l.branch_id || "",
+                site_id: l.site_id || "",
+                item_name: l.description,
+                item_class: l.item_class,
+                default_price: l.default_price,
+                on_hand: l.on_hand,
+                available: l.available,
+                item_status: l.item_status,
+            })),
+            companyId
+        );
+
+        invalidateCache("branches:");
+        invalidateCache("global-stats-v8:");
+        invalidateCache("global-stats-v7:");
+        invalidateCache("global-stats-v6:");
+        invalidateCache(`wh-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
+        invalidateCache(`cat-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
+
+        // 2) Best-effort CMS mirror: update existing SKU row only (no warehouse twins).
+        await this.ensureProductInventoryItemsTable();
+        for (const l of levels) {
+            const invId = String(l.inventory_id || "").trim();
+            const wh = String(l.warehouse_id || l.branch_id || "").trim().toUpperCase();
+            if (!invId) continue;
+            // Prefer MAIN qty on the single CMS product row; otherwise refresh metadata only.
+            const setQty = wh === "MAIN" || wh === "MAIN WH11";
+            try {
+                if (setQty) {
+                    await pool.query(
+                        `UPDATE \`${INVENTORY_SYNC_TABLE}\`
+                         SET on_hand = ?,
+                             available = ?,
+                             inventory_name = COALESCE(?, inventory_name),
+                             item_class = COALESCE(?, item_class),
+                             default_price = COALESCE(?, default_price),
+                             item_status = COALESCE(?, item_status),
+                             last_sync = ?
+                         WHERE company_id = ? AND TRIM(inventory_id) = ?`,
+                        [
+                            safeNum(l.on_hand),
+                            safeNum(l.available ?? l.on_hand),
+                            l.description || null,
+                            l.item_class || null,
+                            safeNum(l.default_price),
+                            l.item_status || "active",
+                            now,
+                            companyId,
+                            invId,
+                        ]
+                    );
+                } else {
+                    await pool.query(
+                        `UPDATE \`${INVENTORY_SYNC_TABLE}\`
+                         SET inventory_name = COALESCE(?, inventory_name),
+                             item_class = COALESCE(?, item_class),
+                             default_price = COALESCE(?, default_price),
+                             item_status = COALESCE(?, item_status),
+                             last_sync = ?
+                         WHERE company_id = ? AND TRIM(inventory_id) = ?`,
+                        [
+                            l.description || null,
+                            l.item_class || null,
+                            safeNum(l.default_price),
+                            l.item_status || "active",
+                            now,
+                            companyId,
+                            invId,
+                        ]
+                    );
+                }
+            } catch (err) {
+                if (isCmsSkuTwinError(err)) continue;
+                console.warn("[MySQL upsertInventoryLevels CMS mirror]", err.message);
             }
-            await connection.commit();
-            invalidateCache("branches:");
-            invalidateCache("global-stats-v7:");
-            invalidateCache("global-stats-v6:");
-            invalidateCache("global-stats-v5:");
-            invalidateCache("global-stats-v4:");
-            invalidateCache("global-stats-v3:");
-            invalidateCache(`wh-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
-            invalidateCache(`cat-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
-            invalidateCache(`wh-count:${INVENTORY_SYNC_TABLE}:`);
-            invalidateCache(`cat-count:${INVENTORY_SYNC_TABLE}:`);
-            await this.upsertForecastItemStockRows(
-                levels.map((l) => ({
-                    inventory_id: l.inventory_id,
-                    warehouse_id: l.warehouse_id || l.branch_id || "",
-                    branch_id: l.branch_id || "",
-                    site_id: l.site_id || "",
-                    item_name: l.description,
-                    item_class: l.item_class,
-                    default_price: l.default_price,
-                    on_hand: l.on_hand,
-                    available: l.available,
-                    item_status: l.item_status,
-                })),
-                companyId
-            );
-        } catch (err) {
-            await connection.rollback();
-            console.error('[MySQL upsertInventoryLevels Error]', err);
-            throw err;
-        } finally {
-            connection.release();
         }
     },
 
@@ -4249,12 +4298,13 @@ export const MySqlService = {
     /** Warehouses refreshed at/after sync start (used to guard stale prune). */
     async countFreshWarehouses(syncStartedAt, companyId = "main") {
         try {
+            await this.ensureForecastItemStockTable();
             const cutoff = new Date(new Date(syncStartedAt).getTime() - 2 * 60 * 1000);
-            const [[row]] = await pool.query(
-                `SELECT COUNT(DISTINCT default_warehouse) AS c
-                 FROM \`${INVENTORY_SYNC_TABLE}\`
+            const [[row]] = await purchasePool.query(
+                `SELECT COUNT(DISTINCT warehouse_id) AS c
+                 FROM \`${FORECAST_STOCK_TABLE}\`
                  WHERE company_id = ?
-                   AND default_warehouse != '__catalog__'
+                   AND warehouse_id != '__catalog__'
                    AND last_sync IS NOT NULL
                    AND last_sync >= ?`,
                 [companyId, cutoff]
@@ -4266,18 +4316,21 @@ export const MySqlService = {
         }
     },
 
-    /** Remove stock rows not refreshed during the current sync run (sync table). */
+    /** Remove forecast warehouse rows not refreshed during the current full sync run. */
     async deleteStaleInventoryLevels(syncStartedAt, companyId = "main") {
         try {
+            await this.ensureForecastItemStockTable();
             // 2-minute buffer so freshly upserted rows are never removed due to clock skew
             const cutoff = new Date(new Date(syncStartedAt).getTime() - 2 * 60 * 1000);
-            const [result] = await pool.query(
-                `DELETE FROM \`${INVENTORY_SYNC_TABLE}\`
+            const [result] = await purchasePool.query(
+                `DELETE FROM \`${FORECAST_STOCK_TABLE}\`
                  WHERE company_id = ?
-                   AND default_warehouse != '__catalog__'
+                   AND warehouse_id != '__catalog__'
                    AND (last_sync IS NULL OR last_sync < ?)`,
                 [companyId, cutoff]
             );
+            invalidateCache("global-stats-v8:");
+            invalidateCache(`wh-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
             return result.affectedRows || 0;
         } catch (err) {
             console.error("[MySQL deleteStaleInventoryLevels Error]", err);
@@ -4308,19 +4361,26 @@ export const MySqlService = {
         }
     },
 
-    /** Remove stock rows for specific items before re-importing from Acumatica (sync table). */
+    /**
+     * Remove warehouse stock rows before re-importing an item batch (Quick/Full sync).
+     * Deletes from forecast_item_stock only — never wipe CMS product_inventory_items SKUs.
+     */
     async deleteInventoryLevelsForItems(itemIds, companyId = "main") {
         const ids = [...new Set(itemIds.map((id) => String(id || "").trim()).filter(Boolean))];
         if (!ids.length) return 0;
         try {
+            await this.ensureForecastItemStockTable();
             const placeholders = ids.map(() => "?").join(",");
-            const [result] = await pool.query(
-                `DELETE FROM \`${INVENTORY_SYNC_TABLE}\`
+            const [result] = await purchasePool.query(
+                `DELETE FROM \`${FORECAST_STOCK_TABLE}\`
                  WHERE company_id = ?
-                   AND default_warehouse != '__catalog__'
+                   AND warehouse_id != '__catalog__'
                    AND TRIM(inventory_id) IN (${placeholders})`,
                 [companyId, ...ids]
             );
+            invalidateCache("global-stats-v8:");
+            invalidateCache("global-stats-v7:");
+            invalidateCache(`wh-count:fis-or-${INVENTORY_SYNC_TABLE}:`);
             return result.affectedRows || 0;
         } catch (err) {
             console.error("[MySQL deleteInventoryLevelsForItems Error]", err);

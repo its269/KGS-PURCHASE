@@ -282,8 +282,11 @@ export default function DashboardPage() {
     const [statsLoading, setStatsLoading] = useState(true);
     const [exporting, setExporting] = useState(false);
     const [companyLabel, setCompanyLabel] = useState("KGSC");
+    const [filtersReady, setFiltersReady] = useState(false);
 
     const searchTimer = useRef(null);
+    const statsAbortRef = useRef(null);
+    const tableAbortRef = useRef(null);
     useEffect(() => {
         Promise.resolve().then(() => {
             const b = localStorage.getItem("db_filter_branch") || "";
@@ -295,6 +298,7 @@ export default function DashboardPage() {
             if (s) setSearch(s);
             if (p > 1) setPage(p);
             if (u !== "User") setUserName(u);
+            setFiltersReady(true);
         });
     }, []);
 
@@ -390,6 +394,9 @@ export default function DashboardPage() {
 
     /* ── Fetch Data ───────────────────────────────────────── */
     const fetchInventoryTable = useCallback(async () => {
+        if (tableAbortRef.current) tableAbortRef.current.abort();
+        const ac = new AbortController();
+        tableAbortRef.current = ac;
         setLoading(true);
         try {
             const dataParams = new URLSearchParams({
@@ -403,21 +410,29 @@ export default function DashboardPage() {
                 source: "mysql",
             });
 
-            const res = await fetchWithAuth(`/api/inventory?${dataParams.toString()}`);
+            const res = await fetchWithAuth(`/api/inventory?${dataParams.toString()}`, {
+                signal: ac.signal,
+            });
+            if (ac.signal.aborted) return;
             if (res.ok) {
                 const result = await res.json();
+                if (ac.signal.aborted) return;
                 setAllInventory(result.data || []);
                 setDataSource(result.source || "mysql");
                 setTotalCount(result.totalCount || 0);
                 setHasMore(!!result.hasMore);
             }
         } catch (e) {
+            if (e?.name === "AbortError") return;
             if (e.message !== "Unauthorized") console.error("Fetch error", e);
         }
-        setLoading(false);
+        if (!ac.signal.aborted) setLoading(false);
     }, [page, debouncedSearch, selectedBranch]);
 
     const fetchInventoryStats = useCallback(async () => {
+        if (statsAbortRef.current) statsAbortRef.current.abort();
+        const ac = new AbortController();
+        statsAbortRef.current = ac;
         setStatsLoading(true);
         try {
             const statsParams = new URLSearchParams({
@@ -427,9 +442,13 @@ export default function DashboardPage() {
                 source: "mysql",
             });
 
-            const res = await fetchWithAuth(`/api/inventory?${statsParams.toString()}`);
+            const res = await fetchWithAuth(`/api/inventory?${statsParams.toString()}`, {
+                signal: ac.signal,
+            });
+            if (ac.signal.aborted) return;
             if (res.ok) {
                 const result = await res.json();
+                if (ac.signal.aborted) return;
                 if (result.globalStats) {
                     setGlobalStats(result.globalStats);
                     // Backfill DAMAGE / DISCOUNTED qty once when the card is still empty
@@ -451,16 +470,19 @@ export default function DashboardPage() {
                             })
                             .then((r) => (r && r.ok ? r.json() : null))
                             .then((fresh) => {
-                                if (fresh?.globalStats) setGlobalStats(fresh.globalStats);
+                                if (fresh?.globalStats && !ac.signal.aborted) {
+                                    setGlobalStats(fresh.globalStats);
+                                }
                             })
                             .catch(() => {});
                     }
                 }
             }
         } catch (e) {
+            if (e?.name === "AbortError") return;
             if (e.message !== "Unauthorized") console.error("Stats fetch error", e);
         }
-        setStatsLoading(false);
+        if (!ac.signal.aborted) setStatsLoading(false);
     }, [debouncedSearch, selectedBranch]);
 
     useEffect(() => {
@@ -473,12 +495,14 @@ export default function DashboardPage() {
     }, [search]);
 
     useEffect(() => {
+        if (!filtersReady) return;
         fetchInventoryTable();
-    }, [page, debouncedSearch, selectedBranch, fetchInventoryTable]);
+    }, [filtersReady, page, debouncedSearch, selectedBranch, fetchInventoryTable]);
 
     useEffect(() => {
+        if (!filtersReady) return;
         fetchInventoryStats();
-    }, [debouncedSearch, selectedBranch, fetchInventoryStats]);
+    }, [filtersReady, debouncedSearch, selectedBranch, fetchInventoryStats]);
 
     const isStale = globalStats.lastSync && (new Date() - new Date(globalStats.lastSync)) > 86400000;
 
